@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TGP Importer</title>
+    <style>
+      body {
+        width: 300px;
+        margin: 0;
+        padding: 16px;
+        font: 14px/1.45 system-ui, sans-serif;
+        background: #0f172a;
+        color: #f8fafc;
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0 0 12px;
+      }
+      .row {
+        display: flex;
+        justify-content: space-between;
+        padding: 4px 0;
+        border-bottom: 1px solid #1e293b;
+      }
+      .label {
+        color: #94a3b8;
+      }
+      .status-created { color: #38bdf8; }
+      .status-ingest_started { color: #fbbf24; }
+      .status-ingest_succeeded { color: #22c55e; }
+      .status-ingest_failed { color: #f87171; }
+      #error {
+        margin-top: 10px;
+        color: #f87171;
+        font-size: 13px;
+        word-break: break-word;
+      }
+      #empty {
+        color: #94a3b8;
+      }
+      progress {
+        width: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>TGP Importer</h1>
+    <div id="empty">No active import. Start one from TGP.</div>
+    <div id="detail" hidden>
+      <div class="row">
+        <span class="label">Intent</span><span id="intent-id"></span>
+      </div>
+      <div class="row">
+        <span class="label">Platform</span><span id="platform"></span>
+      </div>
+      <div class="row">
+        <span class="label">Status</span><span id="status"></span>
+      </div>
+      <div id="progress-list"></div>
+    </div>
+    <div id="error" hidden></div>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
