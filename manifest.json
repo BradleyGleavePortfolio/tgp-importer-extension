@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "TGP Importer",
+  "version": "0.1.0",
+  "description": "Transfer your TrueCoach clients into TGP from inside your own logged-in browser tab.",
+  "minimum_chrome_version": "116",
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "TGP Importer",
+    "default_popup": "popup/popup.html"
+  },
+  "permissions": [
+    "cookies",
+    "tabs",
+    "storage",
+    "activeTab",
+    "scripting"
+  ],
+  "host_permissions": [
+    "https://app.truecoach.co/*",
+    "https://api.tgp.coach/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://app.truecoach.co/*"],
+      "js": ["content/main.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
