@@ -18,7 +18,8 @@
     "storage",
     "activeTab",
     "scripting",
-    "notifications"
+    "notifications",
+    "debugger"
   ],
   "host_permissions": [
     "https://app.truecoach.co/*",

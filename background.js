@@ -17,6 +17,7 @@
 import { TGP_API_ORIGIN } from "./shared/protocol.js";
 import { detectPlatform } from "./extractors/detect.js";
 import { TrueCoachExtractor } from "./extractors/truecoach.js";
+import { attachDebugger, stopCapture } from "./shared/capture.js";
 
 // chrome.storage.local schema keys. The REFRESH token is persisted; the access
 // token is memory-only (see §4) and never written here.
@@ -45,6 +46,15 @@ function isStartIngest(m) {
 }
 function isRequestStatus(m) {
     return isRecord(m) && m.kind === "request_status";
+}
+function isStartCapture(m) {
+    return isRecord(m) && m.kind === "start_capture";
+}
+function isStopCapture(m) {
+    return isRecord(m) && m.kind === "stop_capture";
+}
+function readTabId(m) {
+    return isRecord(m) && typeof m.tabId === "number" ? m.tabId : null;
 }
 function readString(record, key) {
     return isRecord(record) && typeof record[key] === "string" ? record[key] : null;
@@ -268,6 +278,21 @@ async function handleStartIngest(message) {
     }
 }
 
+// ---- capture control --------------------------------------------------------
+
+// Begin Layer 1 passive capture on a tab. The ring buffer lives inside the
+// capture module; the popup only sees start/stop control here (C3 renders it).
+async function handleStartCapture(tabId) {
+    await attachDebugger(tabId);
+    return { ok: true, tabId };
+}
+
+// Stop capture and hand the caller the JSON entries collected for that tab.
+async function handleStopCapture(tabId) {
+    const entries = await stopCapture(tabId);
+    return { ok: true, tabId, entries };
+}
+
 // ---- message router ---------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -279,6 +304,28 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         void handleStartIngest(message);
         sendResponse({ ok: true });
         return false;
+    }
+    if (isStartCapture(message)) {
+        const tabId = readTabId(message);
+        if (tabId === null) {
+            sendResponse({ ok: false, error: "start_capture: missing tabId" });
+            return false;
+        }
+        handleStartCapture(tabId).then(sendResponse, (err) => {
+            sendResponse({ ok: false, error: err instanceof Error ? err.message : "capture failed" });
+        });
+        return true; // async response
+    }
+    if (isStopCapture(message)) {
+        const tabId = readTabId(message);
+        if (tabId === null) {
+            sendResponse({ ok: false, error: "stop_capture: missing tabId" });
+            return false;
+        }
+        handleStopCapture(tabId).then(sendResponse, (err) => {
+            sendResponse({ ok: false, error: err instanceof Error ? err.message : "stop failed" });
+        });
+        return true; // async response
     }
     return false;
 });
