@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TGP Importer — Sign in</title>
+    <style>
+      body {
+        width: 300px;
+        margin: 0;
+        padding: 16px;
+        font: 14px/1.45 system-ui, sans-serif;
+        background: #0f172a;
+        color: #f8fafc;
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0 0 12px;
+      }
+      label {
+        display: block;
+        color: #94a3b8;
+        font-size: 13px;
+        margin: 10px 0 4px;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 8px;
+        border: 1px solid #1e293b;
+        border-radius: 6px;
+        background: #1e293b;
+        color: #f8fafc;
+        font: 14px/1.45 system-ui, sans-serif;
+      }
+      button {
+        width: 100%;
+        margin-top: 14px;
+        padding: 9px;
+        border: 0;
+        border-radius: 6px;
+        background: #38bdf8;
+        color: #0f172a;
+        font: 600 14px/1.45 system-ui, sans-serif;
+        cursor: pointer;
+      }
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+      #signup {
+        display: inline-block;
+        margin-top: 14px;
+        color: #38bdf8;
+        text-decoration: none;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      #error {
+        margin-top: 10px;
+        color: #f87171;
+        font-size: 13px;
+        word-break: break-word;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Sign in to TGP</h1>
+    <form id="login-form">
+      <label for="email">Email</label>
+      <input id="email" type="email" autocomplete="username" required />
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" required />
+      <button id="submit" type="submit">Sign in</button>
+    </form>
+    <a id="signup" href="#">Create an Account →</a>
+    <div id="error" hidden></div>
+    <script type="module" src="login.js"></script>
+  </body>
+</html>
