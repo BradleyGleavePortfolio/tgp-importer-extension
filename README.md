@@ -7,33 +7,51 @@ entities) into TGP from inside their own logged-in tab.
 
 ```
 manifest.json
+background.js              # MV3 service worker (token lifecycle, dispatch, ingest)
 shared/
   protocol.js              # shared message protocol + config
+content/
+  main.js                  # minimal content script (announces a live platform tab)
 extractors/
   _interface.js            # LOCKED extractor contract (M-IMPORTER-EXTENSION v0)
+  detect.js                # detectPlatform(url) dispatcher (hostname-suffix match)
   truecoach.js             # public barrel for the TrueCoach extractor
   truecoach/
+    extractor.js           # TrueCoachExtractor orchestration class
     parse.js               # pure parsers + entity builders
     net.js                 # runtime networking + date-window walker
     library.js             # org-level library (exercises, programs, ...)
     identity.js            # /organizations bootstrap
     goal.js                # HTML-fragment goal endpoint parser
 popup/
-  popup.html
-  popup.js
+  popup.html popup.js      # import status + per-entity progress UI
+  login.html login.js      # email/password sign-in + "Create an Account →"
+docs/
+  DESIGN.md                # full v0.2 spec (autonomous crawl, WL taxonomy, R136)
+  ROADMAP.md               # platform matrix + version cutlines
+  first-principles.md      # R136 companion (sourced constraints + assumptions)
+  export-recipes/          # per-platform user-assisted export walkthroughs
 ```
 
-## Status — initial drop (Day 1, TrueCoach only)
+## Design v0.2 — see docs/DESIGN.md
 
-This first commit contains the files the operator handed off. Day-1 scope is
-TrueCoach only; the manifest still references three files that are **not yet
-in the repo** and must be added before the extension will load in Chrome:
+The design has moved from the Day-1 TGP-initiated handshake to an
+**extension-initiated, site-agnostic** model. Read **`docs/DESIGN.md`** for the
+full spec, **`docs/ROADMAP.md`** for the platform matrix + version cutlines,
+and **`docs/first-principles.md`** for the sourced hard-constraints /
+assumptions split.
 
-- `background.js` (manifest `background.service_worker`)
-- `content/main.js` (manifest `content_scripts[0].js`)
-- `extractors/truecoach/extractor.js` (imported by `extractors/truecoach.js`)
+Highlights of the redesign:
 
-Tracking these as the immediate follow-up.
+- **Auth + crawl model** (operator ruling 2026-06-30 17:02 PDT): inline
+  email/password sign-in in the popup; the bearer token IS the account binding;
+  the crawl is a fully autonomous background-worker API walk (no tab
+  navigation). This replaces the `INTENT_QUERY_PARAM` handshake in
+  `shared/protocol.js`.
+- **Site-agnostic north star** (operator ruling 2026-06-30 17:06 PDT): a
+  `detectPlatform(url)` dispatcher + per-platform extractor behind the locked
+  `_interface.js`, targeting the top-10 coaching platforms, with a
+  user-assisted export fallback and (v1.0) a BYO-extractor SDK.
 
 ## Doctrine notes
 
@@ -42,3 +60,10 @@ Tracking these as the immediate follow-up.
 - R76: every module ≤ 400 LOC.
 - Interface in `extractors/_interface.js` is **locked**; changes require an
   operator ruling because they break every downstream extractor.
+
+## Backend dependencies (TGP-side, not built yet)
+
+- `POST /auth/extension/login` and `POST /auth/extension/refresh` (see
+  `docs/DESIGN.md` §4 + the "Backend dependencies" section).
+- `app.tgp.coach/signup?ref=importer-extension` sign-up landing.
+- `POST /api/scout/ingest` (route by bearer identity) + `/api/scout/ingest/complete`.
