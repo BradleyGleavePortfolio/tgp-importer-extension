@@ -575,6 +575,19 @@ itself is healthy. In that case:
 - The coach clears the step-up challenge in the TGP mobile app; the extension
   resumes on the next successful token refresh without losing crawl progress.
 
+### 14.3 Mobile ↔ extension clock-drift handling
+
+The desktop and the phone can have materially different local clocks, so TTL
+and expiry decisions MUST NOT be made against the local device clock:
+
+- The extension **trusts the server `expires_at`** returned via
+  `GET /api/extension/pair/status` (and the redeem/init responses) as the sole
+  authority on whether a code is still live. It never compares the code's
+  freshness against `Date.now()` on the local machine.
+- Expiry is ultimately enforced **server-side** at redeem time (§13.2's
+  `expires_at > now()` predicate); the client-side countdown is presentation
+  only and is seeded from the server timestamps.
+
 ---
 
 ## Backend dependencies (flag for operator — create TGP-side tickets)
