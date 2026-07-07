@@ -408,6 +408,35 @@ Full matrix in `ROADMAP.md`. Summary:
 
 ---
 
+## 13. Pairing & token security model
+
+The pairing code is a short-lived bearer secret bridging two devices, so the
+backend endpoints that mint, poll, and redeem it carry the full security
+weight of the flow. The requirements below are **normative** for the TGP-side
+pairing endpoints (`growth-project-backend`); the extension side only needs to
+honour the client obligations called out per subsection.
+
+### 13.1 Redeem brute-force protection
+
+A 6-digit numeric code has only 10^6 possibilities, small enough to attack
+within the TTL if `/api/extension/pair/redeem` is reachable without limits.
+The backend MUST enforce, as non-negotiable requirements:
+
+- **Per-IP limit:** ≤ 10 redeem attempts per minute per source IP, with
+  exponential backoff on repeated failures from the same IP.
+- **Per-code cap:** ≤ 5 total redeem attempts against any single code. On the
+  5th failed attempt the code is **permanently burned** — marked terminal so
+  no further attempt (correct or not) can ever redeem it, and the mobile app
+  must mint a fresh code.
+- **Global anomaly limit + alerting:** a global redeem-failure rate ceiling
+  that trips alerting, so a distributed guessing campaign across many IPs is
+  detected even when each IP stays under its own budget.
+
+Client obligation: none — this is backend-enforced. The extension surfaces the
+generic failure states from §13.6 without exposing attempt counters.
+
+---
+
 ## Backend dependencies (flag for operator — create TGP-side tickets)
 
 - **`POST /api/extension/pair/init`** — mobile app calls with
