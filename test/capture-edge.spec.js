@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { makeChromeMock, installChrome } from "./helpers/chrome-mock.js";
-import { attachDebugger, stopCapture, sourcePlatformFor } from "../shared/capture.js";
+import {
+    attachDebugger,
+    stopCapture,
+    sourcePlatformFor,
+    redactHeaders,
+    redactUrl,
+} from "../shared/capture.js";
 import { byteSizeOf } from "../shared/capture-buffer.js";
 
 const TAB = 21;
@@ -163,15 +169,6 @@ describe("capture edge cases", () => {
         expect(entries[0].sourcePlatform).toBe("auto:coach.example.io");
     });
 
-    it("ignores a Fetch.requestPaused missing a requestId", async () => {
-        await attachDebugger(TAB);
-        mock.emit({ tabId: TAB }, "Fetch.requestPaused", {});
-        await Promise.resolve();
-        const cont = mock.calls.sendCommand.find((c) => c.method === "Fetch.continueRequest");
-        expect(cont).toBeUndefined();
-        await stopCapture(TAB);
-    });
-
     it("independent tabs keep independent buffers", async () => {
         mock.onCommand("Network.getResponseBody", (_t, params) => ({
             body: `{"id":"${params.requestId}"}`,
@@ -231,6 +228,69 @@ describe("sourcePlatformFor additional cases", () => {
 
     it("handles a trailing-dot fqdn host", () => {
         expect(sourcePlatformFor("https://host.example./x")).toBe("auto:host.example.");
+    });
+});
+
+describe("redactHeaders", () => {
+    it("redacts Authorization, Cookie, and Set-Cookie case-insensitively", () => {
+        const out = redactHeaders({
+            authorization: "Bearer x",
+            Cookie: "a=b",
+            "set-cookie": "s=1",
+            "content-type": "application/json",
+        });
+        expect(out.authorization).toBe("<redacted>");
+        expect(out.Cookie).toBe("<redacted>");
+        expect(out["set-cookie"]).toBe("<redacted>");
+        expect(out["content-type"]).toBe("application/json");
+    });
+
+    it("returns an empty object for non-record input", () => {
+        expect(redactHeaders(undefined)).toEqual({});
+        expect(redactHeaders("nope")).toEqual({});
+        expect(redactHeaders(null)).toEqual({});
+    });
+
+    it("leaves a header set with nothing sensitive untouched", () => {
+        expect(redactHeaders({ "x-a": "1", "x-b": "2" })).toEqual({ "x-a": "1", "x-b": "2" });
+    });
+});
+
+describe("redactUrl", () => {
+    it("redacts every sensitive query key variant", () => {
+        for (const key of ["token", "access_token", "id_token", "api_key", "api-key", "apikey", "auth", "session"]) {
+            const out = redactUrl(`https://x.co/p?${key}=secret&keep=1`);
+            expect(out).toContain(`${key}=<redacted>`);
+            expect(out).toContain("keep=1");
+            expect(out).not.toContain("secret");
+        }
+    });
+
+    it("is case-insensitive on the query key", () => {
+        expect(redactUrl("https://x.co/p?ACCESS_TOKEN=secret")).toContain("ACCESS_TOKEN=<redacted>");
+    });
+
+    it("returns the URL unchanged when no sensitive params are present", () => {
+        const url = "https://x.co/p?page=2&sort=asc";
+        expect(redactUrl(url)).toBe(url);
+    });
+
+    it("returns a URL with no query string unchanged", () => {
+        expect(redactUrl("https://x.co/clients/42")).toBe("https://x.co/clients/42");
+    });
+
+    it("passes a malformed URL through unchanged", () => {
+        expect(redactUrl("not a url?token=x")).toBe("not a url?token=x");
+    });
+
+    it("passes non-string input through unchanged", () => {
+        expect(redactUrl(undefined)).toBeUndefined();
+    });
+
+    it("preserves the URL hash while redacting", () => {
+        const out = redactUrl("https://x.co/p?token=secret#section");
+        expect(out).toContain("token=<redacted>");
+        expect(out).toContain("#section");
     });
 });
 

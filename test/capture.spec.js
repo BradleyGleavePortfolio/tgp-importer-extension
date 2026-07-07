@@ -27,12 +27,12 @@ describe("attachDebugger / stopCapture", () => {
         installChrome(mock);
     });
 
-    it("attaches with protocol 1.3 and enables Network + Fetch", async () => {
+    it("attaches with protocol 1.3 and enables Network only (never Fetch)", async () => {
         await attachDebugger(TAB);
         expect(mock.calls.attach).toEqual([{ target: { tabId: TAB }, version: "1.3" }]);
         const methods = mock.calls.sendCommand.map((c) => c.method);
         expect(methods).toContain("Network.enable");
-        expect(methods).toContain("Fetch.enable");
+        expect(methods).not.toContain("Fetch.enable");
         await stopCapture(TAB);
     });
 
@@ -128,16 +128,67 @@ describe("attachDebugger / stopCapture", () => {
         expect(entries).toHaveLength(0);
     });
 
-    it("continues paused Fetch requests without blocking", async () => {
+    it("never enables the Fetch domain, so browsing is never paused", async () => {
         await attachDebugger(TAB);
-        mock.emit({ tabId: TAB }, "Fetch.requestPaused", { requestId: "fetch-1" });
-        // allow the async handler to run
-        await Promise.resolve();
-        await Promise.resolve();
-        const cont = mock.calls.sendCommand.find((c) => c.method === "Fetch.continueRequest");
-        expect(cont).toBeDefined();
-        expect(cont.params).toEqual({ requestId: "fetch-1" });
+        const methods = mock.calls.sendCommand.map((c) => c.method);
+        expect(methods.some((m) => m.startsWith("Fetch."))).toBe(false);
         await stopCapture(TAB);
+    });
+
+    it("redacts sensitive request headers before storing an entry", async () => {
+        mock.onCommand("Network.getResponseBody", () => ({
+            body: "{}",
+            base64Encoded: false,
+        }));
+        await attachDebugger(TAB);
+        mock.emit({ tabId: TAB }, "Network.requestWillBeSent", {
+            requestId: "sec1",
+            request: {
+                url: "https://app.truecoach.co/api/x",
+                method: "GET",
+                headers: {
+                    Authorization: "Bearer super-secret",
+                    Cookie: "session=abc",
+                    "X-Trace": "keep-me",
+                },
+            },
+        });
+        mock.emit({ tabId: TAB }, "Network.responseReceived", {
+            requestId: "sec1",
+            response: { mimeType: "application/json", status: 200 },
+        });
+        mock.emit({ tabId: TAB }, "Network.loadingFinished", { requestId: "sec1" });
+        const [entry] = await stopCapture(TAB);
+        expect(entry.requestHeaders.Authorization).toBe("<redacted>");
+        expect(entry.requestHeaders.Cookie).toBe("<redacted>");
+        expect(entry.requestHeaders["X-Trace"]).toBe("keep-me");
+    });
+
+    it("redacts token-bearing query params in the stored URL", async () => {
+        mock.onCommand("Network.getResponseBody", () => ({
+            body: "{}",
+            base64Encoded: false,
+        }));
+        await attachDebugger(TAB);
+        mock.emit({ tabId: TAB }, "Network.requestWillBeSent", {
+            requestId: "url1",
+            request: {
+                url: "https://app.truecoach.co/api/x?access_token=leak&page=2",
+                method: "GET",
+                headers: {},
+            },
+        });
+        mock.emit({ tabId: TAB }, "Network.responseReceived", {
+            requestId: "url1",
+            response: { mimeType: "application/json", status: 200 },
+        });
+        mock.emit({ tabId: TAB }, "Network.loadingFinished", { requestId: "url1" });
+        const [entry] = await stopCapture(TAB);
+        expect(entry.url).toContain("access_token=<redacted>");
+        expect(entry.url).toContain("page=2");
+        expect(entry.url).not.toContain("leak");
+        // Host provenance is still derived from the original URL.
+        expect(entry.sourcePlatform).toBe("auto:app.truecoach.co");
     });
 
     it("skips entries when getResponseBody fails", async () => {

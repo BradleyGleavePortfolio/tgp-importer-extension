@@ -1,10 +1,16 @@
 // Layer 1 passive capture for the TGP Importer (see docs/AUTO_DISCOVERY.md §6).
 //
-// Attaches chrome.debugger to a tab, enables the Network + Fetch domains, and
-// records JSON responses into a bounded ring buffer tagged with a
-// `auto:<hostname>` source-platform provenance marker. Fetch is enabled only so
-// that we can immediately continue every paused request — we never block the
-// tab's own browsing; capture happens via the Network domain events.
+// Attaches chrome.debugger to a tab, enables ONLY the Network domain, and
+// records JSON responses into a byte-bounded capture buffer tagged with a
+// `auto:<hostname>` source-platform provenance marker. v0.3 is passive capture
+// only: the Fetch domain (which pauses every request) is deliberately NOT
+// enabled — capture happens purely via Network.* observation, so the coach's
+// own browsing is never intercepted or stalled.
+//
+// Privacy: sensitive request headers (Authorization / Cookie / Set-Cookie) and
+// token-bearing URL query params are redacted to "<redacted>" before an entry
+// is ever stored, so raw credentials never enter the buffer or cross the
+// runtime-message boundary.
 //
 // R75: zero banned type-assertions — every narrowing is a real guard.
 // R76: this file stays comfortably under 400 LOC.
@@ -57,6 +63,58 @@ function isJsonMimeType(mimeType) {
     return typeof mimeType === "string" && /json/i.test(mimeType);
 }
 
+// ---- redaction --------------------------------------------------------------
+
+const REDACTED = "<redacted>";
+const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "set-cookie"]);
+const SENSITIVE_QUERY_KEY = /^(token|access_token|id_token|api[-_]?key|auth|session)$/i;
+
+// Replace sensitive header values with the redaction marker. Header names are
+// matched case-insensitively; every other header passes through untouched.
+function redactHeaders(headers) {
+    if (!isRecord(headers)) {
+        return {};
+    }
+    const out = {};
+    for (const [key, value] of Object.entries(headers)) {
+        out[key] = SENSITIVE_HEADERS.has(key.toLowerCase()) ? REDACTED : value;
+    }
+    return out;
+}
+
+// Redact token-bearing query params (token, access_token, id_token, api_key,
+// auth, session) to the literal marker, leaving all other params intact. The
+// literal marker is preserved rather than percent-encoded so downstream tooling
+// can recognise it. Malformed URLs pass through unchanged.
+function redactUrl(url) {
+    if (typeof url !== "string") {
+        return url;
+    }
+    let parsed;
+    try {
+        parsed = new URL(url);
+    }
+    catch {
+        return url;
+    }
+    const params = [...parsed.searchParams.entries()];
+    if (params.length === 0) {
+        return url;
+    }
+    let changed = false;
+    const rebuilt = params.map(([key, value]) => {
+        if (SENSITIVE_QUERY_KEY.test(key)) {
+            changed = true;
+            return `${key}=${REDACTED}`;
+        }
+        return `${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
+    });
+    if (!changed) {
+        return url;
+    }
+    return `${parsed.origin}${parsed.pathname}?${rebuilt.join("&")}${parsed.hash}`;
+}
+
 // ---- debugger attach / capture ----------------------------------------------
 
 // Attach the debugger to a tab and begin capturing JSON responses. Idempotent:
@@ -90,20 +148,12 @@ async function attachDebugger(tabId, options) {
 
     await chrome.debugger.attach(target, DEBUGGER_PROTOCOL_VERSION);
     await chrome.debugger.sendCommand(target, "Network.enable", {});
-    await chrome.debugger.sendCommand(target, "Fetch.enable", {});
     return buffer;
 }
 
-// Route a single CDP event for a captured tab. Network.* build the entry;
-// Fetch.requestPaused is continued immediately so browsing is never blocked.
+// Route a single CDP event for a captured tab. Only Network.* events are handled
+// — the Fetch domain is never enabled (v0.3 is passive-observe only).
 async function handleDebuggerEvent(target, method, params, inflight, buffer) {
-    if (method === "Fetch.requestPaused") {
-        const requestId = readString(params, "requestId");
-        if (requestId !== null) {
-            await continueRequest(target, requestId);
-        }
-        return;
-    }
     if (method === "Network.requestWillBeSent") {
         recordRequest(params, inflight);
         return;
@@ -114,15 +164,6 @@ async function handleDebuggerEvent(target, method, params, inflight, buffer) {
     }
     if (method === "Network.loadingFinished") {
         await finalizeEntry(target, params, inflight, buffer);
-    }
-}
-
-async function continueRequest(target, requestId) {
-    try {
-        await chrome.debugger.sendCommand(target, "Fetch.continueRequest", { requestId });
-    }
-    catch {
-        // The request may already be gone (tab navigated); nothing to continue.
     }
 }
 
@@ -191,12 +232,14 @@ async function finalizeEntry(target, params, inflight, buffer) {
 
     buffer.push({
         requestId,
-        url: pending.url,
+        url: redactUrl(pending.url),
         method: pending.method,
         statusCode: pending.statusCode ?? null,
-        requestHeaders: pending.requestHeaders,
+        requestHeaders: redactHeaders(pending.requestHeaders),
         responseBody,
         capturedAt: new Date().toISOString(),
+        // Host provenance is derived from the original URL — the hostname is not
+        // sensitive and is needed for the auto:<host> tag.
         sourcePlatform: sourcePlatformFor(pending.url),
     });
 }
@@ -224,6 +267,8 @@ async function stopCapture(tabId) {
 
 export {
     sourcePlatformFor,
+    redactHeaders,
+    redactUrl,
     attachDebugger,
     stopCapture,
 };
