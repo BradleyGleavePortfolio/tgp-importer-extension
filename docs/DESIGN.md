@@ -562,6 +562,19 @@ extension can take longer. If the coach lands on the pairing view past
   6-digit input with a "code expired — generate a new one on your phone"
   message rather than a dead-end error.
 
+### 14.2 Mobile step-up / re-auth mid-import
+
+If the coach's **TGP mobile session** hits step-up auth (2FA challenge,
+re-authentication, or session expiry) while an import is running, the
+extension's token operations against TGP begin failing even though the crawl
+itself is healthy. In that case:
+
+- The extension detects the TGP-side auth failure (a refresh/ingest call that
+  cannot recover via `/auth/extension/refresh`) and shows a dedicated
+  **"Reconnect on your phone"** state, pausing ingest rather than erroring out.
+- The coach clears the step-up challenge in the TGP mobile app; the extension
+  resumes on the next successful token refresh without losing crawl progress.
+
 ---
 
 ## Backend dependencies (flag for operator — create TGP-side tickets)
