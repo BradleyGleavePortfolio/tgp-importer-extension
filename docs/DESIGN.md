@@ -90,7 +90,7 @@ extension popup.
    `{ access_token, refresh_token, chosen_platform }` bound to the coach's
    TGP account. Both tokens are stored per §4 (refresh in
    `chrome.storage.local`, access in memory only). The chosen platform is
-   stored in `chrome.storage.local` under `session.chosenPlatform` so the
+   stored in `chrome.storage.local` under `session.chosen_platform` so the
    popup can render the platform-specific CTA on next open.
 8. **Auto-open source platform + popup fires.** With pairing complete, the
    background worker opens the source-platform URL in a new tab
@@ -207,7 +207,7 @@ once no legacy imports remain in flight. The v0.2 `popup/login.html` and
   - If refresh itself returns 401, the worker clears both tokens and broadcasts
     `auth_required`; the popup then falls back to the pairing view. The coach
     re-initiates from the mobile app to get a new pairing code.
-- **Chosen platform storage.** `session.chosenPlatform` is persisted in
+- **Chosen platform storage.** `session.chosen_platform` is persisted in
   `chrome.storage.local` at redeem time. It survives service-worker deaths and
   is the input to `platformHomeUrl(...)` when the worker opens the source-
   platform tab in step 8.
