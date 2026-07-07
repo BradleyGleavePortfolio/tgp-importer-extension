@@ -372,6 +372,12 @@ calling `sendEntities` per batch and `broadcastStatus` after each commit.
   `POST /api/scout/progress` so the TGP mobile app can mirror progress on its
   in-app progress screen. Snapshot shape is unchanged; the backend echoes it
   through to the mobile app's existing poll/socket path.
+- **Progress endpoint auth & ordering.** `POST /api/scout/progress` is
+  authenticated with the coach's extension **Bearer**; the backend derives the
+  coach/import binding from the **token identity**, never a body field. Each
+  snapshot carries a **monotonic `seq`** counter per import, and the backend
+  **rejects out-of-order deliveries with `409 Conflict`** so a stale or
+  replayed snapshot can never regress the progress shown on either device.
 - Snapshot shape is owned by the background worker and is the same object the
   popup already renders — this design does not change it.
 
@@ -621,8 +627,11 @@ and expiry decisions MUST NOT be made against the local device clock:
   it routes by bearer-token identity (no body-level account field required).
   **Backend PR (formerly PR-B) not yet built.**
 - **`POST /api/scout/progress`** — per-commit progress snapshot forwarded to
-  the mobile app. Body is the same shape the popup receives via
-  `chrome.runtime.sendMessage`. **Not yet built.**
+  the mobile app. Authenticated with the coach's extension Bearer (coach/import
+  binding derived from the token, not the body); enforces a monotonic
+  per-import `seq` and rejects out-of-order snapshots with `409 Conflict`. Body
+  is the same shape the popup receives via `chrome.runtime.sendMessage`.
+  **Not yet built.**
 - **`POST /api/scout/ingest/complete`** — terminal completion call. Confirm
   the path and that it is idempotent per import. **Not yet built.**
 
