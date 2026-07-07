@@ -59,6 +59,16 @@ platform structure still needs confirmation.
 
 ## Version cutlines
 
+> **Glossary — "design version" vs "release milestone" (do not conflate).** The
+> cutlines below (`v0.1`…`v1.0`) are **release milestones**: units of *shipped
+> extension capability*. They are a different axis from the **design-document
+> revision** (`DESIGN.md` is at *Design v0.3*, the inline-login → pairing
+> rewrite) and from `manifest.version` (the packaged-artifact version, e.g.
+> `0.3.0-design`). One design revision can specify several release milestones —
+> e.g. Design v0.3 governs release milestones v0.1 through v0.5 here. When this
+> file says "v0.1" it always means the *release milestone*, never the design
+> revision. See the matching note in `DESIGN.md` (header).
+
 ### v0.1 — TrueCoach flagship + auth + progress UI  ← **BUILD NEXT**
 - TrueCoach extractor (already implemented) wired through the new dispatcher.
 - Tier-1 WL subdomains (`*.truecoach.co`) via wildcard host-permission +
