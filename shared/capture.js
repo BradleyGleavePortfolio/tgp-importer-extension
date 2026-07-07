@@ -96,14 +96,6 @@ function isJsonMimeType(mimeType) {
     return typeof mimeType === "string" && /json/i.test(mimeType);
 }
 
-function tabIdOf(params) {
-    if (isRecord(params) && isRecord(params.source)) {
-        const { tabId } = params.source;
-        return typeof tabId === "number" ? tabId : null;
-    }
-    return null;
-}
-
 // ---- debugger attach / capture ----------------------------------------------
 
 // Attach the debugger to a tab and begin capturing JSON responses. Idempotent:
