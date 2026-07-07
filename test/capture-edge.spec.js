@@ -1,12 +1,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { makeChromeMock, installChrome } from "./helpers/chrome-mock.js";
-import {
-    attachDebugger,
-    stopCapture,
-    RingBuffer,
-    startRingBuffer,
-    sourcePlatformFor,
-} from "../shared/capture.js";
+import { attachDebugger, stopCapture, sourcePlatformFor } from "../shared/capture.js";
+import { byteSizeOf } from "../shared/capture-buffer.js";
 
 const TAB = 21;
 
@@ -204,33 +199,6 @@ describe("capture edge cases", () => {
     });
 });
 
-describe("RingBuffer additional invariants", () => {
-    it("handles capacity of 1 by keeping only the newest", () => {
-        const buf = new RingBuffer(1);
-        buf.push("a");
-        buf.push("b");
-        buf.push("c");
-        expect(buf.snapshot()).toEqual(["c"]);
-    });
-
-    it("preserves object references, not copies", () => {
-        const buf = new RingBuffer(2);
-        const obj = { k: 1 };
-        buf.push(obj);
-        expect(buf.snapshot()[0]).toBe(obj);
-    });
-
-    it("startRingBuffer and new RingBuffer behave identically on overflow", () => {
-        const a = startRingBuffer(2);
-        const b = new RingBuffer(2);
-        ["x", "y", "z"].forEach((e) => {
-            a.push(e);
-            b.push(e);
-        });
-        expect(a.snapshot()).toEqual(b.snapshot());
-    });
-});
-
 describe("sourcePlatformFor additional cases", () => {
     it("handles http (non-tls) urls", () => {
         expect(sourcePlatformFor("http://legacy.local/x")).toBe("auto:legacy.local");
@@ -273,13 +241,12 @@ describe("capture buffer overflow under load", () => {
         installChrome(mock);
     });
 
-    it("evicts oldest captured entries beyond capacity", async () => {
-        mock.onCommand("Network.getResponseBody", (_t, params) => ({
-            body: `{"id":"${params.requestId}"}`,
-            base64Encoded: false,
-        }));
-        // Attach with a tiny capacity via the internal options hook.
-        await attachDebugger(31, { capacity: 3 });
+    it("evicts oldest captured entries once the byte cap is exceeded", async () => {
+        // Each response body is ~2 KB; cap holds only a few entries.
+        const body = `{"pad":"${"z".repeat(2000)}"}`;
+        mock.onCommand("Network.getResponseBody", () => ({ body, base64Encoded: false }));
+        const maxBytes = 7000;
+        await attachDebugger(31, { maxBytes });
         for (let i = 0; i < 6; i += 1) {
             const id = `q${i}`;
             reqWillBeSent(mock, 31, id, `https://x.co/${id}.json`, "GET", {});
@@ -290,14 +257,25 @@ describe("capture buffer overflow under load", () => {
             await Promise.resolve();
         }
         const entries = await stopCapture(31);
-        expect(entries).toHaveLength(3);
-        expect(entries.map((e) => e.requestId)).toEqual(["q3", "q4", "q5"]);
+        // Eviction happened (fewer than the 6 pushed) but the newest survives.
+        expect(entries.length).toBeGreaterThan(0);
+        expect(entries.length).toBeLessThan(6);
+        const ids = entries.map((e) => e.requestId);
+        expect(ids).not.toContain("q0");
+        expect(ids[ids.length - 1]).toBe("q5");
+        // The retained set honours the byte bound.
+        const held = entries.reduce((sum, e) => sum + byteSizeOf(e), 0);
+        expect(held).toBeLessThanOrEqual(maxBytes);
     });
 
-    it("falls back to default capacity when options.capacity is not a number", async () => {
-        await attachDebugger(32, { capacity: "big" });
-        // Attaching succeeds; buffer is usable and empty at stop.
+    it("falls back to the default 5 MB cap when options.maxBytes is not a number", async () => {
+        mock.onCommand("Network.getResponseBody", () => ({ body: "{}", base64Encoded: false }));
+        await attachDebugger(32, { maxBytes: "big" });
+        reqWillBeSent(mock, 32, "d1", "https://x.co/a.json", "GET", {});
+        respReceived(mock, 32, "d1", "application/json", 200);
+        loadingFinished(mock, 32, "d1");
         const entries = await stopCapture(32);
-        expect(entries).toEqual([]);
+        // Attaching succeeds and the buffer captures normally under the default cap.
+        expect(entries).toHaveLength(1);
     });
 });

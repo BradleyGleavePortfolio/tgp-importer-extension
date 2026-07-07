@@ -9,7 +9,7 @@
 // R75: zero banned type-assertions — every narrowing is a real guard.
 // R76: this file stays comfortably under 400 LOC.
 
-import { RingBuffer, startRingBuffer, DEFAULT_CAPACITY } from "./capture-buffer.js";
+import { CaptureBuffer, DEFAULT_MAX_BYTES } from "./capture-buffer.js";
 
 const DEBUGGER_PROTOCOL_VERSION = "1.3";
 
@@ -71,10 +71,10 @@ async function attachDebugger(tabId, options) {
         return existing.buffer;
     }
 
-    const capacity = isRecord(options) && typeof options.capacity === "number"
-        ? options.capacity
-        : DEFAULT_CAPACITY;
-    const buffer = new RingBuffer(capacity);
+    const maxBytes = isRecord(options) && typeof options.maxBytes === "number"
+        ? options.maxBytes
+        : DEFAULT_MAX_BYTES;
+    const buffer = new CaptureBuffer(maxBytes);
     const inflight = new Map();
     const target = { tabId };
 
@@ -223,8 +223,6 @@ async function stopCapture(tabId) {
 }
 
 export {
-    RingBuffer,
-    startRingBuffer,
     sourcePlatformFor,
     attachDebugger,
     stopCapture,
