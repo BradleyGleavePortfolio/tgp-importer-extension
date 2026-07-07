@@ -52,8 +52,10 @@ extension popup.
    variant is deferred (see §8 assumptions). In-app native install prompts and
    self-hosted CRX distribution are out of scope for v0.1.
 3. **Progress screen** on the mobile app, following the TGP mobile design
-   system. The mobile app polls `GET /api/extension/pair/status?code=...`
-   waiting for the pairing signal.
+   system. The mobile app polls
+   `GET /api/extension/pair/status?pairing_id=...` — keyed by the opaque
+   `pairing_id` returned by `pair/init`, **never** the 6-digit code (see
+   §13.5) — waiting for the pairing signal.
 4. **"Choose your previous site"** page on the mobile app. The coach selects
    the source platform (TrueCoach, Trainerize, My PT Hub, etc. — driven by the
    `ROADMAP.md` matrix). This selection is stored server-side against the
@@ -61,7 +63,8 @@ extension popup.
    redeems.
 5. **Pairing code display.** The mobile app calls
    `POST /api/extension/pair/init` with `{ chosen_platform }`. The backend
-   returns `{ pairing_code, expires_at }` — a **6-digit numeric code** with a
+   returns `{ pairing_id, pairing_code, expires_at }` — an opaque `pairing_id`
+   for status polling (§13.5) plus a **6-digit numeric code** with a
    **short TTL** (nominal 2 minutes; exact TTL is a backend policy setting).
    The mobile app displays the code in the luxury mobile design pattern
    (large mono digits, copy-to-clipboard). QR-code display is deferred.
@@ -509,16 +512,33 @@ explicitly:
   the extension's own trusted surfaces. On uninstall/logout all token state is
   cleared.
 
+### 13.5 Opaque `pairing_id` for status polling
+
+The mobile app MUST poll pairing status by an opaque `pairing_id`, **not** by
+the 6-digit code. Polling by the code puts the live secret in query strings
+(captured by logs, analytics, history, and intermediary tooling) and lets
+anyone holding the code learn whether it is `pending | paired | expired`.
+
+- `POST /api/extension/pair/init` returns a random, unguessable `pairing_id`
+  alongside the code.
+- `GET /api/extension/pair/status?pairing_id=…` is the only status surface;
+  the endpoint is scoped to the authenticated mobile session that minted it.
+- The 6-digit code never appears in a status URL.
+
 ---
 
 ## Backend dependencies (flag for operator — create TGP-side tickets)
 
 - **`POST /api/extension/pair/init`** — mobile app calls with
-  `{ chosen_platform }`; returns `{ pairing_code, expires_at }`. Codes are
-  6-digit numeric, short-TTL (nominal 2 minutes), single-use, and bound to
-  the coach's TGP account + chosen platform at mint time. **Not yet built.**
-- **`GET /api/extension/pair/status?code=…`** — mobile app polls; returns
-  `pending | paired | expired`. **Not yet built.**
+  `{ chosen_platform }`; returns `{ pairing_id, pairing_code, expires_at }`.
+  The `pairing_id` is an opaque, unguessable handle used for status polling
+  (§13.5). Codes are 6-digit numeric, short-TTL (nominal 2 minutes),
+  single-use, and bound to the coach's TGP account + chosen platform at mint
+  time. **Not yet built.**
+- **`GET /api/extension/pair/status?pairing_id=…`** — mobile app polls by the
+  opaque `pairing_id` (never the 6-digit code); returns
+  `pending | paired | expired` plus the extension nonce last-4 (§13.3) once
+  redeemed. **Not yet built.**
 - **`POST /api/extension/pair/redeem`** — extension calls with `{ code }`;
   returns `{ access_token, refresh_token, chosen_platform }` on success, or
   a structured error (`expired`, `already_used`, `invalid`) on failure.
