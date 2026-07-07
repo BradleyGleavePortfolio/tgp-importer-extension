@@ -17,7 +17,7 @@
 import { TGP_API_ORIGIN } from "./shared/protocol.js";
 import { detectPlatform } from "./extractors/detect.js";
 import { TrueCoachExtractor } from "./extractors/truecoach.js";
-import { attachDebugger, stopCapture } from "./shared/capture.js";
+import { attachDebugger, stopCapture, registerCaptureLifecycle } from "./shared/capture.js";
 
 // chrome.storage.local schema keys. The REFRESH token is persisted; the access
 // token is memory-only (see §4) and never written here.
@@ -279,6 +279,11 @@ async function handleStartIngest(message) {
 }
 
 // ---- capture control --------------------------------------------------------
+
+// Wire the MV3 cleanup paths (tab close, debugger detach, SW suspend) once at
+// service-worker startup so a capture session never leaks its debugger handle or
+// buffer when it ends outside an explicit stop_capture.
+registerCaptureLifecycle();
 
 // Begin Layer 1 passive capture on a tab. The ring buffer lives inside the
 // capture module; the popup only sees start/stop control here (C3 renders it).

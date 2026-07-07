@@ -271,10 +271,11 @@ async function finalizeEntry(target, params, inflight, buffer) {
 
 // ---- teardown ---------------------------------------------------------------
 
-// Detach the debugger from a tab and return a snapshot of everything captured.
-// Safe to call for an unknown tab (returns an empty array). Detach failures on
-// an already-closed tab are non-fatal.
-async function stopCapture(tabId) {
+// Tear down a tab's capture session: stop listening, drain in-flight finalizers,
+// snapshot, free the buffer, and (optionally) detach the debugger. Safe for an
+// unknown tab (returns an empty array). `detach` is false only when Chrome has
+// already detached (chrome.debugger.onDetach), where a detach call is redundant.
+async function teardownSession(tabId, { detach }) {
     const session = sessions.get(tabId);
     if (session === undefined) {
         return [];
@@ -284,13 +285,46 @@ async function stopCapture(tabId) {
     // Wait for any finalizer already in flight so its body write lands in the
     // buffer before we snapshot, and no orphan write occurs after we resolve.
     await Promise.allSettled([...session.finalizers]);
-    try {
-        await chrome.debugger.detach({ tabId });
+    const snapshot = session.buffer.snapshot();
+    // Free the captured bytes eagerly — cleanup paths (tab close, SW suspend)
+    // must not leave a buffer pinned in memory.
+    session.buffer.clear();
+    if (detach) {
+        try {
+            await chrome.debugger.detach({ tabId });
+        }
+        catch {
+            // Tab was closed before teardown; the debugger is already gone.
+        }
     }
-    catch {
-        // Tab was closed before teardown; the debugger is already gone.
-    }
-    return session.buffer.snapshot();
+    return snapshot;
+}
+
+// Detach the debugger from a tab and return a snapshot of everything captured.
+async function stopCapture(tabId) {
+    return teardownSession(tabId, { detach: true });
+}
+
+// Wire the MV3 lifecycle cleanup paths so a session never leaks its debugger
+// handle or buffer when capture ends outside an explicit stop_capture:
+//   - tabs.onRemoved       — the coach closed the captured tab.
+//   - debugger.onDetach    — Chrome detached the debugger (e.g. DevTools opened).
+//   - runtime.onSuspend    — the service worker is being torn down.
+// Called once from the background service worker at startup.
+function registerCaptureLifecycle() {
+    chrome.tabs.onRemoved.addListener((tabId) => {
+        void teardownSession(tabId, { detach: true });
+    });
+    chrome.debugger.onDetach.addListener((source) => {
+        if (isRecord(source) && typeof source.tabId === "number") {
+            void teardownSession(source.tabId, { detach: false });
+        }
+    });
+    chrome.runtime.onSuspend.addListener(() => {
+        for (const tabId of [...sessions.keys()]) {
+            void teardownSession(tabId, { detach: true });
+        }
+    });
 }
 
 export {
@@ -299,4 +333,5 @@ export {
     redactUrl,
     attachDebugger,
     stopCapture,
+    registerCaptureLifecycle,
 };

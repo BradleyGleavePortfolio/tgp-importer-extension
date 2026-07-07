@@ -1,10 +1,31 @@
-// Minimal chrome.debugger mock for capture tests. Records attach/detach calls,
-// lets tests script sendCommand responses, and lets tests emit CDP events.
+// Minimal chrome mock for capture tests. Records attach/detach calls, lets tests
+// script sendCommand responses, emit CDP events, and emit the MV3 lifecycle
+// events (tab close, debugger detach, SW suspend) the capture module listens on.
+
+function eventHub() {
+    const set = new Set();
+    return {
+        api: {
+            addListener: (fn) => set.add(fn),
+            removeListener: (fn) => set.delete(fn),
+        },
+        set,
+        emit: (...args) => {
+            for (const fn of [...set]) {
+                fn(...args);
+            }
+        },
+    };
+}
 
 export function makeChromeMock() {
     const listeners = new Set();
     const commandHandlers = new Map();
     const calls = { attach: [], detach: [], sendCommand: [] };
+
+    const onDetach = eventHub();
+    const onRemoved = eventHub();
+    const onSuspend = eventHub();
 
     const chrome = {
         debugger: {
@@ -23,6 +44,13 @@ export function makeChromeMock() {
                 addListener: (fn) => listeners.add(fn),
                 removeListener: (fn) => listeners.delete(fn),
             },
+            onDetach: onDetach.api,
+        },
+        tabs: {
+            onRemoved: onRemoved.api,
+        },
+        runtime: {
+            onSuspend: onSuspend.api,
         },
     };
 
@@ -41,6 +69,10 @@ export function makeChromeMock() {
                 fn(source, method, params);
             }
         },
+        // MV3 lifecycle emitters.
+        emitDetach: (source) => onDetach.emit(source),
+        emitTabRemoved: (tabId, info) => onRemoved.emit(tabId, info ?? { isWindowClosing: false }),
+        emitSuspend: () => onSuspend.emit(),
     };
 }
 
