@@ -349,6 +349,19 @@ contract. Each carries an R131 re-verification trigger (see
   v0.2 §8 listed *"coaches accept inline email/password"* as a challengeable
   assumption. v0.3 removes the inline login surface entirely, so the
   assumption no longer applies and its R131 trigger is closed.
+- **The extension recognises source platforms by these exact origin patterns.**
+  Static, install-time coverage is precisely two match patterns:
+  `https://app.truecoach.co/*` (flagship host — `content_scripts.matches` and
+  `host_permissions`) and `*://*.truecoach.co/*` (the Tier-1 brand-subdomain
+  wildcard in `host_permissions`, resolved to the TrueCoach extractor by
+  `detectPlatform(url)` matching on the `.truecoach.co` hostname **suffix**).
+  Tier-2 vanity domains are **not** in this set at install time; each is added
+  at runtime one origin at a time via `optional_host_permissions` +
+  `chrome.permissions.request()` (§5 Tier 2). *R131 trigger:* re-verify this
+  pattern set whenever a new platform is onboarded (each adds its own flagship +
+  wildcard pair), whenever TrueCoach changes its host scheme, or at the next
+  quarterly capture (2026-09-30) — whichever is sooner. A pattern that no longer
+  matches a live host silently disables extraction for that origin.
 
 ---
 
