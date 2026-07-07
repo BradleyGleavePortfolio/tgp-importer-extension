@@ -48,6 +48,40 @@ describe("attachDebugger / stopCapture", () => {
         await expect(attachDebugger("nope")).rejects.toThrow(/tabId/);
     });
 
+    it("rolls back the listener and session when attach is denied", async () => {
+        mock.chrome.debugger.attach = async () => {
+            throw new Error("Cannot attach — user denied");
+        };
+        await expect(attachDebugger(TAB)).rejects.toThrow(/denied/);
+        // No listener and no poisoned session are left behind.
+        expect(mock.listenerCount()).toBe(0);
+        // A later stopCapture sees no session (rollback deleted it).
+        expect(await stopCapture(TAB)).toEqual([]);
+    });
+
+    it("rolls back and attempts detach when Network.enable fails", async () => {
+        mock.failCommand("Network.enable");
+        await expect(attachDebugger(TAB)).rejects.toThrow(/Network.enable/);
+        expect(mock.listenerCount()).toBe(0);
+        // The partial attach was torn down with a detach call.
+        expect(mock.calls.detach).toEqual([{ target: { tabId: TAB } }]);
+    });
+
+    it("is not a false idempotent hit after a failed attach", async () => {
+        mock.chrome.debugger.attach = async () => {
+            throw new Error("first attach fails");
+        };
+        await expect(attachDebugger(TAB)).rejects.toThrow();
+        // Repair the mock; the next attach must genuinely re-attach, not return a
+        // poisoned buffer from the rolled-back session.
+        mock.chrome.debugger.attach = async (target, version) => {
+            mock.calls.attach.push({ target, version });
+        };
+        await attachDebugger(TAB);
+        expect(mock.calls.attach).toContainEqual({ target: { tabId: TAB }, version: "1.3" });
+        await stopCapture(TAB);
+    });
+
     it("captures a JSON response into the buffer", async () => {
         mock.onCommand("Network.getResponseBody", () => ({
             body: JSON.stringify({ hello: "world" }),

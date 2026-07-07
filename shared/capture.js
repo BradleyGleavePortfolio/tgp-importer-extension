@@ -146,8 +146,25 @@ async function attachDebugger(tabId, options) {
     sessions.set(tabId, { buffer, inflight, onEvent });
     chrome.debugger.onEvent.addListener(onEvent);
 
-    await chrome.debugger.attach(target, DEBUGGER_PROTOCOL_VERSION);
-    await chrome.debugger.sendCommand(target, "Network.enable", {});
+    try {
+        await chrome.debugger.attach(target, DEBUGGER_PROTOCOL_VERSION);
+        await chrome.debugger.sendCommand(target, "Network.enable", {});
+    }
+    catch (err) {
+        // A partial attach (coach denied the prompt, DevTools already open,
+        // Network.enable rejected) must not leak a debugger handle, listener, or
+        // a poisoned session that makes the next attach a false idempotent hit.
+        // Roll every side effect back before surfacing the failure.
+        chrome.debugger.onEvent.removeListener(onEvent);
+        sessions.delete(tabId);
+        try {
+            await chrome.debugger.detach(target);
+        }
+        catch {
+            // The attach never completed, so there may be nothing to detach.
+        }
+        throw err;
+    }
     return buffer;
 }
 
