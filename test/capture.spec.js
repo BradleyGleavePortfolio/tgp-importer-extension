@@ -225,6 +225,29 @@ describe("attachDebugger / stopCapture", () => {
         expect(entry.sourcePlatform).toBe("auto:app.truecoach.co");
     });
 
+    it("awaits an in-flight finalizer before returning the stop snapshot", async () => {
+        let resolveBody;
+        mock.onCommand(
+            "Network.getResponseBody",
+            () => new Promise((resolve) => { resolveBody = resolve; }),
+        );
+        await attachDebugger(TAB);
+        emitJsonRequest(mock, TAB, {
+            requestId: "late",
+            url: "https://app.truecoach.co/api/late",
+            method: "GET",
+            mimeType: "application/json",
+            status: 200,
+        });
+        // Begin the stop while the body fetch is still pending, then resolve it.
+        // stopCapture must drain the finalizer rather than snapshot early.
+        const stopPromise = stopCapture(TAB);
+        resolveBody({ body: JSON.stringify({ ok: true }), base64Encoded: false });
+        const entries = await stopPromise;
+        expect(entries).toHaveLength(1);
+        expect(entries[0].requestId).toBe("late");
+    });
+
     it("skips entries when getResponseBody fails", async () => {
         mock.failCommand("Network.getResponseBody");
         await attachDebugger(TAB);

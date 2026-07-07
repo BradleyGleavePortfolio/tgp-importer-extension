@@ -134,16 +134,24 @@ async function attachDebugger(tabId, options) {
         : DEFAULT_MAX_BYTES;
     const buffer = new CaptureBuffer(maxBytes);
     const inflight = new Map();
+    // In-flight finalizer promises. loadingFinished fetches the body
+    // asynchronously; stopCapture drains this set so a stop never races an
+    // outstanding write (lost capture) or lets a late write land after snapshot.
+    const finalizers = new Set();
     const target = { tabId };
 
     const onEvent = (source, method, params) => {
         if (source.tabId !== tabId) {
             return;
         }
-        void handleDebuggerEvent(target, method, params, inflight, buffer);
+        const done = handleDebuggerEvent(target, method, params, inflight, buffer).catch(
+            () => undefined,
+        );
+        finalizers.add(done);
+        void done.finally(() => finalizers.delete(done));
     };
 
-    sessions.set(tabId, { buffer, inflight, onEvent });
+    sessions.set(tabId, { buffer, inflight, onEvent, finalizers });
     chrome.debugger.onEvent.addListener(onEvent);
 
     try {
@@ -273,6 +281,9 @@ async function stopCapture(tabId) {
     }
     sessions.delete(tabId);
     chrome.debugger.onEvent.removeListener(session.onEvent);
+    // Wait for any finalizer already in flight so its body write lands in the
+    // buffer before we snapshot, and no orphan write occurs after we resolve.
+    await Promise.allSettled([...session.finalizers]);
     try {
         await chrome.debugger.detach({ tabId });
     }
