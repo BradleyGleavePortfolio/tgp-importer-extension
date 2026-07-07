@@ -10,6 +10,16 @@
 > later versions defer to (see `ROADMAP.md`). First-principles / doctrine
 > framing lives in `first-principles.md`.
 
+> **Two version axes — do not conflate.** "Design v0.3" is the revision number
+> of *this specification document* (v0.2 → v0.3 was the inline-login → pairing
+> rewrite). It is independent of the **product release milestones** v0.1…v1.0 in
+> `ROADMAP.md`, which describe *shipped extension capability* (v0.1 = TrueCoach
+> flagship + pairing auth, … v1.0 = BYO-extractor SDK). One design revision can
+> describe several release milestones. Both are also distinct from
+> `manifest.version` (the packaged artifact version, e.g. `0.3.0-design`). When
+> this doc says "v0.1 builds X" it means the *release milestone*; "Design v0.3"
+> means *this document's revision*.
+
 ---
 
 ## 1. Goal
