@@ -421,6 +421,20 @@ Full matrix in `ROADMAP.md`. Summary:
   user-assisted export fallback for platforms we cannot crawl.
 - **v1.0:** BYO-extractor SDK.
 
+### Future files (not yet in the repo)
+
+The following paths are referenced normatively above but are **added by the
+v0.1 implementation PR**, not this docs-only design PR (paths follow the repo's
+existing `popup/` layout):
+
+- `popup/pair.html` — first-run pairing view: single 6-digit input with
+  auto-focus/paste plus the extension nonce last-4 (§13.3).
+- `popup/pair.js` — redeem call + pairing-view state machine, unit-tested per
+  §11.
+
+The legacy `popup/login.html` and `popup/login.js` are **superseded** and are
+deleted by the v0.1 build; the current repo still carries them until then.
+
 ---
 
 ## 13. Pairing & token security model
