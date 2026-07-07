@@ -458,6 +458,28 @@ RETURNING coach_id, chosen_platform;
 - Exactly one token pair is issued per code, only on the update that returns a
   row. No row returned ⇒ no token minted.
 
+### 13.3 Anti-phishing extension nonce
+
+A displayed 6-digit code can be phished: a fake page could ask the coach to
+type it and redeem it from an attacker's client. To bind redemption to the
+real extension instance and give the coach a visible cross-check:
+
+- **Extension generates a random nonce** at popup open (CSPRNG, ≥ 128 bits),
+  held in memory / `chrome.storage.session` only. It displays the **last 4**
+  characters of the nonce to the coach in the pairing view.
+- The extension passes the full nonce in `POST /api/extension/pair/redeem`
+  alongside the code.
+- The backend records the nonce on redeem and **echoes the last 4 back to the
+  mobile app** via `GET /api/extension/pair/status`.
+- The **mobile UI shows both codes side-by-side**: the pairing code the coach
+  typed and the extension's last-4 confirmation. The coach confirms they match
+  before the mobile app treats the pair as trusted. A mismatch means the code
+  was redeemed somewhere other than the coach's own extension → the coach
+  cancels and re-mints.
+
+Client obligation: the extension MUST generate, display last-4, and send the
+nonce on every redeem. The mobile UX MUST render the side-by-side confirmation.
+
 ---
 
 ## Backend dependencies (flag for operator — create TGP-side tickets)
