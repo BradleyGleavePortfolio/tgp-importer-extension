@@ -1,6 +1,8 @@
 # TGP Importer — Design v0.3
 
-> Status: **design** (pre-release, `manifest.version = 0.3.0-design`).
+> Status: **design** (pre-release). Target `manifest.version = 0.3.0-design`;
+> the repo `manifest.json` currently declares `0.2.0-design` and is bumped to
+> `0.3.0-design` by the v0.1 implementation PR (this design PR is docs-only).
 > Supersedes v0.2 (2026-06-30 inline email/password model). Locked by operator
 > ruling on 2026-07-06 (mobile-app-initiated pairing flow — TGP is a mobile app,
 > not a web app, so the desktop popup can no longer carry the login surface).

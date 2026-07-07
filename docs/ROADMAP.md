@@ -105,3 +105,15 @@ platform structure still needs confirmation.
 *Platform landscape corroborated across multiple 2026 buyer's-guide sources
 (Trainerize Fitness Business Blog, Everfit blog, G2 Personal Training category,
 TrainerFu top-10, Member Solutions guide). Host patterns cited inline above.*
+
+---
+
+## Version history
+
+- **Design v0.3** (2026-07-06) — mobile-app-initiated pairing flow; supersedes
+  the v0.2 inline email/password model. Target `manifest.version =
+  0.3.0-design`; the repo `manifest.json` is bumped from `0.2.0-design` to
+  `0.3.0-design` by the v0.1 implementation PR (the design PR itself is
+  docs-only). See `DESIGN.md` §2–§4 and §13.
+- **Design v0.2** (2026-06-30) — inline email/password auth; dispatcher plus
+  the Tier-1/Tier-2 white-label taxonomy. Retired by v0.3.
