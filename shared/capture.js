@@ -9,8 +9,9 @@
 // R75: zero banned type-assertions — every narrowing is a real guard.
 // R76: this file stays comfortably under 400 LOC.
 
+import { RingBuffer, startRingBuffer, DEFAULT_CAPACITY } from "./capture-buffer.js";
+
 const DEBUGGER_PROTOCOL_VERSION = "1.3";
-const DEFAULT_CAPACITY = 500;
 
 // Per-tab capture state, keyed by tabId. Each entry owns its own ring buffer,
 // inflight-request table, and the debugger event listener used to tear down.
@@ -22,46 +23,6 @@ function isRecord(value) {
 
 function readString(record, key) {
     return isRecord(record) && typeof record[key] === "string" ? record[key] : null;
-}
-
-// ---- ring buffer ------------------------------------------------------------
-
-// Bounded circular buffer. On overflow the oldest entry is evicted. snapshot()
-// returns entries oldest-first regardless of the internal write cursor.
-class RingBuffer {
-    constructor(capacity = DEFAULT_CAPACITY) {
-        const isPositiveInt =
-            typeof capacity === "number" && Number.isInteger(capacity) && capacity > 0;
-        this.capacity = isPositiveInt ? capacity : DEFAULT_CAPACITY;
-        this.entries = [];
-        this.cursor = 0;
-    }
-
-    push(entry) {
-        if (this.entries.length < this.capacity) {
-            this.entries.push(entry);
-            return;
-        }
-        this.entries[this.cursor] = entry;
-        this.cursor = (this.cursor + 1) % this.capacity;
-    }
-
-    snapshot() {
-        if (this.entries.length < this.capacity) {
-            return this.entries.slice();
-        }
-        return this.entries.slice(this.cursor).concat(this.entries.slice(0, this.cursor));
-    }
-
-    clear() {
-        this.entries = [];
-        this.cursor = 0;
-    }
-}
-
-// Factory kept as a named export because the C1 contract lists it explicitly.
-function startRingBuffer(capacity = DEFAULT_CAPACITY) {
-    return new RingBuffer(capacity);
 }
 
 // ---- source-platform inference ----------------------------------------------

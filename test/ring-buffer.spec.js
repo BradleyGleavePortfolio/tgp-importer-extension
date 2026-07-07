@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { RingBuffer, startRingBuffer, sourcePlatformFor } from "../shared/capture.js";
+import { RingBuffer, startRingBuffer } from "../shared/capture-buffer.js";
+import { sourcePlatformFor } from "../shared/capture.js";
 
 describe("RingBuffer", () => {
     it("stores entries below capacity in insertion order", () => {
