@@ -166,12 +166,15 @@ The v0.3 flow is **mobile-initiated, extension-executed, backend-brokered**:
 - The extension redeems the code for a token bound to the same coach.
 - The token thereafter carries identity.
 
-The `INTENT_QUERY_PARAM` / `STORAGE_KEY_INTENT` constants remain in
-`shared/protocol.js` for backwards compatibility during migration, but the
-v0.3 flow does not depend on them. They should be removed in a later cleanup
-once no legacy imports remain in flight. The v0.2 `popup/login.html` and
-`popup/login.js` files are superseded by `popup/pair.html` and
-`popup/pair.js`; the login files should be deleted in the v0.3 build.
+The v0.3 flow has **no query-param handshake at all**. The import is triggered
+exclusively by (a) the coach opening the desktop popup and redeeming a pairing
+code, then (b) the background worker creating the source-platform tab itself
+(`chrome.tabs.create`, step 8). No `?tgp_intent=<id>` is ever read or written.
+The dead `INTENT_QUERY_PARAM` / `STORAGE_KEY_INTENT` constants in
+`shared/protocol.js` are no longer referenced by any live path and are deleted
+by the v0.1 implementation PR (this design PR is docs-only). The v0.2
+`popup/login.html` and `popup/login.js` files are likewise superseded by
+`popup/pair.html` and `popup/pair.js` and deleted in the v0.1 build.
 
 ---
 
