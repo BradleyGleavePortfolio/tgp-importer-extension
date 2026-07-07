@@ -541,6 +541,29 @@ already used. Concretely:
 
 ---
 
+## 14. Recovery & edge-case UX
+
+The cross-device flow spans a mobile app, a desktop browser, and a
+third-party source platform, so the following non-happy-path states are
+**normative** UX, not future polish.
+
+### 14.1 Pairing-code TTL recovery
+
+The pairing code has a nominal 2-minute TTL, but installing/opening the
+extension can take longer. If the coach lands on the pairing view past
+`expires_at`:
+
+- The **mobile app** shows an **expired-code screen** with a visible countdown
+  while the code is live and, on expiry, a single **"Generate new code"** tap
+  target. Tapping it re-calls `POST /api/extension/pair/init` and **re-mints**
+  a fresh `{ pairing_id, pairing_code, expires_at }`, resetting the status
+  poll. Any prior code for that coach/platform is invalidated on re-mint.
+- The **extension** pairing view, on an `expired` redeem result, returns to the
+  6-digit input with a "code expired — generate a new one on your phone"
+  message rather than a dead-end error.
+
+---
+
 ## Backend dependencies (flag for operator — create TGP-side tickets)
 
 - **`POST /api/extension/pair/init`** — mobile app calls with
