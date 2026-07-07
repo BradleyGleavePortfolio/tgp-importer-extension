@@ -108,6 +108,15 @@ extension popup.
     flip the import to a settled state and push a completion notification to
     the mobile app.
 
+> **"Transfer data" CTA status (ships v0.3.5).** The "Transfer data? ETA ~2
+> min" CTA and its `start_ingest` message (step 9) are **future behavior**: the
+> current `popup/popup.js` renders status/empty/error state and sends only
+> `{ kind: "request_status" }`. When the CTA lands in the v0.3.5 build, tapping
+> it sends `{ kind: "start_ingest", ... }` to the background worker, which
+> resolves the stored `session.chosen_platform`, starts the matched extractor's
+> autonomous API walk, and drives the progress rows (§10). The step-9 text
+> above describes the intended v0.3.5 behavior, not the currently shipped popup.
+
 ---
 
 ## 3. Account binding — the token IS the binding
