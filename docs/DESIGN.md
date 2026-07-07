@@ -168,6 +168,10 @@ once no legacy imports remain in flight. The v0.2 `popup/login.html` and
   - `POST /auth/extension/refresh` → new access token (and optionally a
     rotated refresh token) given a valid refresh token. Used for **token
     rotation** and to recover from a 401 mid-crawl.
+  - `POST /auth/extension/logout` → **revokes** the coach's extension refresh
+    token and its rotation family. Called on explicit disconnect/logout and on
+    uninstall cleanup; after it succeeds the extension clears local token state
+    and returns to the pairing view (threat model §13.4).
 - **Storage rules (MV3-aware, unchanged from v0.2).**
   - The **refresh token** is persisted in `chrome.storage.local`.
   - The **access token** is kept **in memory only** — in a background
@@ -609,6 +613,10 @@ and expiry decisions MUST NOT be made against the local device clock:
 - **`POST /auth/extension/refresh`** — refresh token → new access token (+
   optional rotated refresh). Delivered by IMPORTER-A (PR #496,
   `growth-project-backend`, merged).
+- **`POST /auth/extension/logout`** — revokes the coach's extension refresh
+  token and its rotation family. Referenced by the token threat model (§13.4)
+  and the extension disconnect/uninstall path but not previously spec'd.
+  **Not yet built.**
 - **`POST /api/scout/ingest`** — already assumed by `_interface.js`; confirm
   it routes by bearer-token identity (no body-level account field required).
   **Backend PR (formerly PR-B) not yet built.**
