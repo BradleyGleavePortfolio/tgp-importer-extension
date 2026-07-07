@@ -63,8 +63,11 @@ platform structure still needs confirmation.
 - TrueCoach extractor (already implemented) wired through the new dispatcher.
 - Tier-1 WL subdomains (`*.truecoach.co`) via wildcard host-permission +
   `detectPlatform` suffix match.
-- Inline email/password auth (`popup/login.html`, `popup/login.js`) against
-  `/auth/extension/login` + `/auth/extension/refresh`.
+- Pairing-code auth (`popup/pair.html`, `popup/pair.js`) — the
+  mobile-app-initiated pairing flow is the **only** token path (operator ruling
+  2026-07-06). See `DESIGN.md` §2–§4 and the pairing security model in §13.
+  There is **no inline email/password login**; `/auth/extension/refresh`
+  remains for token rotation only.
 - MV3 service worker (`background.js`) — token lifecycle, extractor dispatch,
   ingest forwarding, completion notification.
 - Progress UI (`popup/popup.js`, already implemented).
