@@ -480,6 +480,35 @@ real extension instance and give the coach a visible cross-check:
 Client obligation: the extension MUST generate, display last-4, and send the
 nonce on every redeem. The mobile UX MUST render the side-by-side confirmation.
 
+### 13.4 Token threat model
+
+The refresh token is long-lived and persisted, so its handling is spelled out
+explicitly:
+
+- **Revocation trigger.** Tokens are revoked on coach logout
+  (`POST /auth/extension/logout`, §13.7 / §4) and on admin-forced revocation
+  (operator or security response). Revocation invalidates the refresh token
+  server-side immediately; the next refresh fails and the extension clears
+  local state and returns to the pairing view.
+- **Rotation cadence.** The refresh window matches the Supabase default; every
+  `POST /auth/extension/refresh` MAY return a rotated refresh token, and the
+  extension replaces the stored one atomically. Access tokens are short-lived
+  and minted on demand.
+- **Key material storage.** The access token and the pairing nonce (§13.3) live
+  in memory / `chrome.storage.session` **only**, never `chrome.storage.local`.
+  The **sole** persisted secret is the rotating refresh token in
+  `chrome.storage.local` (required for MV3 wake, §4); it is narrowly scoped to
+  the extension audience and single-use per rotation.
+- **Stolen-refresh mitigation.** Refresh tokens are **single-use with reuse
+  detection**: presenting an already-rotated refresh token is treated as a
+  compromise signal → the backend **revokes the entire token family** for that
+  coach, forcing a fresh pair from the mobile app.
+- **Message-surface hardening.** Tokens are never sent to content scripts or
+  page contexts. The background worker validates `sender` on every runtime
+  message and rejects any token-bearing message that does not originate from
+  the extension's own trusted surfaces. On uninstall/logout all token state is
+  cleared.
+
 ---
 
 ## Backend dependencies (flag for operator — create TGP-side tickets)
