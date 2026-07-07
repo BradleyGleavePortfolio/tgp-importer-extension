@@ -97,7 +97,7 @@ extension popup.
    no DOM scripting, no user babysitting.
 10. **Progress mirrored on both devices.** The worker broadcasts a
     `status_snapshot` on every batch commit; the popup renders per-entity
-    progress bars (unchanged from earlier versions — `popup/popup.js`
+    progress rows (unchanged from earlier versions — `popup/popup.js`
     `renderProgress`). It additionally posts the same snapshot to
     `POST /api/scout/progress` so the mobile app's progress screen can update
     via its existing poll/socket path. Cross-device progress mirroring is a
