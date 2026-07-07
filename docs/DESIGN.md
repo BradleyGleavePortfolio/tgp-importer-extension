@@ -525,6 +525,20 @@ anyone holding the code learn whether it is `pending | paired | expired`.
   the endpoint is scoped to the authenticated mobile session that minted it.
 - The 6-digit code never appears in a status URL.
 
+### 13.6 Constant-time compare and generic failures
+
+The backend MUST look up and compare the 6-digit code in **constant time**, so
+that response latency does not leak whether a code is valid, expired, or
+already used. Concretely:
+
+- Constant-time comparison of the submitted code against the stored value; no
+  early-return on first mismatched digit.
+- **Uniform client-facing failures.** The extension receives a single generic
+  failure signal (with the coarse `expired | already_used | invalid` taxonomy
+  for UX routing per §11) and uniform timing/response size. Fine-grained
+  reasons are written **only** to authenticated server-side audit logs, never
+  exposed as a distinguishable external oracle.
+
 ---
 
 ## Backend dependencies (flag for operator — create TGP-side tickets)
