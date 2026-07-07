@@ -435,6 +435,29 @@ The backend MUST enforce, as non-negotiable requirements:
 Client obligation: none — this is backend-enforced. The extension surfaces the
 generic failure states from §13.6 without exposing attempt counters.
 
+### 13.2 Atomic single-use redemption (compare-and-swap)
+
+Single-use redemption MUST be an **atomic compare-and-swap** on the pairing
+record, not a read-then-write. The redeem handler executes a single
+conditional update that both claims and returns the row:
+
+```sql
+UPDATE extension_pairing
+   SET used_at = now()
+ WHERE code = $1
+   AND used_at IS NULL
+   AND expires_at > now()
+RETURNING coach_id, chosen_platform;
+```
+
+- Exactly one caller can win: two concurrent redeems for the same code race on
+  the same row; the `used_at IS NULL` predicate lets only one `UPDATE` affect a
+  row, and the loser gets zero rows back → `already_used`.
+- The row is claimed and read **in the same statement** — there is no window
+  between checking and consuming the code.
+- Exactly one token pair is issued per code, only on the update that returns a
+  row. No row returned ⇒ no token minted.
+
 ---
 
 ## Backend dependencies (flag for operator — create TGP-side tickets)
