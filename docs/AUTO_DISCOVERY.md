@@ -1,6 +1,6 @@
 # Auto-Discovery — Site-Agnostic Extraction Design
 
-> **Status:** design spec, pre-implementation. This document is the single source of truth for the **PR-C track** (C1 → C4). It sits alongside `DESIGN.md` (v0.2 dispatcher + auth) and `ROADMAP.md` (per-platform matrix + version cutlines). Approved by operator on 2026-06-30 21:36 PDT.
+> **Status:** design spec, pre-implementation. This document is the single source of truth for the **PR-C track** (C1 → C4). It sits alongside `DESIGN.md` (v0.3 — mobile-app-initiated pairing flow + dispatcher; see `DESIGN.md` §2–§4 and §13 for the pairing auth model that supersedes the v0.2 inline login) and `ROADMAP.md` (per-platform matrix + version cutlines). Approved by operator on 2026-06-30 21:36 PDT; realigned to DESIGN v0.3 on 2026-07-06.
 
 ---
 
