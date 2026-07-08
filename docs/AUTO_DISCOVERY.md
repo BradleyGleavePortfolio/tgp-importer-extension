@@ -175,7 +175,7 @@ Some platforms gate their API to native-app user-agents. The web app is a thin m
 
 ## 6. PR-C track breakdown
 
-Each PR is a mergeable ~300-400 LOC unit against `tgp-importer-extension`. Each dual-lensed (Opus 4.8 + gpt_5_5) per R72 before merge.
+Each PR is a mergeable ~300-400 LOC unit against `tgp-importer-extension`. Each dual-lensed per R72 before merge.
 
 ### PR-C1 — Capture layer
 

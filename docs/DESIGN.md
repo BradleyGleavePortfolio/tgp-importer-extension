@@ -65,9 +65,11 @@ extension popup.
    self-hosted CRX distribution are out of scope for v0.1.
 3. **Progress screen** on the mobile app, following the TGP mobile design
    system. The mobile app polls
-   `GET /api/extension/pair/status?pairing_id=...` — keyed by the opaque
-   `pairing_id` returned by `pair/init`, **never** the 6-digit code (see
-   §13.5) — waiting for the pairing signal.
+   `POST /api/extension/pair/status` with body `{ code }` — the mobile app
+   already knows the code it just minted, and posting keeps the code out of
+   URLs (which leak into access logs, browser history, proxies, and APM).
+   A code the caller did not mint reads as `expired`, so posting your own
+   code is the only path that reveals real state.
 4. **"Choose your previous site"** page on the mobile app. The coach selects
    the source platform (TrueCoach, Trainerize, My PT Hub, etc. — driven by the
    `ROADMAP.md` matrix). This selection is stored server-side against the
@@ -75,8 +77,7 @@ extension popup.
    redeems.
 5. **Pairing code display.** The mobile app calls
    `POST /api/extension/pair/init` with `{ chosen_platform }`. The backend
-   returns `{ pairing_id, pairing_code, expires_at }` — an opaque `pairing_id`
-   for status polling (§13.5) plus a **6-digit numeric code** with a
+   returns `{ pairing_code, expires_at }` — a **6-digit numeric code** with a
    **short TTL** (nominal 2 minutes; exact TTL is a backend policy setting).
    The mobile app displays the code in the luxury mobile design pattern
    (large mono digits, copy-to-clipboard). QR-code display is deferred.
@@ -188,7 +189,7 @@ by the v0.1 implementation PR (this design PR is docs-only). The v0.2
   account plus the chosen source platform at mint time.
 - **Token pair** (unchanged from v0.2).
   - `POST /api/extension/pair/redeem` → `{ access_token, refresh_token,
-    chosen_platform, ... }` on the initial pair.
+    chosen_platform }` on the initial pair.
   - `POST /auth/extension/refresh` → new access token (and optionally a
     rotated refresh token) given a valid refresh token. Used for **token
     rotation** and to recover from a 401 mid-crawl.
@@ -463,7 +464,7 @@ v0.1 implementation PR**, not this docs-only design PR (paths follow the repo's
 existing `popup/` layout):
 
 - `popup/pair.html` — first-run pairing view: single 6-digit input with
-  auto-focus/paste plus the extension nonce last-4 (§13.3).
+  auto-focus/paste. Extension nonce last-4 (§13.3) deferred to v0.4.
 - `popup/pair.js` — redeem call + pairing-view state machine, unit-tested per
   §11.
 
@@ -522,27 +523,31 @@ RETURNING coach_id, chosen_platform;
 - Exactly one token pair is issued per code, only on the update that returns a
   row. No row returned ⇒ no token minted.
 
-### 13.3 Anti-phishing extension nonce
+### 13.3 Anti-phishing extension nonce — **deferred to v0.4**
 
 A displayed 6-digit code can be phished: a fake page could ask the coach to
-type it and redeem it from an attacker's client. To bind redemption to the
-real extension instance and give the coach a visible cross-check:
+type it and redeem it from an attacker's client. A future `v0.4` design will
+add a side-by-side extension-generated nonce confirmation (extension generates
+a random nonce, sends it on redeem, backend echoes the last-4 to the mobile
+app, coach visually confirms both codes match).
 
-- **Extension generates a random nonce** at popup open (CSPRNG, ≥ 128 bits),
-  held in memory / `chrome.storage.session` only. It displays the **last 4**
-  characters of the nonce to the coach in the pairing view.
-- The extension passes the full nonce in `POST /api/extension/pair/redeem`
-  alongside the code.
-- The backend records the nonce on redeem and **echoes the last 4 back to the
-  mobile app** via `GET /api/extension/pair/status`.
-- The **mobile UI shows both codes side-by-side**: the pairing code the coach
-  typed and the extension's last-4 confirmation. The coach confirms they match
-  before the mobile app treats the pair as trusted. A mismatch means the code
-  was redeemed somewhere other than the coach's own extension → the coach
-  cancels and re-mints.
+**Current v0.3 protections** — layered defenses against the same threat until
+nonce ships:
 
-Client obligation: the extension MUST generate, display last-4, and send the
-nonce on every redeem. The mobile UX MUST render the side-by-side confirmation.
+- Short TTL (nominal 120 s, clamped 30–300 s) → narrow phishing window.
+- Per-code lockout after 5 failed redeems (survives across IPs) → burns down
+  a leaked code fast.
+- Per-IP redeem throttle (10 / min default) → caps brute-force parallelism.
+- Constant-time compare on the code → no timing oracle.
+- Uniform failure body (`expired | already_used | invalid | locked`) → no
+  distinguishable oracle for code state.
+- Coach-role and account-state re-check inside token mint → a compromised
+  redeem cannot bootstrap a session for a demoted/deleted account.
+
+A phished code is still redeemable inside its short live window, so the coach
+UX in the mobile app already recommends re-minting if the extension does not
+pair within ~30 s of code display — the operator ruling to keep v0.3 shipping
+accepts this residual risk for the two-minute pairing window.
 
 ### 13.4 Token threat model
 
@@ -558,7 +563,7 @@ explicitly:
   `POST /auth/extension/refresh` MAY return a rotated refresh token, and the
   extension replaces the stored one atomically. Access tokens are short-lived
   and minted on demand.
-- **Key material storage.** The access token and the pairing nonce (§13.3) live
+- **Key material storage.** The access token lives
   in memory / `chrome.storage.session` **only**, never `chrome.storage.local`.
   The **sole** persisted secret is the rotating refresh token in
   `chrome.storage.local` (required for MV3 wake, §4); it is narrowly scoped to
@@ -573,18 +578,23 @@ explicitly:
   the extension's own trusted surfaces. On uninstall/logout all token state is
   cleared.
 
-### 13.5 Opaque `pairing_id` for status polling
+### 13.5 Code-in-body status polling (opaque handle deferred to v0.4)
 
-The mobile app MUST poll pairing status by an opaque `pairing_id`, **not** by
-the 6-digit code. Polling by the code puts the live secret in query strings
-(captured by logs, analytics, history, and intermediary tooling) and lets
-anyone holding the code learn whether it is `pending | paired | expired`.
+The mobile app polls pairing status by `POST /api/extension/pair/status` with
+the code in the **body**, not the URL. POST-in-body is the current mitigation
+for the concern that a code in a query string would leak into access logs,
+analytics, browser history, and intermediary tooling.
 
-- `POST /api/extension/pair/init` returns a random, unguessable `pairing_id`
-  alongside the code.
-- `GET /api/extension/pair/status?pairing_id=…` is the only status surface;
-  the endpoint is scoped to the authenticated mobile session that minted it.
+- `POST /api/extension/pair/init` returns `{ pairing_code, expires_at }`.
+- `POST /api/extension/pair/status` takes `{ code }` in the body; the endpoint
+  is scoped to the authenticated mobile session that minted the code, and a
+  code the caller did not mint reads as `expired` (never confirms another
+  coach's code).
 - The 6-digit code never appears in a status URL.
+
+**v0.4 direction:** replace the code-in-body poll with an opaque `pairing_id`
+handle returned from `init` alongside the code, so the code itself does not
+travel on every poll. Deferred here to keep the v0.3 wire small and shipping.
 
 ### 13.6 Constant-time compare and generic failures
 
@@ -594,10 +604,12 @@ already used. Concretely:
 
 - Constant-time comparison of the submitted code against the stored value; no
   early-return on first mismatched digit.
-- **Uniform client-facing failures.** The extension receives a single generic
-  failure signal (with the coarse `expired | already_used | invalid` taxonomy
-  for UX routing per §11) and uniform timing/response size. Fine-grained
-  reasons are written **only** to authenticated server-side audit logs, never
+- **Coarse client-facing failure taxonomy.** The extension receives one of
+  four terminal signals — `expired | already_used | invalid | locked` — for
+  UX routing per §11. These are surfaced in the error body's `code` field so
+  the extension popup can map each to the right user-facing string. Finer
+  distinctions (e.g. which lockout counter tripped, which claim path lost the
+  race) are written **only** to authenticated server-side audit logs, never
   exposed as a distinguishable external oracle.
 
 ---
@@ -617,8 +629,9 @@ extension can take longer. If the coach lands on the pairing view past
 - The **mobile app** shows an **expired-code screen** with a visible countdown
   while the code is live and, on expiry, a single **"Generate new code"** tap
   target. Tapping it re-calls `POST /api/extension/pair/init` and **re-mints**
-  a fresh `{ pairing_id, pairing_code, expires_at }`, resetting the status
-  poll. Any prior code for that coach/platform is invalidated on re-mint.
+  a fresh `{ pairing_code, expires_at }`, resetting the status poll. Any
+  prior live code for that coach is invalidated on re-mint (backend expires
+  it at the moment the new code is created).
 - The **extension** pairing view, on an `expired` redeem result, returns to the
   6-digit input with a "code expired — generate a new one on your phone"
   message rather than a dead-end error.
@@ -654,19 +667,20 @@ and expiry decisions MUST NOT be made against the local device clock:
 ## Backend dependencies (flag for operator — create TGP-side tickets)
 
 - **`POST /api/extension/pair/init`** — mobile app calls with
-  `{ chosen_platform }`; returns `{ pairing_id, pairing_code, expires_at }`.
-  The `pairing_id` is an opaque, unguessable handle used for status polling
-  (§13.5). Codes are 6-digit numeric, short-TTL (nominal 2 minutes),
+  `{ chosen_platform }`; returns `{ pairing_code, expires_at }`. Codes are
+  6-digit numeric, short-TTL (nominal 2 minutes, clamped 30–300 s),
   single-use, and bound to the coach's TGP account + chosen platform at mint
-  time. **Not yet built.**
-- **`GET /api/extension/pair/status?pairing_id=…`** — mobile app polls by the
-  opaque `pairing_id` (never the 6-digit code); returns
-  `pending | paired | expired` plus the extension nonce last-4 (§13.3) once
-  redeemed. **Not yet built.**
-- **`POST /api/extension/pair/redeem`** — extension calls with `{ code }`;
-  returns `{ access_token, refresh_token, chosen_platform }` on success, or
-  a structured error (`expired`, `already_used`, `invalid`) on failure.
-  **Not yet built.**
+  time. Delivered by IMPORTER-D (PR #502).
+- **`POST /api/extension/pair/status`** — mobile app polls with body
+  `{ code }` (POST to keep the code out of URLs / access logs). Returns
+  `{ status: pending | paired | expired }`. A code the caller did not mint
+  reads as `expired` — the endpoint never confirms another coach's code.
+  Delivered by IMPORTER-D (PR #502).
+- **`POST /api/extension/pair/redeem`** — extension calls **unauthenticated**
+  with `{ code }`; returns `{ access_token, refresh_token, chosen_platform }`
+  on success, or a structured error (`expired`, `already_used`, `invalid`,
+  `locked`) on failure. Per-code lockout after 5 failed attempts and per-IP
+  throttle (10/min default). Delivered by IMPORTER-D (PR #502).
 - **`POST /auth/extension/refresh`** — refresh token → new access token (+
   optional rotated refresh). Delivered by IMPORTER-A (PR #496,
   `growth-project-backend`, merged).
