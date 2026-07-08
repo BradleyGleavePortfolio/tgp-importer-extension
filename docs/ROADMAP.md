@@ -59,12 +59,25 @@ platform structure still needs confirmation.
 
 ## Version cutlines
 
+> **Glossary — "design version" vs "release milestone" (do not conflate).** The
+> cutlines below (`v0.1`…`v1.0`) are **release milestones**: units of *shipped
+> extension capability*. They are a different axis from the **design-document
+> revision** (`DESIGN.md` is at *Design v0.3*, the inline-login → pairing
+> rewrite) and from `manifest.version` (the packaged-artifact version, e.g.
+> `0.3.0-design`). One design revision can specify several release milestones —
+> e.g. Design v0.3 governs release milestones v0.1 through v0.5 here. When this
+> file says "v0.1" it always means the *release milestone*, never the design
+> revision. See the matching note in `DESIGN.md` (header).
+
 ### v0.1 — TrueCoach flagship + auth + progress UI  ← **BUILD NEXT**
 - TrueCoach extractor (already implemented) wired through the new dispatcher.
 - Tier-1 WL subdomains (`*.truecoach.co`) via wildcard host-permission +
   `detectPlatform` suffix match.
-- Inline email/password auth (`popup/login.html`, `popup/login.js`) against
-  `/auth/extension/login` + `/auth/extension/refresh`.
+- Pairing-code auth (`popup/pair.html`, `popup/pair.js`) — the
+  mobile-app-initiated pairing flow is the **only** token path (operator ruling
+  2026-07-06). See `DESIGN.md` §2–§4 and the pairing security model in §13.
+  There is **no inline email/password login**; `/auth/extension/refresh`
+  remains for token rotation only.
 - MV3 service worker (`background.js`) — token lifecycle, extractor dispatch,
   ingest forwarding, completion notification.
 - Progress UI (`popup/popup.js`, already implemented).
@@ -102,3 +115,15 @@ platform structure still needs confirmation.
 *Platform landscape corroborated across multiple 2026 buyer's-guide sources
 (Trainerize Fitness Business Blog, Everfit blog, G2 Personal Training category,
 TrainerFu top-10, Member Solutions guide). Host patterns cited inline above.*
+
+---
+
+## Version history
+
+- **Design v0.3** (2026-07-06) — mobile-app-initiated pairing flow; supersedes
+  the v0.2 inline email/password model. Target `manifest.version =
+  0.3.0-design`; the repo `manifest.json` is bumped from `0.2.0-design` to
+  `0.3.0-design` by the v0.1 implementation PR (the design PR itself is
+  docs-only). See `DESIGN.md` §2–§4 and §13.
+- **Design v0.2** (2026-06-30) — inline email/password auth; dispatcher plus
+  the Tier-1/Tier-2 white-label taxonomy. Retired by v0.3.

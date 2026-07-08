@@ -1,6 +1,6 @@
 # Auto-Discovery — Site-Agnostic Extraction Design
 
-> **Status:** design spec, pre-implementation. This document is the single source of truth for the **PR-C track** (C1 → C4). It sits alongside `DESIGN.md` (v0.2 dispatcher + auth) and `ROADMAP.md` (per-platform matrix + version cutlines). Approved by operator on 2026-06-30 21:36 PDT.
+> **Status:** design spec, pre-implementation. This document is the single source of truth for the **PR-C track** (C1 → C4). It sits alongside `DESIGN.md` (v0.3 — mobile-app-initiated pairing flow + dispatcher; see `DESIGN.md` §2–§4 and §13 for the pairing auth model that supersedes the v0.2 inline login) and `ROADMAP.md` (per-platform matrix + version cutlines). Approved by operator on 2026-06-30 21:36 PDT; realigned to DESIGN v0.3 on 2026-07-06.
 
 ---
 
@@ -175,7 +175,7 @@ Some platforms gate their API to native-app user-agents. The web app is a thin m
 
 ## 6. PR-C track breakdown
 
-Each PR is a mergeable ~300-400 LOC unit against `tgp-importer-extension`. Each dual-lensed (Opus 4.8 + gpt_5_5) per R72 before merge.
+Each PR is a mergeable ~300-400 LOC unit against `tgp-importer-extension`. Each dual-lensed per R72 before merge.
 
 ### PR-C1 — Capture layer
 
