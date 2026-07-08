@@ -8,19 +8,30 @@
 //   - Token lifecycle: refresh access token on 401; if refresh also 401, clear
 //     both tokens and broadcast `auth_required`.
 //   - On completion: chrome.notifications + POST /api/scout/ingest/complete.
-//   - On SW wake: rehydrate tokens from chrome.storage.local; do NOT resume an
-//     in-flight run (runs are idempotent per source_id; the backend de-dupes on
-//     source_id, so a re-emitted completed batch is harmless).
+//   - On SW wake: the snapshot rehydrates from chrome.storage.local; both
+//     tokens live in memory/session storage only, so a fresh sign-in may be
+//     required. Do NOT resume an in-flight run (runs are idempotent per
+//     sourceId; the backend de-dupes on sourceId, so a re-emitted completed
+//     batch is harmless).
 //
 // R75: zero banned type-assertions — every narrowing is a real guard.
 // R76: this file stays comfortably under 400 LOC.
-import { TGP_API_ORIGIN } from "./shared/protocol.js";
+import { TGP_API_ORIGIN, makeScoutIngestBody } from "./shared/protocol.js";
 import { detectPlatform } from "./extractors/detect.js";
 import { TrueCoachExtractor } from "./extractors/truecoach.js";
-import { attachDebugger, stopCapture, registerCaptureLifecycle } from "./shared/capture.js";
+import {
+    attachDebugger,
+    stopCapture,
+    registerCaptureLifecycle,
+    assertCaptureTabAllowed,
+} from "./shared/capture.js";
 
-// chrome.storage.local schema keys. The REFRESH token is persisted; the access
-// token is memory-only (see §4) and never written here.
+// Storage schema keys. The snapshot + schema version persist on disk via
+// chrome.storage.local. Credentials never touch disk-persisted storage:
+// the REFRESH token lives in chrome.storage.session (memory-only, gone when
+// the browser session ends) and the access token is memory-only in this
+// worker (see §4) — with the `debugger` permission held, no credential is
+// ever written to disk.
 const STORAGE_KEYS = {
     refreshToken: "tgp_refresh_token",
     snapshot: "tgp_status_snapshot",
@@ -63,13 +74,13 @@ function readString(record, key) {
 // ---- token lifecycle --------------------------------------------------------
 
 async function readRefreshToken() {
-    const stored = await chrome.storage.local.get(STORAGE_KEYS.refreshToken);
+    const stored = await chrome.storage.session.get(STORAGE_KEYS.refreshToken);
     return readString(stored, STORAGE_KEYS.refreshToken);
 }
 
 async function clearTokens() {
     accessTokenInMemory = undefined;
-    await chrome.storage.local.remove(STORAGE_KEYS.refreshToken);
+    await chrome.storage.session.remove(STORAGE_KEYS.refreshToken);
 }
 
 // Mint a fresh access token from the stored refresh token. Returns null when no
@@ -96,7 +107,7 @@ async function refreshAccessToken() {
     // Honour refresh-token rotation when the backend returns a new one.
     const rotated = readString(body, "refresh_token");
     if (rotated !== null) {
-        await chrome.storage.local.set({ [STORAGE_KEYS.refreshToken]: rotated });
+        await chrome.storage.session.set({ [STORAGE_KEYS.refreshToken]: rotated });
     }
     return next;
 }
@@ -120,11 +131,11 @@ async function getAccessToken() {
 // and retry. If the retry also 401s, invoke onAuthLost and stop.
 function makeSender(intent, onAuthLost) {
     return async function sendEntities(entityType, entities) {
-        const body = JSON.stringify({
-            intent_id: intent.intentId,
-            entity_type: entityType,
-            entities: entities.map((e) => ({ source_id: e.sourceId, payload: e.payload })),
-        });
+        // Entities pass through VERBATIM — each is the camelCase makeEntity()
+        // envelope { sourceId, sourcePlatform, capturedAt, payload } that the
+        // backend ScoutEntityDto validates 1:1 (R80-CLARIFY-1). Re-mapping or
+        // renaming here would 400 every batch.
+        const body = JSON.stringify(makeScoutIngestBody(intent.intentId, entityType, entities));
         const attempt = async (token) => fetch(`${TGP_API_ORIGIN}/api/scout/ingest`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -287,7 +298,11 @@ registerCaptureLifecycle();
 
 // Begin Layer 1 passive capture on a tab. The ring buffer lives inside the
 // capture module; the popup only sees start/stop control here (C3 renders it).
+// The origin allowlist is asserted here BEFORE any debugger API call (and
+// again inside attachDebugger, as defence in depth) so the `debugger`
+// permission is never exercised against a non-allowlisted page.
 async function handleStartCapture(tabId) {
+    await assertCaptureTabAllowed(tabId);
     await attachDebugger(tabId);
     return { ok: true, tabId };
 }
@@ -300,7 +315,13 @@ async function handleStopCapture(tabId) {
 
 // ---- message router ---------------------------------------------------------
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    // Only trust messages originating from this extension's own pages/scripts.
+    // onMessageExternal is never registered, so cross-extension senders have no
+    // entry point; this guard also rejects any spoofed/undefined sender.
+    if (!isRecord(sender) || sender.id !== chrome.runtime.id) {
+        return false;
+    }
     if (isRequestStatus(message)) {
         void rehydrateSnapshot().then(() => sendResponse(currentSnapshot));
         return true; // async response

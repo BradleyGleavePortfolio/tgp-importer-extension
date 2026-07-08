@@ -9,7 +9,7 @@ import { join } from "node:path";
 
 const FLOOR = 2.0;
 
-const SRC_FILES = ["shared/capture.js", "shared/capture-buffer.js"];
+const SRC_FILES = ["shared/capture.js", "shared/capture-buffer.js", "shared/capture-policy.js"];
 
 function lineCount(path) {
     return readFileSync(path, "utf8").split("\n").length;

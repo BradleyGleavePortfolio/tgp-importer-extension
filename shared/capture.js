@@ -16,6 +16,7 @@
 // R76: this file stays comfortably under 400 LOC.
 
 import { CaptureBuffer, DEFAULT_MAX_BYTES } from "./capture-buffer.js";
+import { assertCaptureTabAllowed, redactResponseBody } from "./capture-policy.js";
 
 const DEBUGGER_PROTOCOL_VERSION = "1.3";
 
@@ -120,6 +121,10 @@ function redactUrl(url) {
 // Attach the debugger to a tab and begin capturing JSON responses. Idempotent:
 // re-attaching to a tab that already has a session is a no-op that returns the
 // existing session's buffer. Returns the tab's RingBuffer.
+//
+// The tab URL is validated against the capture allowlist (HTTPS + allowlisted
+// host only) BEFORE chrome.debugger.attach is called, so the debugger handle
+// never exists for chrome://, file://, extension, or non-allowlisted pages.
 async function attachDebugger(tabId, options) {
     if (typeof tabId !== "number") {
         throw new Error("attachDebugger: tabId must be a number");
@@ -128,6 +133,7 @@ async function attachDebugger(tabId, options) {
     if (existing !== undefined) {
         return existing.buffer;
     }
+    await assertCaptureTabAllowed(tabId);
 
     const maxBytes = isRecord(options) && typeof options.maxBytes === "number"
         ? options.maxBytes
@@ -261,7 +267,9 @@ async function finalizeEntry(target, params, inflight, buffer) {
         method: pending.method,
         statusCode: pending.statusCode ?? null,
         requestHeaders: redactHeaders(pending.requestHeaders),
-        responseBody,
+        // Auth/secret fields inside the body are redacted before storage; the
+        // non-secret payload (client names, emails, workouts) is preserved.
+        responseBody: redactResponseBody(responseBody),
         capturedAt: new Date().toISOString(),
         // Host provenance is derived from the original URL — the hostname is not
         // sensitive and is needed for the auto:<host> tag.
@@ -335,3 +343,4 @@ export {
     stopCapture,
     registerCaptureLifecycle,
 };
+export { assertCaptureTabAllowed, redactResponseBody } from "./capture-policy.js";

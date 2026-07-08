@@ -21,7 +21,13 @@ function eventHub() {
 export function makeChromeMock() {
     const listeners = new Set();
     const commandHandlers = new Map();
-    const calls = { attach: [], detach: [], sendCommand: [] };
+    const calls = { attach: [], detach: [], sendCommand: [], tabsGet: [] };
+
+    // Per-tab URL for chrome.tabs.get. Unless a test overrides it, every tab
+    // reports an allowlisted TrueCoach URL so capture-path tests pass the
+    // origin allowlist by default.
+    const tabUrls = new Map();
+    const DEFAULT_TAB_URL = "https://app.truecoach.co/clients";
 
     const onDetach = eventHub();
     const onRemoved = eventHub();
@@ -48,6 +54,14 @@ export function makeChromeMock() {
         },
         tabs: {
             onRemoved: onRemoved.api,
+            get: async (tabId) => {
+                calls.tabsGet.push(tabId);
+                if (tabUrls.has(tabId)) {
+                    const url = tabUrls.get(tabId);
+                    return url === null ? { id: tabId } : { id: tabId, url };
+                }
+                return { id: tabId, url: DEFAULT_TAB_URL };
+            },
         },
         runtime: {
             onSuspend: onSuspend.api,
@@ -58,6 +72,9 @@ export function makeChromeMock() {
         chrome,
         calls,
         listenerCount: () => listeners.size,
+        // Script the URL chrome.tabs.get reports for a tab. Pass null for a
+        // tab with no url property (e.g. missing "tabs" permission context).
+        setTabUrl: (tabId, url) => tabUrls.set(tabId, url),
         // Register a canned response for a CDP method (e.g. Network.getResponseBody).
         onCommand: (method, handler) => commandHandlers.set(method, handler),
         // Fail a CDP method to exercise error paths.

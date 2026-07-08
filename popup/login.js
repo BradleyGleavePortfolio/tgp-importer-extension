@@ -6,8 +6,10 @@
 // creation happens on the first-party web app (docs/DESIGN.md §2, §4).
 //
 // R75: zero banned type-assertions — every narrowing is a real guard. The
-// access token is handed to the background worker (memory-only there); only the
-// refresh token is persisted in chrome.storage.local.
+// access token is handed to the background worker (memory-only there); the
+// refresh token lives in chrome.storage.session (memory-only, cleared when the
+// browser session ends) — an extension holding the `debugger` permission must
+// not persist credentials to disk.
 import { TGP_API_ORIGIN } from "../shared/protocol.js";
 
 const SIGNUP_URL = "https://app.tgp.coach/signup?ref=importer-extension";
@@ -50,8 +52,9 @@ async function submitLogin(email, password) {
     if (accessToken === null || refreshToken === null) {
         throw new Error("Unexpected sign-in response.");
     }
-    // Persist only the refresh token; hand the access token to the worker.
-    await chrome.storage.local.set({ [STORAGE_KEY_REFRESH]: refreshToken });
+    // Keep the refresh token in session storage (memory-only) and hand the
+    // access token to the worker. Neither credential ever touches disk.
+    await chrome.storage.session.set({ [STORAGE_KEY_REFRESH]: refreshToken });
     chrome.runtime
         .sendMessage({ kind: "session_established", accessToken })
         .catch(() => undefined);
