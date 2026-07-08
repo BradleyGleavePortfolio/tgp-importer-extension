@@ -19,3 +19,11 @@ export function isRequestStatus(m) {
 function isRecord(value) {
     return typeof value === "object" && value !== null;
 }
+// Build the /api/scout/ingest batch body. The OUTER envelope is snake_case
+// (`intent_id` / `entity_type`) to match the backend ScoutIngestDto verbatim;
+// each ENTITY is the untouched makeEntity() output — camelCase
+// `{ sourceId, sourcePlatform, capturedAt, payload }` per R80-CLARIFY-1
+// (2026-07-07). Entities MUST pass through as-is: no re-mapping, no renaming.
+export function makeScoutIngestBody(intentId, entityType, entities) {
+    return { intent_id: intentId, entity_type: entityType, entities };
+}

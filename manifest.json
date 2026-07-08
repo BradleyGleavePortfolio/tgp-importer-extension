@@ -18,13 +18,12 @@
     "storage",
     "activeTab",
     "scripting",
-    "notifications"
+    "notifications",
+    "debugger"
   ],
   "host_permissions": [
     "https://app.truecoach.co/*",
-    "https://api.tgp.coach/*",
-    "*://*.tgp.coach/*",
-    "*://*.truecoach.co/*"
+    "https://api.tgp.coach/*"
   ],
   "optional_host_permissions": [
     "*://*/*"

@@ -1,0 +1,55 @@
+{
+  "description": "Real CDP trace for a top-level TrueCoach HTML document navigation. mimeType is text/html, so capture.js must drop it at the header stage and never issue Network.getResponseBody.",
+  "tabId": 102,
+  "events": [
+    {
+      "method": "Network.requestWillBeSent",
+      "params": {
+        "requestId": "39145.7",
+        "loaderId": "39145.7",
+        "documentURL": "https://app.truecoach.co/clients",
+        "request": {
+          "url": "https://app.truecoach.co/clients",
+          "method": "GET",
+          "headers": {
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Upgrade-Insecure-Requests": "1",
+            "User-Agent": "Mozilla/5.0"
+          },
+          "initialPriority": "VeryHigh",
+          "referrerPolicy": "strict-origin-when-cross-origin"
+        },
+        "timestamp": 384600.001,
+        "wallTime": 1751903990.0,
+        "initiator": { "type": "other" },
+        "type": "Document"
+      }
+    },
+    {
+      "method": "Network.responseReceived",
+      "params": {
+        "requestId": "39145.7",
+        "loaderId": "39145.7",
+        "timestamp": 384600.15,
+        "type": "Document",
+        "response": {
+          "url": "https://app.truecoach.co/clients",
+          "status": 200,
+          "statusText": "OK",
+          "headers": { "content-type": "text/html; charset=utf-8" },
+          "mimeType": "text/html",
+          "protocol": "h2"
+        }
+      }
+    },
+    {
+      "method": "Network.loadingFinished",
+      "params": { "requestId": "39145.7", "timestamp": 384600.4, "encodedDataLength": 20480 }
+    }
+  ],
+  "responseBody": {
+    "requestId": "39145.7",
+    "body": "<!doctype html><html><head><title>TrueCoach</title></head><body></body></html>",
+    "base64Encoded": false
+  }
+}

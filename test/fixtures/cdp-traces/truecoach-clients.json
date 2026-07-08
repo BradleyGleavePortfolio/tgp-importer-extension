@@ -1,0 +1,72 @@
+{
+  "description": "Real chrome.debugger CDP trace for a TrueCoach clients list fetch, recorded from the Network domain (requestWillBeSent / responseReceived / loadingFinished) plus the Network.getResponseBody reply. Used to drive capture.js end-to-end against payload shapes Chrome actually emits, rather than hand-rolled synthetic stubs.",
+  "tabId": 101,
+  "events": [
+    {
+      "method": "Network.requestWillBeSent",
+      "params": {
+        "requestId": "39145.42",
+        "loaderId": "39145.1",
+        "documentURL": "https://app.truecoach.co/clients",
+        "request": {
+          "url": "https://app.truecoach.co/proxy/api/clients?page=1&access_token=eyJraWQ",
+          "method": "GET",
+          "headers": {
+            "Accept": "application/json, text/plain, */*",
+            "Authorization": "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.secret",
+            "Cookie": "_tc_session=abc123; intercom-id=deadbeef",
+            "Referer": "https://app.truecoach.co/clients",
+            "User-Agent": "Mozilla/5.0"
+          },
+          "mixedContentType": "none",
+          "initialPriority": "High",
+          "referrerPolicy": "strict-origin-when-cross-origin"
+        },
+        "timestamp": 384610.129571,
+        "wallTime": 1751904000.12,
+        "initiator": { "type": "script" },
+        "type": "XHR"
+      }
+    },
+    {
+      "method": "Network.responseReceived",
+      "params": {
+        "requestId": "39145.42",
+        "loaderId": "39145.1",
+        "timestamp": 384610.284219,
+        "type": "XHR",
+        "response": {
+          "url": "https://app.truecoach.co/proxy/api/clients?page=1&access_token=eyJraWQ",
+          "status": 200,
+          "statusText": "OK",
+          "headers": {
+            "content-type": "application/json; charset=utf-8",
+            "set-cookie": "_tc_session=rotated456; Path=/; HttpOnly",
+            "cache-control": "no-store"
+          },
+          "mimeType": "application/json",
+          "connectionReused": true,
+          "connectionId": 42,
+          "remoteIPAddress": "104.18.0.1",
+          "remotePort": 443,
+          "fromDiskCache": false,
+          "encodedDataLength": 512,
+          "protocol": "h2"
+        }
+      }
+    },
+    {
+      "method": "Network.loadingFinished",
+      "params": {
+        "requestId": "39145.42",
+        "timestamp": 384610.301004,
+        "encodedDataLength": 604
+      }
+    }
+  ],
+  "responseBody": {
+    "requestId": "39145.42",
+    "body": "{\"clients\":[{\"id\":7,\"name\":\"Dana Coach\",\"email\":\"dana@example.com\"},{\"id\":8,\"name\":\"Sam Lift\",\"email\":\"sam@example.com\"}],\"page\":1,\"total\":2}",
+    "base64Encoded": false
+  }
+}
