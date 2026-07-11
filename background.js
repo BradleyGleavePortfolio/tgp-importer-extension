@@ -64,6 +64,12 @@ function isStartCapture(m) {
 function isStopCapture(m) {
     return isRecord(m) && m.kind === "stop_capture";
 }
+function isSessionEstablished(m) {
+    return isRecord(m) && m.kind === "session_established";
+}
+function isLogout(m) {
+    return isRecord(m) && m.kind === "logout";
+}
 function readTabId(m) {
     return isRecord(m) && typeof m.tabId === "number" ? m.tabId : null;
 }
@@ -123,6 +129,41 @@ async function getAccessToken() {
         throw new Error("no_session");
     }
     return minted;
+}
+
+// ---- session establishment (single ownership boundary) ---------------------
+
+// The background worker is the SOLE owner of session state. The login popup
+// mints the token pair and hands it over via one `session_established` message;
+// this is the one authoritative "no session -> session" transition. The access
+// token is held in memory only; the refresh token is persisted to
+// chrome.storage.session (trusted, browser-session-scoped, cleared on browser
+// restart -> intentional re-pair). Nothing is ever written to
+// chrome.storage.local / .sync. Fail-closed: if the refresh persist rejects we
+// clear all token state and surface auth_required, and no token value is ever
+// logged or broadcast.
+async function establishSession(accessToken, refreshToken) {
+    try {
+        await chrome.storage.session.set({ [STORAGE_KEYS.refreshToken]: refreshToken });
+    }
+    catch {
+        await clearTokens();
+        broadcastAuthRequired("sign-in could not be saved — please try again");
+        return { ok: false, error: "session_persist_failed" };
+    }
+    accessTokenInMemory = accessToken;
+    // Clean snapshot: session is ready, no error. Carries no token material.
+    broadcastStatus(emptySnapshot());
+    return { ok: true };
+}
+
+// Explicit sign-out: revoke local token state and drop back to auth_required.
+// Symmetric with establishSession so the session boundary has exactly one
+// enter path and one exit path.
+async function endSession() {
+    await clearTokens();
+    broadcastAuthRequired("signed out");
+    return { ok: true };
 }
 
 // ---- ingest transport -------------------------------------------------------
@@ -326,6 +367,29 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         void rehydrateSnapshot().then(() => sendResponse(currentSnapshot));
         return true; // async response
     }
+    if (isSessionEstablished(message)) {
+        const accessToken = readString(message, "accessToken");
+        const refreshToken = readString(message, "refreshToken");
+        if (
+            accessToken === null || refreshToken === null ||
+            accessToken.length === 0 || refreshToken.length === 0
+        ) {
+            // Fail-closed: never establish a partial session. Reject without
+            // mutating existing state; the error carries no token material.
+            sendResponse({ ok: false, error: "session_established: invalid token payload" });
+            return false;
+        }
+        establishSession(accessToken, refreshToken).then(sendResponse, () => {
+            sendResponse({ ok: false, error: "session_established: failed" });
+        });
+        return true; // async response
+    }
+    if (isLogout(message)) {
+        endSession().then(sendResponse, () => {
+            sendResponse({ ok: false, error: "logout: failed" });
+        });
+        return true; // async response
+    }
     if (isStartIngest(message)) {
         void handleStartIngest(message);
         sendResponse({ ok: true });
@@ -356,4 +420,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
 });
 
-export { TGP_API_ORIGIN, clearTokens };
+// Internal token-lifecycle API. Consumed only within the service-worker module
+// graph and by the test harness — never exposed on any runtime message surface
+// (§13.4), so this is not a token-leakage vector.
+export { TGP_API_ORIGIN, clearTokens, getAccessToken };

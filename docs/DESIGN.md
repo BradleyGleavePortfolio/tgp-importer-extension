@@ -90,7 +90,7 @@ extension popup.
    backend, if the code is unexpired and unused, returns
    `{ access_token, refresh_token, chosen_platform }` bound to the coach's
    TGP account. Both tokens are stored per §4 (refresh in
-   `chrome.storage.local`, access in memory only). The chosen platform is
+   `chrome.storage.session`, access in memory only). The chosen platform is
    stored in `chrome.storage.local` under `session.chosen_platform` so the
    popup can render the platform-specific CTA on next open.
 8. **Auto-open source platform + popup fires.** With pairing complete, the
@@ -197,17 +197,27 @@ by the v0.1 implementation PR (this design PR is docs-only). The v0.2
     token and its rotation family. Called on explicit disconnect/logout and on
     uninstall cleanup; after it succeeds the extension clears local token state
     and returns to the pairing view (threat model §13.4).
-- **Storage rules (MV3-aware, unchanged from v0.2).**
-  - The **refresh token** is persisted in `chrome.storage.local`.
+- **Storage rules (MV3-aware).**
+  - The **refresh token** is persisted in `chrome.storage.session` — a trusted,
+    browser-session-scoped store that survives service-worker restarts but is
+    cleared when the browser session ends. It is **never** written to
+    `chrome.storage.local` or `.sync`. Rationale: `storage.session` keeps the
+    only persisted secret out of on-disk storage, and its browser-session
+    lifetime makes **browser restart intentionally require a fresh pair** (a
+    coach who quits Chrome re-pairs from the mobile app — no long-lived bearer
+    is ever left at rest on disk).
   - The **access token** is kept **in memory only** — in a background
     worker-scoped variable. It is **never** written to `chrome.storage.session`
     or `.local`. Rationale: an MV3 service worker is killed frequently and
     unpredictably; treating the access token as ephemeral avoids leaving a
     live bearer at rest.
   - **On service-worker wake**, the worker has no in-memory access token. It
-    **rehydrates** by reading the refresh token from `chrome.storage.local` and
-    calling `/auth/extension/refresh` to mint a fresh access token on demand
-    (lazily, on the first call that needs it).
+    **rehydrates** by reading the refresh token from `chrome.storage.session`
+    (which outlives the worker within the same browser session) and calling
+    `/auth/extension/refresh` to mint a fresh access token on demand (lazily,
+    on the first call that needs it). After a **browser restart** the session
+    store is empty, so there is nothing to rehydrate and the popup returns to
+    the pairing view.
   - If refresh itself returns 401, the worker clears both tokens and broadcasts
     `auth_required`; the popup then falls back to the pairing view. The coach
     re-initiates from the mobile app to get a new pairing code.
@@ -294,9 +304,12 @@ These are **non-negotiable** design constraints. Each is sourced in
 
 - **Chrome MV3 sandbox.** The background is a **service worker** that can be
   **terminated at any time**. There are **no persistent globals** across SW
-  deaths. Any state that must survive a wake (the refresh token, the chosen
-  platform, the progress snapshot schema) lives in `chrome.storage.local`;
-  the access token is rehydrated via `/auth/extension/refresh` on wake (§4).
+  deaths. Non-secret state that must survive a wake (the chosen platform, the
+  progress snapshot schema) lives in `chrome.storage.local`; the **refresh
+  token** lives in `chrome.storage.session` (survives SW restarts, cleared on
+  browser restart → re-pair) and the access token is rehydrated in memory via
+  `/auth/extension/refresh` on wake (§4). No secret is ever written to
+  `chrome.storage.local`.
 - **Cross-device identity bridge is a short-lived server-minted secret.**
   A desktop Chrome extension and a mobile-native app share no origin, no
   cookies, no runtime messaging channel. The only cross-device bridge that
@@ -563,11 +576,14 @@ explicitly:
   `POST /auth/extension/refresh` MAY return a rotated refresh token, and the
   extension replaces the stored one atomically. Access tokens are short-lived
   and minted on demand.
-- **Key material storage.** The access token lives
-  in memory / `chrome.storage.session` **only**, never `chrome.storage.local`.
-  The **sole** persisted secret is the rotating refresh token in
-  `chrome.storage.local` (required for MV3 wake, §4); it is narrowly scoped to
-  the extension audience and single-use per rotation.
+- **Key material storage.** The access token lives **in memory only**, never
+  `chrome.storage.session` or `chrome.storage.local`. The **sole** persisted
+  secret is the rotating refresh token in `chrome.storage.session` (required to
+  survive an MV3 service-worker restart within a browser session, §4); it is
+  narrowly scoped to the extension audience and single-use per rotation. Nothing
+  secret is ever written to `chrome.storage.local`, and `storage.session`'s
+  browser-session lifetime means a browser restart clears it → intentional
+  re-pair.
 - **Stolen-refresh mitigation.** Refresh tokens are **single-use with reuse
   detection**: presenting an already-rotated refresh token is treated as a
   compromise signal → the backend **revokes the entire token family** for that

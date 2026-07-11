@@ -5,15 +5,15 @@
 // "Create an Account →" link opens the TGP sign-up page in a new tab so account
 // creation happens on the first-party web app (docs/DESIGN.md §2, §4).
 //
-// R75: zero banned type-assertions — every narrowing is a real guard. The
-// access token is handed to the background worker (memory-only there); the
-// refresh token lives in chrome.storage.session (memory-only, cleared when the
-// browser session ends) — an extension holding the `debugger` permission must
-// not persist credentials to disk.
+// R75: zero banned type-assertions — every narrowing is a real guard. The popup
+// never owns session state: it hands the whole token pair to the background
+// worker via one `session_established` message. The worker is the single owner —
+// it holds the access token in memory and persists the refresh token to
+// chrome.storage.session. The popup itself never touches chrome.storage, so an
+// extension holding the `debugger` permission cannot persist credentials here.
 import { TGP_API_ORIGIN } from "../shared/protocol.js";
 
 const SIGNUP_URL = "https://app.tgp.coach/signup?ref=importer-extension";
-const STORAGE_KEY_REFRESH = "tgp_refresh_token";
 
 function el(id) {
     const node = document.getElementById(id);
@@ -29,6 +29,10 @@ function readString(record, key) {
         typeof record[key] === "string"
         ? record[key]
         : null;
+}
+
+function isOk(value) {
+    return typeof value === "object" && value !== null && value.ok === true;
 }
 
 function showError(message) {
@@ -52,12 +56,18 @@ async function submitLogin(email, password) {
     if (accessToken === null || refreshToken === null) {
         throw new Error("Unexpected sign-in response.");
     }
-    // Keep the refresh token in session storage (memory-only) and hand the
-    // access token to the worker. Neither credential ever touches disk.
-    await chrome.storage.session.set({ [STORAGE_KEY_REFRESH]: refreshToken });
-    chrome.runtime
-        .sendMessage({ kind: "session_established", accessToken })
-        .catch(() => undefined);
+    // Hand the whole token pair to the background worker — the single owner of
+    // session state. It holds the access token in memory and persists the
+    // refresh token to chrome.storage.session. Fail-closed: only proceed once
+    // the worker acknowledges the session was established.
+    const ack = await chrome.runtime.sendMessage({
+        kind: "session_established",
+        accessToken,
+        refreshToken,
+    });
+    if (!isOk(ack)) {
+        throw new Error("Could not establish session. Please try again.");
+    }
 }
 
 const form = el("login-form");

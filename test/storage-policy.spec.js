@@ -55,11 +55,19 @@ describe("storage policy — no token ever touches chrome.storage.local", () => 
         expect(offenders).toEqual([]);
     });
 
-    it("refresh-token writes go through chrome.storage.session", () => {
-        const login = readFileSync(join(ROOT, "popup", "login.js"), "utf8");
-        expect(login).toContain("chrome.storage.session.set({ [STORAGE_KEY_REFRESH]: refreshToken })");
+    it("the background worker is the sole owner of refresh-token storage.session I/O", () => {
         const background = readFileSync(join(ROOT, "background.js"), "utf8");
+        expect(background).toContain("chrome.storage.session.set({ [STORAGE_KEYS.refreshToken]: refreshToken })");
         expect(background).toContain("chrome.storage.session.get(STORAGE_KEYS.refreshToken)");
         expect(background).toContain("chrome.storage.session.remove(STORAGE_KEYS.refreshToken)");
+    });
+
+    it("the login popup relays the token pair to the worker and never calls chrome.storage", () => {
+        const login = readFileSync(join(ROOT, "popup", "login.js"), "utf8");
+        expect(login).toContain('kind: "session_established"');
+        // The popup owns no session state — the single ownership boundary lives
+        // in the background worker, so the popup must not invoke any storage API
+        // (prose comments referencing storage are fine; API calls are not).
+        expect(login).not.toMatch(/chrome\.storage\.(local|session|sync)\.\w+/);
     });
 });
