@@ -1,6 +1,13 @@
 // Shared message protocol and config for the TGP Importer extension.
 // Strongly typed so background, content, popup, and extractor never need casts.
 export const TGP_API_ORIGIN = "https://api.tgp.coach";
+// The extension's ONLY no-session -> session path (docs/DESIGN.md §§3,4): the
+// unauthenticated pairing-code redeem. The endpoint is a backend dependency
+// (IMPORTER-D, PR #502 — not yet built), so the redeem flow ships default-OFF
+// via PAIRING_ENABLED and refuses to touch the network until the contract is
+// live. Flip PAIRING_ENABLED to true in the same PR that wires the endpoint.
+export const PAIR_REDEEM_PATH = "/api/extension/pair/redeem";
+export const PAIRING_ENABLED = false;
 export const TRUECOACH_ORIGIN = "https://app.truecoach.co";
 export const TRUECOACH_API_BASE = "https://app.truecoach.co/proxy/api";
 export const STORAGE_KEY_INTENT = "tgp_active_intent";

@@ -66,7 +66,14 @@ export function makeBgMock({ session } = {}) {
     // Invoke the registered onMessage listener and resolve to the value the
     // handler passes to sendResponse. Honours the MV3 `return true` async
     // contract: a truthy return keeps the channel open until sendResponse fires.
-    function dispatch(message, sender = { id: chrome.runtime.id }) {
+    // The default sender models a trusted extension page (the pairing popup):
+    // same extension id, an extension-origin URL, and no originating tab — the
+    // exact shape the token-bearing session_established path requires.
+    const extensionPageSender = {
+        id: chrome.runtime.id,
+        url: `chrome-extension://${chrome.runtime.id}/popup/pair.html`,
+    };
+    function dispatch(message, sender = extensionPageSender) {
         return new Promise((resolve) => {
             let settled = false;
             const sendResponse = (r) => { settled = true; resolve(r); };

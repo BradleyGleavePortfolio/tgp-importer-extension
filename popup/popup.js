@@ -56,14 +56,25 @@ function render(snapshot) {
         errorBox.hidden = true;
     }
 }
+function isOk(value) {
+    return typeof value === "object" && value !== null && value.ok === true;
+}
 chrome.runtime.onMessage.addListener((message) => {
     if (isSnapshot(message)) {
         render(message);
     }
 });
-chrome.runtime.sendMessage({ kind: "request_status" }, (response) => {
-    if (isSnapshot(response)) {
-        render(response);
+// Route first: with no session, the only path forward is the pairing view
+// (docs/DESIGN.md §2). Otherwise render the live import status.
+chrome.runtime.sendMessage({ kind: "request_session_state" }, (response) => {
+    if (isOk(response) && response.hasSession !== true) {
+        window.location.replace("pair.html");
+        return;
     }
+    chrome.runtime.sendMessage({ kind: "request_status" }, (snapshot) => {
+        if (isSnapshot(snapshot)) {
+            render(snapshot);
+        }
+    });
 });
 export {};

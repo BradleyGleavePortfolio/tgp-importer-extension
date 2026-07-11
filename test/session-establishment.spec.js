@@ -1,15 +1,19 @@
 import { describe, it, expect, vi } from "vitest";
 import { makeBgMock, installChrome } from "./helpers/background-mock.js";
 
-// Exhaustive coverage of the one authoritative session-establishment boundary in
-// background.js: the `session_established` / `logout` handlers, the memory-only
-// access token, the storage.session-only refresh token, and the fail-closed +
-// re-pair semantics. Each test loads a FRESH background.js module (resetModules)
-// so module state (the in-memory access token) starts clean and the listeners
-// bind to that test's mock.
+// Router-level coverage of the session-establishment boundary in background.js:
+// the `session_established` / `request_session_state` handlers, the stricter
+// token-bearing sender gate, and the guarantee that establishing a session
+// never broadcasts or clobbers the ingest snapshot. Token-lifecycle mechanics
+// (memory access token, storage.session refresh, mutex, no-wipe) are covered
+// directly against shared/session.js in session-lifecycle.spec.js.
+//
+// Each test loads a FRESH module graph (resetModules) so background.js and its
+// shared/session.js state start clean and the listeners bind to that test's
+// mock.
 
 const REFRESH_KEY = "tgp_refresh_token";
-const REFRESH_ENDPOINT = "https://api.tgp.coach/auth/extension/refresh";
+const SNAPSHOT_KEY = "tgp_status_snapshot";
 
 async function load({ session } = {}) {
     vi.resetModules();
@@ -23,9 +27,12 @@ async function load({ session } = {}) {
 function statusBroadcasts(mock) {
     return mock.sent.filter((m) => m && m.kind === "status_snapshot");
 }
-function authRequiredBroadcasts(mock) {
-    return mock.sent.filter((m) => m && m.kind === "auth_required");
-}
+
+const CONTENT_SCRIPT_SENDER = {
+    id: "test-extension-id",
+    url: "https://app.truecoach.co/clients",
+    tab: { id: 42 },
+};
 
 describe("session_established — happy path", () => {
     it("persists refresh to storage.session and holds access in memory", async () => {
@@ -42,18 +49,27 @@ describe("session_established — happy path", () => {
         expect(global.fetch).not.toHaveBeenCalled();
     });
 
-    it("broadcasts a clean status snapshot and no auth_required", async () => {
+    it("does NOT broadcast a snapshot or clobber an active ingest snapshot", async () => {
+        // Seed an in-flight ingest snapshot in storage.local.
+        const active = {
+            kind: "status_snapshot",
+            intent: { intentId: "ext-1", platform: "truecoach", status: "ingest_started" },
+            progress: [{ entityType: "clients", sent: 3, total: 10 }],
+            lastError: null,
+        };
         const { mock } = await load();
+        await mock.chrome.storage.local.set({ [SNAPSHOT_KEY]: active });
+
         await mock.dispatch({
             kind: "session_established",
             accessToken: "a",
             refreshToken: "r",
         });
-        const snaps = statusBroadcasts(mock);
-        expect(snaps.length).toBe(1);
-        expect(snaps[0].lastError).toBeNull();
-        expect(snaps[0].intent).toBeNull();
-        expect(authRequiredBroadcasts(mock)).toEqual([]);
+        // Establishing a session emits no status broadcast at all …
+        expect(statusBroadcasts(mock)).toEqual([]);
+        // … and leaves the persisted ingest snapshot untouched.
+        const stored = await mock.chrome.storage.local.get(SNAPSHOT_KEY);
+        expect(stored[SNAPSHOT_KEY]).toEqual(active);
     });
 
     it("never writes a token to storage.local or storage.sync", async () => {
@@ -64,7 +80,6 @@ describe("session_established — happy path", () => {
             refreshToken: "r",
         });
         expect(mock.localMap.has(REFRESH_KEY)).toBe(false);
-        // Nothing in local should equal the token material.
         expect([...mock.localMap.values()]).not.toContain("r");
         expect([...mock.localMap.values()]).not.toContain("a");
         expect(mock.syncSet).toEqual([]);
@@ -87,10 +102,9 @@ describe("session_established — malformed / missing tokens (fail-closed)", () 
             const { mock, bg } = await load();
             const res = await mock.dispatch(message);
             expect(res.ok).toBe(false);
-            expect(typeof res.error).toBe("string");
+            expect(res.error).toBe("invalid_token_payload");
             // No token material leaks into the error string.
             expect(res.error).not.toMatch(/access|refresh-|\br\b/);
-            expect(res.error).toBe("session_established: invalid token payload");
             expect(mock.sessionMap.size).toBe(0);
             // Fail-closed: no session established.
             global.fetch.mockResolvedValue({ ok: false, status: 401 });
@@ -120,48 +134,32 @@ describe("session_established — duplicate / race handling", () => {
         expect(mock.sessionMap.get(REFRESH_KEY)).toBe("r2");
         await expect(bg.getAccessToken()).resolves.toBe("a2");
     });
-
-    it("concurrent establishes resolve coherently without corruption", async () => {
-        const { mock, bg } = await load();
-        const [r1, r2] = await Promise.all([
-            mock.dispatch({ kind: "session_established", accessToken: "aX", refreshToken: "rX" }),
-            mock.dispatch({ kind: "session_established", accessToken: "aY", refreshToken: "rY" }),
-        ]);
-        expect(r1).toEqual({ ok: true });
-        expect(r2).toEqual({ ok: true });
-        // The stored refresh and in-memory access are a matched pair from one
-        // winner — never a mix (e.g. rX with aY).
-        const refresh = mock.sessionMap.get(REFRESH_KEY);
-        const access = await bg.getAccessToken();
-        expect([["rX", "aX"], ["rY", "aY"]]).toContainEqual([refresh, access]);
-    });
 });
 
-describe("logout — symmetric session exit", () => {
-    it("clears the refresh token and broadcasts auth_required", async () => {
-        const { mock, bg } = await load();
-        await mock.dispatch({ kind: "session_established", accessToken: "a", refreshToken: "r" });
-        const res = await mock.dispatch({ kind: "logout" });
-        expect(res).toEqual({ ok: true });
-        expect(mock.sessionMap.size).toBe(0);
-        expect(authRequiredBroadcasts(mock).length).toBe(1);
-        // No refresh token left → no session recoverable without a fetch.
-        await expect(bg.getAccessToken()).rejects.toThrow("no_session");
-        expect(global.fetch).not.toHaveBeenCalled();
+describe("request_session_state — non-secret routing signal", () => {
+    it("reports hasSession=false with no session and never leaks a token", async () => {
+        const { mock } = await load({ session: new Map() });
+        const res = await mock.dispatch({ kind: "request_session_state" });
+        expect(res).toEqual({ ok: true, hasSession: false });
     });
 
-    it("logout with no active session is a harmless no-op", async () => {
+    it("reports hasSession=true once a refresh token is present", async () => {
         const { mock } = await load();
-        const res = await mock.dispatch({ kind: "logout" });
-        expect(res).toEqual({ ok: true });
-        expect(mock.sessionMap.size).toBe(0);
-        expect(authRequiredBroadcasts(mock).length).toBe(1);
+        await mock.dispatch({
+            kind: "session_established",
+            accessToken: "access-secret",
+            refreshToken: "refresh-secret",
+        });
+        const res = await mock.dispatch({ kind: "request_session_state" });
+        expect(res).toEqual({ ok: true, hasSession: true });
+        // The response body carries only the boolean — no token material.
+        expect(JSON.stringify(res)).not.toContain("secret");
+        expect(Object.keys(res).sort()).toEqual(["hasSession", "ok"]);
     });
 });
 
 describe("service-worker restart — refresh survives, access is re-minted", () => {
     it("rehydrates the access token from the storage.session refresh token", async () => {
-        // First worker: establish a session.
         const first = await load();
         await first.mock.dispatch({
             kind: "session_established",
@@ -180,48 +178,38 @@ describe("service-worker restart — refresh survives, access is re-minted", () 
         await expect(bg.getAccessToken()).resolves.toBe("access-new");
         expect(global.fetch).toHaveBeenCalledTimes(1);
         const [url, init] = global.fetch.mock.calls[0];
-        expect(url).toBe(REFRESH_ENDPOINT);
+        expect(url).toBe("https://api.tgp.coach/auth/extension/refresh");
         expect(JSON.parse(init.body)).toEqual({ refresh_token: "refresh-live" });
-    });
-
-    it("honours refresh-token rotation returned by the refresh call", async () => {
-        const { mock, bg } = await load({ session: new Map([[REFRESH_KEY, "refresh-old"]]) });
-        global.fetch.mockResolvedValue({
-            ok: true,
-            json: async () => ({ access_token: "access-new", refresh_token: "refresh-rotated" }),
-        });
-        await expect(bg.getAccessToken()).resolves.toBe("access-new");
-        expect(mock.sessionMap.get(REFRESH_KEY)).toBe("refresh-rotated");
     });
 });
 
 describe("browser restart — storage.session cleared forces a re-pair", () => {
     it("has no refresh token to rehydrate and never calls the refresh endpoint", async () => {
-        // A browser restart clears storage.session, so the fresh worker starts
-        // with an empty session store.
         const { mock, bg } = await load({ session: new Map() });
         expect(mock.sessionMap.size).toBe(0);
         await expect(bg.getAccessToken()).rejects.toThrow("no_session");
         expect(global.fetch).not.toHaveBeenCalled();
     });
-
-    it("a rejected refresh clears state and requires a re-pair", async () => {
-        const { mock, bg } = await load({ session: new Map([[REFRESH_KEY, "stale-refresh"]]) });
-        global.fetch.mockResolvedValue({ ok: false, status: 401 });
-        await expect(bg.getAccessToken()).rejects.toThrow("no_session");
-        // clearTokens is available for uninstall/logout cleanup; after a failed
-        // refresh the coach must re-pair from the mobile app.
-        await bg.clearTokens();
-        expect(mock.sessionMap.size).toBe(0);
-    });
 });
 
-describe("sender validation — only the extension's own surfaces are trusted", () => {
-    it("ignores a message from a foreign sender id", async () => {
+describe("sender validation — only trusted extension pages may carry tokens", () => {
+    it("ignores a session_established from a foreign extension id", async () => {
         const { mock, bg } = await load();
         const res = await mock.dispatch(
             { kind: "session_established", accessToken: "a", refreshToken: "r" },
-            { id: "some-other-extension" },
+            { id: "some-other-extension", url: "chrome-extension://some-other-extension/x.html" },
+        );
+        expect(res).toBeUndefined();
+        expect(mock.sessionMap.size).toBe(0);
+        global.fetch.mockResolvedValue({ ok: false, status: 401 });
+        await expect(bg.getAccessToken()).rejects.toThrow("no_session");
+    });
+
+    it("rejects a session_established from a content script (our id, but a tab + web URL)", async () => {
+        const { mock, bg } = await load();
+        const res = await mock.dispatch(
+            { kind: "session_established", accessToken: "a", refreshToken: "r" },
+            CONTENT_SCRIPT_SENDER,
         );
         expect(res).toBeUndefined();
         expect(mock.sessionMap.size).toBe(0);
