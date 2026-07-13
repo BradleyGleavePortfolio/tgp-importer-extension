@@ -37,8 +37,10 @@ chrome.runtime.sendMessage({ kind: "request_session_state" }, (response) => {
     }
 });
 
-// Default-off until the redeem endpoint ships (shared/protocol.js): show an
-// honest "not available yet" state rather than firing at a dead endpoint.
+// PAIRING_ENABLED ships ON for the v0.3 RC (its backend contract is merged —
+// shared/protocol.js). This guard is retained so that if the flag is ever
+// flipped off in lockstep with a backend rollback, the coach sees an honest
+// "not available yet" state rather than a form that fires at a dead endpoint.
 if (!PAIRING_ENABLED) {
     disableSubmit(true);
     showError("Pairing isn't available yet — it unlocks once the TGP backend ships pairing.");

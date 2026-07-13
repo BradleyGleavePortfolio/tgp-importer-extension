@@ -8,12 +8,19 @@
 // disk-persisted storage (.local / .sync). No token value is ever logged,
 // broadcast, or returned to a caller.
 //
-// Establish/clear are serialized through one mutex so two concurrent
-// transitions can never interleave and leave a torn access/refresh pair; the
-// last transition to run wins fully.
+// Establish, clear, AND the commit half of refresh are serialized through one
+// mutex so two concurrent transitions can never interleave and leave a torn
+// access/refresh pair; the last transition to run wins fully. Every mutating
+// transition bumps a monotonic epoch. refreshAccessToken reads the refresh
+// token under the lock, does its network call OUTSIDE the lock (so a slow
+// refresh never blocks a logout), then re-enters the lock to commit ONLY if the
+// epoch is unchanged — so a logout (clearTokens) that lands mid-refresh can
+// never be followed by a stale refresh resurrecting the session.
 //
 // R75: zero banned type-assertions — every narrowing is a real guard.
 import { TGP_API_ORIGIN } from "./protocol.js";
+import { fetchWithTimeout, isTimeout } from "./net.js";
+import { logNetworkEvent } from "./log.js";
 
 // The one persisted secret. Lives only in chrome.storage.session.
 export const REFRESH_TOKEN_KEY = "tgp_refresh_token";
@@ -23,7 +30,13 @@ const REFRESH_ENDPOINT = `${TGP_API_ORIGIN}/auth/extension/refresh`;
 // lazily from the refresh token on the first call that needs it.
 let accessTokenInMemory;
 
-// Serializes establish/clear. Each transition chains onto the previous one so
+// Monotonic version of the session state. Bumped inside the lock on every
+// establish/clear so an in-flight refresh can detect that the state changed
+// underneath it and refuse to commit (compare-and-swap on transition, not on
+// token value — robust even if the same token string recurs).
+let stateEpoch = 0;
+
+// Serializes state transitions. Each transition chains onto the previous one so
 // they apply atomically relative to each other; a rejected transition never
 // breaks the chain for the next.
 let stateLock = Promise.resolve();
@@ -63,6 +76,7 @@ export async function hasActiveSession() {
 // only and makes no revocation guarantee.
 export function clearTokens() {
     return withStateLock(async () => {
+        stateEpoch += 1;
         accessTokenInMemory = undefined;
         await chrome.storage.session.remove(REFRESH_TOKEN_KEY);
     });
@@ -85,38 +99,81 @@ export function establishSession(accessToken, refreshToken) {
         catch {
             return { ok: false, error: "session_persist_failed" };
         }
+        stateEpoch += 1;
         accessTokenInMemory = accessToken;
         return { ok: true };
     });
 }
 
 // Mint a fresh access token from the stored refresh token. Returns null when no
-// refresh token exists or the refresh call is rejected (caller fails closed).
+// refresh token exists, the refresh call fails/times out, or a concurrent
+// logout/re-establish invalidated the in-flight refresh (caller fails closed).
+//
+// Split across the state lock: snapshot (token + epoch) under the lock, network
+// OUTSIDE the lock (a hung refresh must never block a logout), commit under the
+// lock ONLY if the epoch is unchanged. Rotation persistence is failure-safe: if
+// persisting a rotated refresh token throws, we DO NOT publish the new access
+// token — the prior session state is preserved and the caller fails closed,
+// exactly as establishSession does (no asymmetric wipe / no torn pair).
 export async function refreshAccessToken() {
-    const refreshToken = await readRefreshToken();
-    if (refreshToken === null) {
+    const snapshot = await withStateLock(async () => ({
+        token: await readRefreshToken(),
+        epoch: stateEpoch,
+    }));
+    if (snapshot.token === null) {
         return null;
     }
-    const res = await fetch(REFRESH_ENDPOINT, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-    });
+
+    let res;
+    try {
+        res = await fetchWithTimeout(fetch, REFRESH_ENDPOINT, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refresh_token: snapshot.token }),
+        });
+    }
+    catch (err) {
+        logNetworkEvent(isTimeout(err) ? "refresh_timeout" : "refresh_network_error");
+        return null;
+    }
     if (!res.ok) {
         return null;
     }
-    const body = await res.json();
+
+    let body;
+    try {
+        body = await res.json();
+    }
+    catch {
+        logNetworkEvent("refresh_body_parse_error");
+        return null;
+    }
     const next = readString(body, "access_token");
     if (next === null) {
         return null;
     }
-    accessTokenInMemory = next;
-    // Honour refresh-token rotation when the backend returns a new one.
     const rotated = readString(body, "refresh_token");
-    if (rotated !== null) {
-        await chrome.storage.session.set({ [REFRESH_TOKEN_KEY]: rotated });
-    }
-    return next;
+
+    // Commit under the lock. If the epoch moved (a logout or a newer establish
+    // ran while we were on the network) discard the result — never resurrect a
+    // cleared session, never clobber a newer one.
+    return withStateLock(async () => {
+        if (snapshot.epoch !== stateEpoch) {
+            return null;
+        }
+        if (rotated !== null) {
+            try {
+                await chrome.storage.session.set({ [REFRESH_TOKEN_KEY]: rotated });
+            }
+            catch {
+                logNetworkEvent("refresh_rotation_persist_failed");
+                return null;
+            }
+            stateEpoch += 1;
+        }
+        accessTokenInMemory = next;
+        return next;
+    });
 }
 
 // Return a usable access token, minting one from the refresh token if the

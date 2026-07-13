@@ -2,17 +2,21 @@
 // Strongly typed so background, content, popup, and extractor never need casts.
 export const TGP_API_ORIGIN = "https://api.tgp.coach";
 // The extension's ONLY no-session -> session path (docs/DESIGN.md §§3,4): the
-// unauthenticated pairing-code redeem. The endpoint is a backend dependency
-// (IMPORTER-D, PR #502 — not yet built), so the redeem flow ships default-OFF
-// via PAIRING_ENABLED and refuses to touch the network until the contract is
-// live. Flip PAIRING_ENABLED to true in the same PR that wires the endpoint.
+// unauthenticated pairing-code redeem.
+//
+// Backend flag dependency (R109 resolution): the redeem endpoint
+// (`PAIR_REDEEM_PATH`) is delivered by growth-project-backend PR #502
+// (IMPORTER-D) and the token-refresh endpoint by PR #496 (IMPORTER-A). Both are
+// merged, so pairing — the extension's SOLE auth path — is ENABLED for the v0.3
+// release candidate. Shipping it default-OFF would leave the build with no
+// reachable way to sign in (a dark-merged auth dead-end); NO-DARK-MERGES
+// requires the only auth path to be live once its backend contract exists. The
+// `scripts/check-flag-discipline.mjs` CI gate pins this ON so it cannot silently
+// regress to a default-off dead-end. If the backend contract is ever pulled,
+// flip this to `false` in the SAME change that removes/guards the redeem call.
 export const PAIR_REDEEM_PATH = "/api/extension/pair/redeem";
-export const PAIRING_ENABLED = false;
-export const TRUECOACH_ORIGIN = "https://app.truecoach.co";
+export const PAIRING_ENABLED = true;
 export const TRUECOACH_API_BASE = "https://app.truecoach.co/proxy/api";
-export const STORAGE_KEY_INTENT = "tgp_active_intent";
-export const INTENT_QUERY_PARAM = "tgp_intent";
-export const DAY1_PLATFORM = "truecoach";
 // Narrowing helpers — avoid `as` casts on untyped chrome.runtime payloads.
 export function isStartIngest(m) {
     return isRecord(m) && m.kind === "start_ingest";

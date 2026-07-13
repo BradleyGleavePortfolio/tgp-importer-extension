@@ -194,9 +194,16 @@ by the v0.1 implementation PR (this design PR is docs-only). The v0.2
     rotated refresh token) given a valid refresh token. Used for **token
     rotation** and to recover from a 401 mid-crawl.
   - `POST /auth/extension/logout` → **revokes** the coach's extension refresh
-    token and its rotation family. Called on explicit disconnect/logout and on
-    uninstall cleanup; after it succeeds the extension clears local token state
-    and returns to the pairing view (threat model §13.4).
+    token and its rotation family. **Extension-wiring status (v0.3 RC):** this
+    call is **not yet wired** in the extension. `clearTokens()` today performs a
+    **local-only** clear (drops the in-memory access token and removes the
+    refresh token from `chrome.storage.session`) and makes **no server-side
+    revocation guarantee**; server revocation still occurs via reuse-detection
+    on the next refresh (§13.4) and admin-forced revocation. Wiring the explicit
+    `/auth/extension/logout` call is tracked as a follow-up; until then the code
+    comment in `shared/session.js` is the source of truth and must not claim
+    revocation. This resolves the prior doc/code ambiguity (the doc implied the
+    call was wired; it is not).
 - **Storage rules (MV3-aware).**
   - The **refresh token** is persisted in `chrome.storage.session` — a trusted,
     browser-session-scoped store that survives service-worker restarts but is
@@ -354,11 +361,16 @@ contract. Each carries an R131 re-verification trigger (see
   captures on 2026-06-30**. Re-verify quarterly per R131 (next trigger:
   2026-09-30).
 - **The backend exposes `/api/extension/pair/*` and `/auth/extension/refresh`.**
-  These endpoint groups are **not yet built** in full — they are a **TGP-side
-  dependency** (see §Backend dependencies). Until they exist, the pairing flow
-  cannot complete end-to-end. `POST /auth/extension/refresh` was delivered by
-  IMPORTER-A (#496 in `growth-project-backend`, merged 2026-07); the pairing
-  endpoints are new work.
+  As of the v0.3 RC these contracts are **merged**: `POST /auth/extension/refresh`
+  by IMPORTER-A (#496 in `growth-project-backend`) and the pairing endpoints
+  (`/api/extension/pair/redeem`, `init`, `status`) by IMPORTER-D (#502). Because
+  the extension's SOLE auth path now has a live backend contract, `PAIRING_ENABLED`
+  ships **true** for the RC (R109 / NO-DARK-MERGES); the
+  `scripts/check-flag-discipline.mjs` gate pins it on. The one remaining
+  extension-side gap is the explicit `/auth/extension/logout` wiring (§4) —
+  local-only clear until then. **Production readiness caveat:** enabling the flag
+  couples this build to those endpoints being live in the target environment; a
+  release tag is deliberately **not** cut in this PR.
 - **The inline email/password assumption from v0.2 is retired.** DESIGN.md
   v0.2 §8 listed *"coaches accept inline email/password"* as a challengeable
   assumption. v0.3 removes the inline login surface entirely, so the
@@ -571,7 +583,11 @@ explicitly:
   (`POST /auth/extension/logout`, §13.7 / §4) and on admin-forced revocation
   (operator or security response). Revocation invalidates the refresh token
   server-side immediately; the next refresh fails and the extension clears
-  local state and returns to the pairing view.
+  local state and returns to the pairing view. **v0.3 RC caveat:** the extension
+  does not yet *initiate* `/auth/extension/logout`; local logout is a local-only
+  `clearTokens()` (§4). Server-side revocation therefore currently flows from
+  reuse-detection on the next refresh and admin-forced revocation, not from an
+  extension-initiated logout call.
 - **Rotation cadence.** The refresh window matches the Supabase default; every
   `POST /auth/extension/refresh` MAY return a rotated refresh token, and the
   extension replaces the stored one atomically. Access tokens are short-lived

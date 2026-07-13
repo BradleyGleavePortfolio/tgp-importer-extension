@@ -156,3 +156,82 @@ describe("serialized state transitions (mutex)", () => {
         expect([["rX", "aX"], ["rY", "aY"]]).toContainEqual([refresh, access]);
     });
 });
+
+// A mutation-sensitive suite: a logout that lands WHILE a refresh is on the
+// network must not be undone by the refresh committing afterwards. This is the
+// stale-refresh resurrection hole; the epoch compare-and-swap closes it.
+describe("refresh serialization vs logout (no stale resurrection)", () => {
+    // Drive a refresh whose network call is held open, run clearTokens() in the
+    // gap, then release the network — the refresh must discard its result.
+    it("a logout during an in-flight refresh is NOT resurrected", async () => {
+        const { map, mod } = await load({ session: new Map([[REFRESH_KEY, "refresh-live"]]) });
+        // Warm the in-memory access token so we control exactly one refresh.
+        await mod.establishSession("access-1", "refresh-live");
+
+        let releaseFetch;
+        global.fetch.mockReturnValue(new Promise((resolve) => { releaseFetch = resolve; }));
+
+        // Start a refresh; it snapshots {token, epoch} under the lock, then parks
+        // on the network. We call it directly (not via getAccessToken, which
+        // would short-circuit on the warm token).
+        const refreshP = mod.refreshAccessToken();
+        // Let the snapshot-under-lock resolve and the fetch fire.
+        await Promise.resolve();
+
+        // Logout lands in the gap: bumps the epoch, clears both halves.
+        await mod.clearTokens();
+
+        // The backend now answers with a full (rotated) session — the exact
+        // payload that would resurrect a logged-out session if we committed it.
+        releaseFetch({
+            ok: true,
+            json: async () => ({ access_token: "resurrected", refresh_token: "rotated" }),
+        });
+        await expect(refreshP).resolves.toBeNull();
+
+        // Session stays dead: nothing persisted, nothing served.
+        expect(map.has(REFRESH_KEY)).toBe(false);
+        expect(await mod.hasActiveSession()).toBe(false);
+        global.fetch.mockResolvedValue({ ok: false, status: 401 });
+        await expect(mod.getAccessToken()).rejects.toThrow("no_session");
+    });
+
+    it("a rotation-persist FAILURE preserves prior state and fails closed (no torn pair)", async () => {
+        const { map, state, mod } = await load({ session: new Map([[REFRESH_KEY, "refresh-old"]]) });
+        // Backend rotates the refresh token, but persisting it throws.
+        global.fetch.mockResolvedValue({
+            ok: true,
+            json: async () => ({ access_token: "minted", refresh_token: "refresh-rotated" }),
+        });
+        state.failSetOnce = true;
+        // getAccessToken -> refresh -> rotation persist fails -> null -> no_session.
+        await expect(mod.getAccessToken()).rejects.toThrow("no_session");
+        // Prior refresh token intact; no half-applied rotation.
+        expect(map.get(REFRESH_KEY)).toBe("refresh-old");
+    });
+
+    it("a refresh network error returns null and never throws out of refresh", async () => {
+        const { mod } = await load({ session: new Map([[REFRESH_KEY, "refresh-live"]]) });
+        global.fetch.mockRejectedValue(new Error("offline"));
+        await expect(mod.refreshAccessToken()).resolves.toBeNull();
+    });
+
+    it("a refresh that times out returns null (bounded, never hangs)", async () => {
+        vi.useFakeTimers();
+        const { mod } = await load({ session: new Map([[REFRESH_KEY, "refresh-live"]]) });
+        global.fetch.mockReturnValue(new Promise(() => {})); // never settles
+        const p = mod.refreshAccessToken();
+        await vi.advanceTimersByTimeAsync(15000);
+        await expect(p).resolves.toBeNull();
+        vi.useRealTimers();
+    });
+
+    it("a malformed refresh body returns null (explicit parse, fail closed)", async () => {
+        const { mod } = await load({ session: new Map([[REFRESH_KEY, "refresh-live"]]) });
+        global.fetch.mockResolvedValue({
+            ok: true,
+            json: async () => { throw new SyntaxError("bad json"); },
+        });
+        await expect(mod.refreshAccessToken()).resolves.toBeNull();
+    });
+});

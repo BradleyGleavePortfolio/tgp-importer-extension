@@ -7,12 +7,16 @@
 // via one `session_established` message. It owns no storage and holds a token
 // only within the scope of one redeem call.
 //
-// Gated behind PAIRING_ENABLED: the redeem endpoint is a backend dependency
-// (IMPORTER-D, not yet built), so redeemPairingCode refuses to touch the
-// network while disabled and the flow ships default-off.
+// Gated behind PAIRING_ENABLED. The redeem endpoint's backend contract
+// (growth-project-backend PR #502) is merged, so the flag ships ENABLED for the
+// v0.3 RC (R109 / NO-DARK-MERGES: the sole auth path must be live once its
+// backend exists). The gate is retained so the flow can be disabled in lockstep
+// if the backend contract is ever pulled.
 //
 // R75: zero banned type-assertions — every narrowing is a real guard.
 import { TGP_API_ORIGIN, PAIRING_ENABLED, PAIR_REDEEM_PATH } from "./protocol.js";
+import { fetchWithTimeout, isTimeout } from "./net.js";
+import { logNetworkEvent } from "./log.js";
 
 const REDEEM_ENDPOINT = `${TGP_API_ORIGIN}${PAIR_REDEEM_PATH}`;
 
@@ -41,9 +45,9 @@ function isOk(value) {
 export async function redeemPairingCode(code, deps = {}) {
     const fetchImpl = deps.fetch ?? globalThis.fetch;
     const sendMessage = deps.sendMessage ?? ((m) => chrome.runtime.sendMessage(m));
-    // Default-off comes from PAIRING_ENABLED; `deps.enabled` is the explicit
-    // opt-in the tests use to exercise the live producer path without shipping
-    // the flag on. Production callers (pair.js) never pass it.
+    // The shipped state comes from PAIRING_ENABLED (on for the v0.3 RC).
+    // `deps.enabled` lets a test pin either branch explicitly without depending
+    // on the shipped flag value. Production callers (pair.js) never pass it.
     const enabled = deps.enabled ?? PAIRING_ENABLED;
 
     if (!enabled) {
@@ -55,17 +59,33 @@ export async function redeemPairingCode(code, deps = {}) {
 
     let res;
     try {
-        res = await fetchImpl(REDEEM_ENDPOINT, {
+        res = await fetchWithTimeout(fetchImpl, REDEEM_ENDPOINT, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ code }),
         });
     }
-    catch {
+    catch (err) {
+        if (isTimeout(err)) {
+            logNetworkEvent("pair_timeout");
+            return { ok: false, error: "That took too long. Check your connection and try again." };
+        }
+        logNetworkEvent("pair_network_error");
         return { ok: false, error: "Network error. Please try again." };
     }
 
-    const body = await res.json().catch(() => null);
+    // Parse the body explicitly. A malformed/empty body maps to `null` here (not
+    // a silent swallow); the null then routes to explicit copy below. We log a
+    // PII-free event code — never the body, which could carry server text.
+    let body;
+    try {
+        body = await res.json();
+    }
+    catch {
+        logNetworkEvent("pair_body_parse_error");
+        body = null;
+    }
+
     if (!res.ok) {
         const reason = readString(body, "code");
         return { ok: false, error: (reason && ERROR_COPY[reason]) || "Pairing failed. Please try again." };
