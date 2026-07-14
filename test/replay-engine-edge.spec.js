@@ -269,6 +269,29 @@ describe("runReplay — template with multiple :params", () => {
     });
 });
 
+describe("runReplay — digit-led :param substitutes (grammar unified with normalizer)", () => {
+    it("fills a digit-led placeholder like :1 the same as a named one", async () => {
+        // The normalizer accepts :param names from [A-Za-z0-9_] (digit-led included);
+        // the engine must substitute exactly those, or an accepted template would be
+        // fetched with a literal ":1" still in the path.
+        const fetchJson = vi.fn(async (url) => {
+            if (url === `${API}/seed`) return { items: [{ id: "42" }] };
+            if (url === `${API}/x/42/y/42`) return { items: [{ id: "child" }] };
+            throw new Error(`unexpected ${url}`); // literal ":1"/":name" would land here
+        });
+        const { emitted, emit } = makeCollector();
+        const blueprint = bp([
+            { id: "seed", entityType: "seed", template: "/seed", itemsPath: ["items"], idField: "id", collectAs: "ids" },
+            // one digit-led placeholder + one named placeholder, both from the same id.
+            { id: "kid", entityType: "kid", template: "/x/:1/y/:name", forEach: "ids", itemsPath: ["items"], idField: "id" },
+        ]);
+        const result = await run({ blueprint, fetchJson, emit });
+        expect(result.status).toBe("complete");
+        expect(fetchJson).toHaveBeenCalledWith(`${API}/x/42/y/42`, expect.objectContaining({ method: "GET" }));
+        expect(emitted.filter((e) => e.entityType === "kid").map((e) => e.sourceId)).toEqual(["child"]);
+    });
+});
+
 describe("runReplay — no pacing when rateLimitMs is 0", () => {
     it("never calls sleep when the blueprint imposes no rate limit", async () => {
         const sleep = vi.fn(() => Promise.resolve());

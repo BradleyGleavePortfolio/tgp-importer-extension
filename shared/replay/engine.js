@@ -23,7 +23,7 @@
 //     normalizeBlueprint, so an off-allowlist apiBase fails closed BEFORE any fetch.
 //   - Abort: a signalled abort stops promptly with a cancelled result.
 
-import { normalizeBlueprint, extractItems, readPath } from "./blueprint.js";
+import { normalizeBlueprint, extractItems, readPath, PARAM_NAME_CHARS } from "./blueprint.js";
 import { isTimeout } from "../net.js";
 
 export class AuthLostError extends Error {
@@ -60,12 +60,16 @@ function isRetryable(err) {
 }
 
 // Fill :params in a template with a single id value (generic: every :param in a
-// forEach step is filled from the same collected id).
+// forEach step is filled from the same collected id). The param grammar is the
+// SAME canonical char class the normalizer detects with (PARAM_NAME_CHARS), so
+// every template the blueprint accepts — including digit-led names like ":1" — is
+// actually substituted here; one source of truth, no drift.
+const PARAM_TOKEN = new RegExp(`:[${PARAM_NAME_CHARS}]+`, "g");
 function fillTemplate(template, id) {
     if (id === null || id === undefined) {
         return template;
     }
-    return template.replace(/:[A-Za-z_][A-Za-z0-9_]*/g, encodeURIComponent(String(id)));
+    return template.replace(PARAM_TOKEN, encodeURIComponent(String(id)));
 }
 
 function buildUrl(apiBase, path, query) {
