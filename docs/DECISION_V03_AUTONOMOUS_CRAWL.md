@@ -22,10 +22,11 @@ rather than violate caps, never request an exception* — this is a chain of
 dependent PRs along clean import seams (each layer imports the one before it,
 never the reverse, so no PR carries dead code):
 
-1. **This PR (#4) — contract + lifecycle (356 prod LOC).** `blueprint.js` (268) +
-   `state.js` (88). Pure data schema + fail-closed normalization (incl. SSRF
-   scheme/host/origin confinement) + the bounded transition table. Nothing invokes
-   it at runtime yet; it is inert by construction.
+1. **This PR (#4) — contract + lifecycle (396 prod LOC).** `blueprint.js` (296) +
+   `state.js` (100). Pure data schema + fail-closed normalization (incl. SSRF
+   scheme/host/origin confinement — resolution-proven template confinement, backslash/
+   control-byte + trailing-dot-loopback rejection) + the prototype-safe bounded
+   transition table. Nothing invokes it at runtime yet; it is inert by construction.
 2. **Chained engine PR (PR-C1a) — the bounded replay engine** (`shared/replay/engine.js`).
    Imports the contract from this PR. Carries the JSON-tuple dedupe key and the
    honest `partial`/`failed`/`cancelled`/`complete` result status with its own
