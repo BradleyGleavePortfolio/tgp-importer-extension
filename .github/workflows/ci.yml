@@ -13,6 +13,9 @@ jobs:
         with:
           # Full history so the diff-scoped gates can resolve the merge-base.
           fetch-depth: 0
+          # On pull_request, check out the PR head (not the synthetic merge
+          # commit). R3 identity + diff gates measure the branch commits only.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: "20"

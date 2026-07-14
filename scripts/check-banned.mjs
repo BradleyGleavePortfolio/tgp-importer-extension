@@ -52,7 +52,12 @@ const IDENTITY_TOKENS = /(claude|anthropic|co-authored-by|copilot|openai|\bgpt\b
 
 const base = resolveBase();
 const from = mergeBase(base);
-const raw = execSync(`git log ${from}..HEAD --format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e`, { encoding: "utf8" });
+// --no-merges: pull_request CI checks out a synthetic merge commit authored by
+// GitHub <noreply@github.com>. That is not a PR commit and must not trip R3.
+const raw = execSync(
+    `git log ${from}..HEAD --no-merges --format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e`,
+    { encoding: "utf8" },
+);
 for (const rec of raw.split("\x1e")) {
     const trimmed = rec.trim();
     if (!trimmed) continue;
