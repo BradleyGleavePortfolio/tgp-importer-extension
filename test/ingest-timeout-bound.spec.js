@@ -23,3 +23,12 @@ describe("background ingest transport is bounded", () => {
         expect(matches).toContain("https://*.truecoach.co/*");
     });
 });
+
+describe("truecoach source fetch is bounded", () => {
+    it("routes rawFetch through fetchWithTimeout", () => {
+        const src = readFileSync(join(process.cwd(), "extractors/truecoach/net.js"), "utf8");
+        expect(src).toMatch(/fetchWithTimeout/);
+        expect(src).not.toMatch(/const res = await fetch\(`\$\{TRUECOACH_API_BASE\}/);
+    });
+});
+

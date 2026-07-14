@@ -250,7 +250,7 @@ DOM, and auth are identical to the flagship host — only the hostname prefix
 changes.
 
 - **Coverage:** *free.* A **wildcard host-permission**
-  (`*://*.truecoach.co/*`) plus `detectPlatform(url)` matching on the hostname
+  (`https://*.truecoach.co/*`) plus `detectPlatform(url)` matching on the hostname
   **suffix** picks the right extractor regardless of the brand prefix.
 - **Per-brand effort:** **zero.** No new manifest entry, no new code per brand.
 
@@ -339,7 +339,7 @@ These are **non-negotiable** design constraints. Each is sourced in
   `new Function`, no remote code. Every module in this repo is a static file
   loaded by the manifest.
 - **Cookies API.** Reading the source platform's session cookie (e.g. the
-  TrueCoach session) requires the `cookies` permission — **already present** in
+  TrueCoach session) uses in-tab `credentials: "include"` on same-origin fetches under host_permissions — the `cookies` API permission is **not** required and is intentionally omitted (least privilege).
   `manifest.json`.
 
 ---
@@ -378,7 +378,7 @@ contract. Each carries an R131 re-verification trigger (see
 - **The extension recognises source platforms by these exact origin patterns.**
   Static, install-time coverage is precisely two match patterns:
   `https://app.truecoach.co/*` (flagship host — `content_scripts.matches` and
-  `host_permissions`) and `*://*.truecoach.co/*` (the Tier-1 brand-subdomain
+  `host_permissions`) and `https://*.truecoach.co/*` (the Tier-1 brand-subdomain
   wildcard in `host_permissions`, resolved to the TrueCoach extractor by
   `detectPlatform(url)` matching on the `.truecoach.co` hostname **suffix**).
   Tier-2 vanity domains are **not** in this set at install time; each is added

@@ -70,7 +70,7 @@ Doctrine anchors used here:
    `cookies` permission plus host access.
    *Source:* Chrome `chrome.cookies` API reference —
    https://developer.chrome.com/docs/extensions/reference/api/cookies
-   *Design consequence:* `cookies` permission already declared in
+   *Design consequence:* `cookies` permission is NOT declared (least privilege; in-tab credentials:include is used) — historical note: was once
    `manifest.json`.
 
 ---
