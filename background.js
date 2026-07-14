@@ -31,6 +31,8 @@ import {
 } from "./shared/session.js";
 import { detectPlatform } from "./extractors/detect.js";
 import { TrueCoachExtractor } from "./extractors/truecoach.js";
+import { runReplay, AuthLostError, isAuthLost } from "./shared/replay/engine.js";
+import { resolveBlueprint, isUnknownPlatform } from "./shared/replay/resolve.js";
 import { fetchWithTimeout, isTimeout } from "./shared/net.js";
 import {
     attachDebugger,
@@ -60,6 +62,9 @@ function isRecord(value) {
 }
 function isStartIngest(m) {
     return isRecord(m) && m.kind === "start_ingest";
+}
+function isStartImport(m) {
+    return isRecord(m) && m.kind === "start_import";
 }
 function isRequestStatus(m) {
     return isRecord(m) && m.kind === "request_status";
@@ -257,6 +262,135 @@ async function handleStartIngest(message) {
     }
 }
 
+// ---- autonomous replay run (start_import) -----------------------------------
+
+// Single-flight: a boolean set SYNCHRONOUSLY in the router before the async
+// handler runs, so two start_import messages racing before the first awaits
+// cannot both start a crawl. The router clears it when the run settles.
+let importInFlight = false;
+
+// Confine the crawl to exactly the origin the coach is looking at: the observed
+// tab origin (https only) is the injected SSRF allowlist. The blueprint's
+// apiBase origin must match it, or normalizeBlueprint fails closed before any
+// fetch. Never a hardcoded competitor map — site-agnostic by construction.
+function tabOriginAllowlist(url) {
+    let u;
+    try {
+        u = new URL(url);
+    }
+    catch {
+        return null;
+    }
+    return u.protocol === "https:" ? [u.origin] : null;
+}
+
+// Build the injected fetchJson the engine calls per page. It carries the SOURCE
+// platform bearer (so the crawl truly authenticates as the coach) plus the
+// coach's in-tab cookies (credentials: "include"). A 401/403 from the source is
+// mapped to AuthLostError, which the engine propagates so the run fails closed —
+// crucially WITHOUT calling clearTokens(): source auth loss invalidates only the
+// (in-memory, per-run) source session and must never clear the TGP tokens.
+function makeSourceFetch(sourceToken) {
+    return async function fetchJson(url, { method, signal, timeoutMs }) {
+        const headers = sourceToken.length > 0 ? { Authorization: `Bearer ${sourceToken}` } : {};
+        const res = await fetchWithTimeout(fetch, url, { method, headers, credentials: "include", signal }, timeoutMs);
+        if (res.status === 401 || res.status === 403) {
+            throw new AuthLostError();
+        }
+        if (!res.ok) {
+            const err = new Error(`source ${res.status}`);
+            err.name = "HttpError";
+            err.status = res.status;
+            throw err;
+        }
+        try {
+            return await res.json();
+        }
+        catch {
+            const err = new Error("source_bad_json");
+            err.name = "MalformedResponseError";
+            throw err;
+        }
+    };
+}
+
+async function handleStartImport(message) {
+    const url = typeof message.url === "string" ? message.url : "";
+    const platform = detectPlatform(url);
+    if (platform === null) {
+        broadcastStatus({ ...emptySnapshot(), lastError: `unsupported site: ${url}` });
+        return;
+    }
+    const allowedOrigins = tabOriginAllowlist(url);
+    if (allowedOrigins === null) {
+        broadcastStatus({ ...emptySnapshot(), lastError: `unsafe import origin: ${url}` });
+        return;
+    }
+    let blueprint;
+    try {
+        blueprint = resolveBlueprint(platform);
+    }
+    catch (err) {
+        const detail = isUnknownPlatform(err) ? `no blueprint for ${platform}` : "blueprint resolve failed";
+        broadcastStatus({ ...emptySnapshot(), lastError: detail });
+        return;
+    }
+    // A TGP access token is required for ingest before we start crawling.
+    let accessToken;
+    try {
+        accessToken = await getAccessToken();
+    }
+    catch {
+        broadcastAuthRequired("login required to import");
+        return;
+    }
+    if (typeof accessToken !== "string" || accessToken.length === 0) {
+        broadcastAuthRequired("login required to import");
+        return;
+    }
+
+    const controller = new AbortController();
+    const intent = { intentId: `imp-${Date.now()}`, platform, status: "ingest_started" };
+    broadcastStatus({ ...emptySnapshot(), intent, progress: [] });
+
+    const sendEntities = makeSender(intent, () => {
+        // TGP-side auth loss: makeSender already cleared the TGP tokens; abort
+        // the crawl and route the coach back to pairing.
+        controller.abort();
+        broadcastAuthRequired("session expired — please sign in again");
+    });
+    const sourceToken = typeof message.sourceToken === "string" ? message.sourceToken : "";
+
+    try {
+        const result = await runReplay({
+            blueprint,
+            fetchJson: makeSourceFetch(sourceToken),
+            emit: (entityType, batch) => sendEntities(entityType, batch),
+            onProgress: (rows) => broadcastStatus({ ...currentSnapshot, intent, progress: rows }),
+            signal: controller.signal,
+            allowedOrigins,
+        });
+        if (result.status === "complete" || result.status === "partial") {
+            await completeIngest(intent);
+            broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_succeeded" } });
+            notifyComplete(platform);
+        }
+        else {
+            const detail = result.status === "cancelled" ? "import cancelled" : "import failed";
+            broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: detail });
+        }
+    }
+    catch (err) {
+        // Source auth loss is fail-closed but NOT a TGP logout: the TGP tokens are
+        // untouched here (only makeSender's own 401 path clears them). Surface a
+        // source-specific message so the coach re-authenticates the SOURCE site.
+        const detail = isAuthLost(err)
+            ? "source sign-in required — open your source platform and try again"
+            : (err instanceof Error ? err.message : "import failed");
+        broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: detail });
+    }
+}
+
 // ---- capture control --------------------------------------------------------
 
 // Wire the MV3 cleanup paths (tab close, debugger detach, SW suspend) once at
@@ -336,6 +470,26 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     if (isStartIngest(message)) {
         void handleStartIngest(message);
+        sendResponse({ ok: true });
+        return false;
+    }
+    if (isStartImport(message)) {
+        // A crawl reuses the coach's SOURCE session and drives TGP ingest, so it
+        // may only be triggered by one of THIS extension's own pages — an
+        // extension-id match alone is not enough (a compromised content script
+        // shares the id). Gate on the full trusted-page shape.
+        if (!isTrustedExtensionPage(sender)) {
+            sendResponse({ ok: false, error: "untrusted_sender" });
+            return false;
+        }
+        // Single-flight: reject a second concurrent run. Set the flag BEFORE the
+        // async handler so a race between two messages cannot both pass.
+        if (importInFlight) {
+            sendResponse({ ok: false, error: "import_in_progress" });
+            return false;
+        }
+        importInFlight = true;
+        void handleStartImport(message).finally(() => { importInFlight = false; });
         sendResponse({ ok: true });
         return false;
     }

@@ -42,6 +42,21 @@
       progress {
         width: 100%;
       }
+      #start-import {
+        margin-top: 12px;
+        width: 100%;
+        padding: 8px 12px;
+        font: inherit;
+        color: #0f172a;
+        background: #38bdf8;
+        border: 0;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      #start-import:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
     </style>
   </head>
   <body>
@@ -60,6 +75,7 @@
       <div id="progress-list"></div>
     </div>
     <div id="error" hidden></div>
+    <button id="start-import" type="button">Start Import</button>
     <script type="module" src="popup.js"></script>
   </body>
 </html>
