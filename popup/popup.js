@@ -24,7 +24,8 @@ function renderProgress(snapshot) {
         label.className = "label";
         label.textContent = p.entityType;
         const value = document.createElement("span");
-        value.textContent = `${p.sent} / ${p.total}`;
+        // The crawl has no total up front, so show the ratio only when one exists.
+        value.textContent = typeof p.total === "number" ? `${p.sent} / ${p.total}` : `${p.sent}`;
         row.appendChild(label);
         row.appendChild(value);
         list.appendChild(row);
@@ -59,22 +60,54 @@ function render(snapshot) {
 function isOk(value) {
     return typeof value === "object" && value !== null && value.ok === true;
 }
-chrome.runtime.onMessage.addListener((message) => {
-    if (isSnapshot(message)) {
-        render(message);
-    }
-});
-// Route first: with no session, the only path forward is the pairing view
-// (docs/DESIGN.md §2). Otherwise render the live import status.
-chrome.runtime.sendMessage({ kind: "request_session_state" }, (response) => {
-    if (isOk(response) && response.hasSession !== true) {
-        window.location.replace("pair.html");
+
+// Ask the worker to import the ACTIVE tab; its URL is the only input (the worker
+// detects platform, resolves blueprint, injects origin allowlist). Exported so a
+// test can drive the REAL send path.
+export function requestStartImport(runtime, tabs) {
+    return tabs.query({ active: true, currentWindow: true }).then((result) => {
+        const tab = Array.isArray(result) && result.length > 0 ? result[0] : null;
+        const url = tab && typeof tab.url === "string" ? tab.url : "";
+        // The tab id lets the worker ask this tab's content script for the source
+        // bearer; the popup never sees or handles the token.
+        const tabId = tab && typeof tab.id === "number" ? tab.id : null;
+        return runtime.sendMessage({ kind: "start_import", url, tabId });
+    });
+}
+
+// Wire the Start Import CTA. Disables the button while the send is in flight so a
+// double-click cannot fire two messages (the worker also enforces single-flight);
+// re-enables on settle. Exported + injected so a test drives the real handler.
+export function wireStartImport(runtime, tabs, doc) {
+    const btn = doc.getElementById("start-import");
+    if (!btn) {
         return;
     }
-    chrome.runtime.sendMessage({ kind: "request_status" }, (snapshot) => {
-        if (isSnapshot(snapshot)) {
-            render(snapshot);
+    btn.addEventListener("click", () => {
+        btn.disabled = true;
+        requestStartImport(runtime, tabs).catch(() => undefined).then(() => { btn.disabled = false; });
+    });
+}
+
+// Bootstrap only in a real extension page (chrome + DOM present); guarded so the
+// module can be imported under test without firing load-time side effects.
+if (typeof chrome !== "undefined" && chrome.runtime && typeof document !== "undefined") {
+    chrome.runtime.onMessage.addListener((message) => {
+        if (isSnapshot(message)) {
+            render(message);
         }
     });
-});
-export {};
+    wireStartImport(chrome.runtime, chrome.tabs, document);
+    // Route first: with no session the only path forward is the pairing view.
+    chrome.runtime.sendMessage({ kind: "request_session_state" }, (response) => {
+        if (isOk(response) && response.hasSession !== true) {
+            window.location.replace("pair.html");
+            return;
+        }
+        chrome.runtime.sendMessage({ kind: "request_status" }, (snapshot) => {
+            if (isSnapshot(snapshot)) {
+                render(snapshot);
+            }
+        });
+    });
+}

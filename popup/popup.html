@@ -29,6 +29,7 @@
       .status-created { color: #38bdf8; }
       .status-ingest_started { color: #fbbf24; }
       .status-ingest_succeeded { color: #22c55e; }
+      .status-ingest_partial { color: #fbbf24; }
       .status-ingest_failed { color: #f87171; }
       #error {
         margin-top: 10px;
@@ -41,6 +42,21 @@
       }
       progress {
         width: 100%;
+      }
+      #start-import {
+        margin-top: 12px;
+        width: 100%;
+        padding: 8px 12px;
+        font: inherit;
+        color: #0f172a;
+        background: #38bdf8;
+        border: 0;
+        border-radius: 6px;
+        cursor: pointer;
+      }
+      #start-import:disabled {
+        opacity: 0.6;
+        cursor: default;
       }
     </style>
   </head>
@@ -60,6 +76,7 @@
       <div id="progress-list"></div>
     </div>
     <div id="error" hidden></div>
+    <button id="start-import" type="button">Start Import</button>
     <script type="module" src="popup.js"></script>
   </body>
 </html>
