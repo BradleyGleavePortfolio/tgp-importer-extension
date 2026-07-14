@@ -25,6 +25,13 @@ jobs:
       - name: Banned-token net (silent catches + R3 commit identity)
         run: node scripts/check-banned.mjs
       - name: Production LOC budget
+        # On pull_request the diff is scoped to the PR base (GITHUB_BASE_REF), so
+        # enforce the canonical R23/R76 cap of 400 mechanically at the review gate.
+        # On push the base falls back to main, which for a stacked child branch
+        # measures the cumulative parent+child diff; keep that at the looser 600 so
+        # a legitimately-stacked push is not failed by the parent's lines.
+        env:
+          PROD_LOC_CAP: ${{ github.event_name == 'pull_request' && '400' || '600' }}
         run: node scripts/check-prod-loc.mjs
       - name: Flag discipline (R109 / NO-DARK-MERGES)
         run: node scripts/check-flag-discipline.mjs
