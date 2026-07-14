@@ -29,24 +29,38 @@ describe("requestStartImport — posts a start_import for the active tab", () =>
         const tabs = { query: vi.fn(async () => [{ id: 1, url: "https://app.truecoach.co/clients" }]) };
         await requestStartImport(runtime, tabs);
         expect(tabs.query).toHaveBeenCalledWith({ active: true, currentWindow: true });
+        // The tab id rides along so the worker can ask THIS tab's content script
+        // for the source bearer; the url is the crawl origin.
         expect(runtime.sendMessage).toHaveBeenCalledWith({
             kind: "start_import",
             url: "https://app.truecoach.co/clients",
+            tabId: 1,
         });
     });
 
-    it("sends an empty url when there is no active tab (worker rejects it)", async () => {
+    it("sends an empty url and a null tabId when there is no active tab", async () => {
         const runtime = { sendMessage: vi.fn(async () => ({ ok: false })) };
         const tabs = { query: vi.fn(async () => []) };
         await requestStartImport(runtime, tabs);
-        expect(runtime.sendMessage).toHaveBeenCalledWith({ kind: "start_import", url: "" });
+        expect(runtime.sendMessage).toHaveBeenCalledWith({ kind: "start_import", url: "", tabId: null });
     });
 
-    it("sends an empty url when the active tab has no url property", async () => {
+    it("sends an empty url but the real tabId when the tab has no url property", async () => {
         const runtime = { sendMessage: vi.fn(async () => ({ ok: true })) };
-        const tabs = { query: vi.fn(async () => [{ id: 1 }]) };
+        const tabs = { query: vi.fn(async () => [{ id: 7 }]) };
         await requestStartImport(runtime, tabs);
-        expect(runtime.sendMessage).toHaveBeenCalledWith({ kind: "start_import", url: "" });
+        expect(runtime.sendMessage).toHaveBeenCalledWith({ kind: "start_import", url: "", tabId: 7 });
+    });
+
+    it("sends a null tabId when the active tab has no numeric id", async () => {
+        const runtime = { sendMessage: vi.fn(async () => ({ ok: true })) };
+        const tabs = { query: vi.fn(async () => [{ url: "https://app.truecoach.co/clients" }]) };
+        await requestStartImport(runtime, tabs);
+        expect(runtime.sendMessage).toHaveBeenCalledWith({
+            kind: "start_import",
+            url: "https://app.truecoach.co/clients",
+            tabId: null,
+        });
     });
 });
 
@@ -68,6 +82,7 @@ describe("wireStartImport — binds the CTA click to a real send", () => {
         expect(runtime.sendMessage).toHaveBeenCalledWith({
             kind: "start_import",
             url: "https://app.truecoach.co/clients",
+            tabId: null,
         });
 
         // Still disabled until the send settles.

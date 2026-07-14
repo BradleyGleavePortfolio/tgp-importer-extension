@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { makeBgMock, installChrome } from "./helpers/background-mock.js";
+import { fakePageStore, realSourceTab } from "./helpers/source-tab.js";
 
 // Router + orchestration coverage of the start_import path in background.js —
 // the LIVE wiring that drives the site-agnostic replay engine. These tests pin
@@ -20,10 +21,22 @@ const COMPLETE_URL = "https://api.tgp.coach/api/scout/ingest/complete";
 const CLIENTS_PREFIX = "https://app.truecoach.co/proxy/api/clients?";
 const NOTES_URL = "https://app.truecoach.co/proxy/api/clients/c1/notes";
 const TAB_URL = "https://app.truecoach.co/clients";
+const TAB_ID = 42;
+// A JWT-shaped bearer the REAL content-script producer will read from the coach's
+// own page storage (matches content/main.js's three-segment base64url grammar).
+const SRC_JWT = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjb2FjaCJ9.s1g-nature_TOKEN";
+const EXT_ID = "test-extension-id";
 
-async function load({ session } = {}) {
+// Build a mock whose live source tab serves SRC_JWT through the actual content
+// script (real producer -> background bearer). Pass through extra mock options.
+function withSourceTab(opts = {}) {
+    const stores = [fakePageStore(), fakePageStore([["truecoach.jwt", SRC_JWT]])];
+    return { url: TAB_URL, sendMessage: realSourceTab(EXT_ID, stores), ...opts };
+}
+
+async function load({ session, tab } = {}) {
     vi.resetModules();
-    const mock = makeBgMock({ session });
+    const mock = makeBgMock({ session, tab });
     installChrome(mock);
     global.fetch = vi.fn();
     const bg = await import("../background.js");
@@ -54,7 +67,7 @@ async function settle(mock, ms = 10000) {
     for (;;) {
         const last = snapshots(mock).at(-1);
         const status = last && last.intent ? last.intent.status : null;
-        if (status === "ingest_succeeded" || status === "ingest_failed") {
+        if (status === "ingest_succeeded" || status === "ingest_failed" || status === "ingest_partial") {
             return status;
         }
         if (Date.now() - start > ms) {
@@ -140,7 +153,10 @@ describe("start_import — pre-run guards", () => {
 
 describe("start_import — end-to-end crawl carries the source bearer", () => {
     it("authenticates every source request, ingests, completes, and succeeds", async () => {
-        const { mock } = await load({ session: new Map([[REFRESH_KEY, "seed-refresh"]]) });
+        const { mock } = await load({
+            session: new Map([[REFRESH_KEY, "seed-refresh"]]),
+            tab: withSourceTab(),
+        });
         const sourceAuth = [];
         const ingestBodies = [];
         let completeCalls = 0;
@@ -171,13 +187,14 @@ describe("start_import — end-to-end crawl carries the source bearer", () => {
             throw new Error(`unrouted fetch ${url}`);
         });
 
-        const ack = await mock.dispatch({ kind: "start_import", url: TAB_URL, sourceToken: "SRC-TOKEN" });
+        const ack = await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
         expect(ack).toEqual({ ok: true });
         const terminal = await settle(mock);
 
-        // Every source request carried the injected source bearer verbatim.
+        // Every source request carried the bearer the REAL content-script producer
+        // read from the coach's own page storage — end-to-end, not a stub.
         expect(sourceAuth.length).toBeGreaterThan(0);
-        expect(sourceAuth.every((h) => h === "Bearer SRC-TOKEN")).toBe(true);
+        expect(sourceAuth.every((h) => h === `Bearer ${SRC_JWT}`)).toBe(true);
         // Entities crossed the ingest boundary with the LOCKED envelope + snake
         // outer body, and the run completed + reported success.
         expect(ingestBodies.length).toBeGreaterThanOrEqual(1);
@@ -191,7 +208,10 @@ describe("start_import — end-to-end crawl carries the source bearer", () => {
     }, 15000);
 
     it("confines the crawl to the observed tab origin (never an off-origin host)", async () => {
-        const { mock } = await load({ session: new Map([[REFRESH_KEY, "seed-refresh"]]) });
+        const { mock } = await load({
+            session: new Map([[REFRESH_KEY, "seed-refresh"]]),
+            tab: withSourceTab(),
+        });
         const hosts = new Set();
         global.fetch.mockImplementation(async (url) => {
             hosts.add(new URL(url).origin);
@@ -206,7 +226,7 @@ describe("start_import — end-to-end crawl carries the source bearer", () => {
             }
             throw new Error(`unrouted fetch ${url}`);
         });
-        const ack = await mock.dispatch({ kind: "start_import", url: TAB_URL, sourceToken: "S" });
+        const ack = await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
         expect(ack).toEqual({ ok: true });
         await settle(mock);
         // Only the source origin + the TGP api origin were ever contacted.
@@ -216,7 +236,10 @@ describe("start_import — end-to-end crawl carries the source bearer", () => {
 
 describe("start_import — source auth loss fails closed without a TGP logout", () => {
     it("maps a source 401 to a source-specific failure and keeps the TGP tokens", async () => {
-        const { mock } = await load({ session: new Map([[REFRESH_KEY, "seed-refresh"]]) });
+        const { mock } = await load({
+            session: new Map([[REFRESH_KEY, "seed-refresh"]]),
+            tab: withSourceTab(),
+        });
         global.fetch.mockImplementation(async (url) => {
             if (url === REFRESH_URL) {
                 return { ok: true, status: 200, json: async () => ({ access_token: "TGP-ACCESS" }) };
@@ -226,7 +249,7 @@ describe("start_import — source auth loss fails closed without a TGP logout", 
             }
             throw new Error(`unrouted fetch ${url}`);
         });
-        const ack = await mock.dispatch({ kind: "start_import", url: TAB_URL, sourceToken: "SRC" });
+        const ack = await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
         expect(ack).toEqual({ ok: true });
         const terminal = await settle(mock);
         expect(terminal).toBe("ingest_failed");
@@ -239,7 +262,10 @@ describe("start_import — source auth loss fails closed without a TGP logout", 
     }, 15000);
 
     it("maps a source 403 the same way (forbidden is also a source auth loss)", async () => {
-        const { mock } = await load({ session: new Map([[REFRESH_KEY, "seed-refresh"]]) });
+        const { mock } = await load({
+            session: new Map([[REFRESH_KEY, "seed-refresh"]]),
+            tab: withSourceTab(),
+        });
         global.fetch.mockImplementation(async (url) => {
             if (url === REFRESH_URL) {
                 return { ok: true, status: 200, json: async () => ({ access_token: "TGP-ACCESS" }) };
@@ -249,7 +275,7 @@ describe("start_import — source auth loss fails closed without a TGP logout", 
             }
             throw new Error(`unrouted fetch ${url}`);
         });
-        const ack = await mock.dispatch({ kind: "start_import", url: TAB_URL, sourceToken: "SRC" });
+        const ack = await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
         expect(ack).toEqual({ ok: true });
         const terminal = await settle(mock);
         expect(terminal).toBe("ingest_failed");
@@ -263,7 +289,10 @@ describe("start_import — source auth loss fails closed without a TGP logout", 
 
 describe("start_import — a non-auth source error fails the run without a re-pair", () => {
     it("surfaces a source 500 as a generic ingest failure (NOT a sign-in prompt)", async () => {
-        const { mock } = await load({ session: new Map([[REFRESH_KEY, "seed-refresh"]]) });
+        const { mock } = await load({
+            session: new Map([[REFRESH_KEY, "seed-refresh"]]),
+            tab: withSourceTab(),
+        });
         global.fetch.mockImplementation(async (url) => {
             if (url === REFRESH_URL) {
                 return { ok: true, status: 200, json: async () => ({ access_token: "TGP-ACCESS" }) };
@@ -273,23 +302,29 @@ describe("start_import — a non-auth source error fails the run without a re-pa
             }
             throw new Error(`unrouted fetch ${url}`);
         });
-        const ack = await mock.dispatch({ kind: "start_import", url: TAB_URL, sourceToken: "SRC" });
+        const ack = await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
         expect(ack).toEqual({ ok: true });
         const terminal = await settle(mock);
         expect(terminal).toBe("ingest_failed");
         // A 5xx is a server fault, not an auth loss: it must NOT be reported as a
-        // sign-in requirement, and it must not raise a re-pair.
+        // sign-in requirement, and it must not raise a re-pair. The 5xx status is
+        // preserved in the message (category/status only, never a response body).
         const lastError = snapshots(mock).at(-1).lastError;
         expect(lastError).not.toMatch(/source sign-in required/);
-        expect(lastError).toBeTruthy();
+        expect(lastError).toMatch(/500/);
         expect(mock.sessionMap.has(REFRESH_KEY)).toBe(true);
         expect(authRequired(mock)).toHaveLength(0);
     }, 15000);
 });
 
 describe("start_import — an absent source token sends no Authorization header", () => {
-    it("omits Authorization entirely when no sourceToken is provided", async () => {
-        const { mock } = await load({ session: new Map([[REFRESH_KEY, "seed-refresh"]]) });
+    it("omits Authorization entirely when the producer yields no token", async () => {
+        // A live source tab whose page storage holds no JWT: the real content
+        // script answers { ok: false }, so collectSourceToken returns "".
+        const { mock } = await load({
+            session: new Map([[REFRESH_KEY, "seed-refresh"]]),
+            tab: { url: TAB_URL, sendMessage: realSourceTab(EXT_ID, [fakePageStore(), fakePageStore()]) },
+        });
         const sourceHeaders = [];
         global.fetch.mockImplementation(async (url, init) => {
             if (url === REFRESH_URL) {
@@ -304,8 +339,7 @@ describe("start_import — an absent source token sends no Authorization header"
             }
             throw new Error(`unrouted fetch ${url}`);
         });
-        // No sourceToken key at all on the message.
-        const ack = await mock.dispatch({ kind: "start_import", url: TAB_URL });
+        const ack = await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
         expect(ack).toEqual({ ok: true });
         await settle(mock);
         // Every source request went out with NO Authorization header (an empty

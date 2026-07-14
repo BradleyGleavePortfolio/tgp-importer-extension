@@ -30,13 +30,20 @@ function storageArea(seed) {
 // makeBgMock({ session }) — `session` seeds chrome.storage.session so a test can
 // simulate a service-worker restart (session survives) vs a browser restart
 // (session empty).
-export function makeBgMock({ session } = {}) {
+// makeBgMock({ session, tab }) — `tab` models the coach's live source tab that
+// collectSourceToken interrogates: `tab.url` is what chrome.tabs.get returns (so
+// the live-origin allowlist check runs), and the reply to a collect_source_token
+// tabs.sendMessage is `tab.sendMessage(id, msg)` when provided, else `{ ok: true,
+// token }` when `tab.token` is set, else `{ ok: false }`. tabs.get / sendMessage
+// may be overridden with `tab.get` / `tab.sendMessage` to model failures.
+export function makeBgMock({ session, tab } = {}) {
     const onMessage = eventHub();
     const sessionStore = storageArea(session);
     const localStore = storageArea();
     const sent = [];
     const notifications = [];
     const syncSet = [];
+    const tabMessages = [];
 
     const chrome = {
         runtime: {
@@ -59,7 +66,19 @@ export function makeBgMock({ session } = {}) {
             detach: async () => {},
             sendCommand: async () => ({}),
         },
-        tabs: { onRemoved: eventHub().api, get: async (id) => ({ id }) },
+        tabs: {
+            onRemoved: eventHub().api,
+            get: async (id) => {
+                if (tab && typeof tab.get === "function") return tab.get(id);
+                return tab ? { id, url: tab.url } : { id };
+            },
+            sendMessage: async (id, message) => {
+                tabMessages.push({ id, message });
+                if (tab && typeof tab.sendMessage === "function") return tab.sendMessage(id, message);
+                if (tab && typeof tab.token === "string") return { ok: true, token: tab.token };
+                return { ok: false };
+            },
+        },
         notifications: { create: (opts) => { notifications.push(opts); } },
     };
 
@@ -91,6 +110,7 @@ export function makeBgMock({ session } = {}) {
         sent,
         notifications,
         syncSet,
+        tabMessages,
         sessionMap: sessionStore.map,
         localMap: localStore.map,
     };

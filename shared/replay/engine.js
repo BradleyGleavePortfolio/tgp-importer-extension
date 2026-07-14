@@ -108,6 +108,7 @@ export async function runReplay(options) {
     let totalEntities = 0;
     let truncated = false; // a budget / per-step page cap cut the walk short
     let degraded = false; // at least one page was skipped (malformed / retries exhausted)
+    let lastSkipStatus = null; // status/category of the last skipped page (diagnostic only, no body)
 
     const abortedNow = () => signal !== null && signal.aborted === true;
     const budgetLeft = () => totalPages < budgets.maxPages && totalEntities < budgets.maxEntities;
@@ -144,9 +145,14 @@ export async function runReplay(options) {
                     throw new AbortError();
                 }
                 if (err instanceof Error && err.name === "MalformedResponseError") {
+                    lastSkipStatus = "malformed";
                     return null; // shape-shifted/garbage page — skip, do not retry
                 }
                 if (attempt >= maxAttempts || !isRetryable(err)) {
+                    // Preserve the failure status/category (never a body) so a 5xx is diagnosable.
+                    lastSkipStatus = typeof err.status === "number"
+                        ? err.status
+                        : (err instanceof Error ? err.name : "error");
                     return null; // give up on this page; the run stays bounded
                 }
                 // transient — retry (next loop iteration)
@@ -290,7 +296,7 @@ export async function runReplay(options) {
         // Abort is a normal terminal outcome (coach cancelled / auth lost upstream
         // triggered an abort); auth loss must propagate so the caller fails closed.
         if (isAborted(err)) {
-            return { status: "cancelled", pages: totalPages, entities: totalEntities, truncated, degraded };
+            return { status: "cancelled", pages: totalPages, entities: totalEntities, truncated, degraded, lastSkipStatus };
         }
         throw err;
     }
@@ -309,5 +315,5 @@ export async function runReplay(options) {
     else {
         status = "complete";
     }
-    return { status, pages: totalPages, entities: totalEntities, truncated, degraded };
+    return { status, pages: totalPages, entities: totalEntities, truncated, degraded, lastSkipStatus };
 }

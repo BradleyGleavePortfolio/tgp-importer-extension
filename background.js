@@ -90,6 +90,18 @@ function readString(record, key) {
 
 // ---- ingest transport -------------------------------------------------------
 
+// A TGP-side auth loss (refresh exhausted mid-crawl), distinct from the source
+// AuthLostError: routes to PAIRING. Its own type keeps the single friendly
+// "session expired" terminal state from being overwritten by the run's catch.
+function tgpAuthLost() {
+    const err = new Error("auth_required");
+    err.name = "TgpAuthLostError";
+    return err;
+}
+function isTgpAuthLost(err) {
+    return err instanceof Error && err.name === "TgpAuthLostError";
+}
+
 // POST a batch to /api/scout/ingest with the bearer token (finite timeout).
 // On 401, refresh once and retry. If the retry also 401s, invoke onAuthLost and stop.
 function makeSender(intent, onAuthLost) {
@@ -111,14 +123,14 @@ function makeSender(intent, onAuthLost) {
             if (refreshed === null) {
                 await clearTokens();
                 onAuthLost();
-                throw new Error("auth_required");
+                throw tgpAuthLost();
             }
             token = refreshed;
             res = await attempt(token);
             if (res.status === 401) {
                 await clearTokens();
                 onAuthLost();
-                throw new Error("auth_required");
+                throw tgpAuthLost();
             }
         }
         if (!res.ok) {
@@ -129,8 +141,9 @@ function makeSender(intent, onAuthLost) {
 
 async function completeIngest(intent) {
     const token = await getAccessToken();
+    let res;
     try {
-        await fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/ingest/complete`, {
+        res = await fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/ingest/complete`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
             body: JSON.stringify({ intent_id: intent.intentId, platform: intent.platform }),
@@ -143,6 +156,11 @@ async function completeIngest(intent) {
             throw new Error("complete_timeout");
         }
         throw err;
+    }
+    // Never claim success without a backend ack: a non-2xx complete means the run
+    // did NOT finalise, so surface it instead of a dishonest ingest_succeeded.
+    if (!res.ok) {
+        throw new Error(`complete ${res.status}`);
     }
 }
 
@@ -253,6 +271,10 @@ async function handleStartIngest(message) {
         notifyComplete(platform);
     }
     catch (err) {
+        // TGP-side auth loss already broadcast the friendly re-pair state; keep it.
+        if (isTgpAuthLost(err)) {
+            return;
+        }
         const detail = err instanceof Error ? err.message : "import failed";
         broadcastStatus({
             ...currentSnapshot,
@@ -263,16 +285,14 @@ async function handleStartIngest(message) {
 }
 
 // ---- autonomous replay run (start_import) -----------------------------------
-
 // Single-flight: a boolean set SYNCHRONOUSLY in the router before the async
-// handler runs, so two start_import messages racing before the first awaits
-// cannot both start a crawl. The router clears it when the run settles.
+// handler runs (so a pre-await race cannot pass) and SHARED across BOTH ingest
+// entrypoints (start_import + legacy start_ingest). Cleared when the run settles.
 let importInFlight = false;
 
-// Confine the crawl to exactly the origin the coach is looking at: the observed
-// tab origin (https only) is the injected SSRF allowlist. The blueprint's
-// apiBase origin must match it, or normalizeBlueprint fails closed before any
-// fetch. Never a hardcoded competitor map — site-agnostic by construction.
+// Confine the crawl to the origin the coach is looking at: the observed tab
+// origin (https only) is the injected SSRF allowlist the blueprint's apiBase must
+// match. Never a hardcoded competitor map — site-agnostic by construction.
 function tabOriginAllowlist(url) {
     let u;
     try {
@@ -284,12 +304,9 @@ function tabOriginAllowlist(url) {
     return u.protocol === "https:" ? [u.origin] : null;
 }
 
-// Build the injected fetchJson the engine calls per page. It carries the SOURCE
-// platform bearer (so the crawl truly authenticates as the coach) plus the
-// coach's in-tab cookies (credentials: "include"). A 401/403 from the source is
-// mapped to AuthLostError, which the engine propagates so the run fails closed —
-// crucially WITHOUT calling clearTokens(): source auth loss invalidates only the
-// (in-memory, per-run) source session and must never clear the TGP tokens.
+// Build the injected fetchJson the engine calls per page: carries the SOURCE bearer
+// + in-tab cookies. A source 401/403 maps to AuthLostError so the run fails closed
+// WITHOUT clearTokens() — source auth loss never clears the TGP tokens.
 function makeSourceFetch(sourceToken) {
     return async function fetchJson(url, { method, signal, timeoutMs }) {
         const headers = sourceToken.length > 0 ? { Authorization: `Bearer ${sourceToken}` } : {};
@@ -312,6 +329,34 @@ function makeSourceFetch(sourceToken) {
             throw err;
         }
     };
+}
+
+// Obtain the SOURCE bearer from the coach's own tab WITHOUT exposing it to
+// popup/storage/logs/payload: re-read the tab's LIVE origin and require it in the
+// allowlist (fail closed on a navigated tab), accept only { ok, token }. Memory only.
+async function collectSourceToken(tabId, allowedOrigins) {
+    if (typeof tabId !== "number") {
+        return "";
+    }
+    let tab;
+    try {
+        tab = await chrome.tabs.get(tabId);
+    }
+    catch {
+        return "";
+    }
+    const origin = tabOriginAllowlist(readString(tab, "url"))?.[0] ?? null;
+    if (origin === null || !allowedOrigins.includes(origin)) {
+        return ""; // the tab is not (or no longer) the confirmed source origin
+    }
+    let reply;
+    try {
+        reply = await chrome.tabs.sendMessage(tabId, { kind: "collect_source_token" });
+    }
+    catch {
+        return ""; // no content script / port closed — proceed token-less (fails closed downstream)
+    }
+    return isRecord(reply) && reply.ok === true && typeof reply.token === "string" ? reply.token : "";
 }
 
 async function handleStartImport(message) {
@@ -354,12 +399,12 @@ async function handleStartImport(message) {
     broadcastStatus({ ...emptySnapshot(), intent, progress: [] });
 
     const sendEntities = makeSender(intent, () => {
-        // TGP-side auth loss: makeSender already cleared the TGP tokens; abort
-        // the crawl and route the coach back to pairing.
+        // TGP-side auth loss: makeSender already cleared the tokens; route to pairing.
         controller.abort();
         broadcastAuthRequired("session expired — please sign in again");
     });
-    const sourceToken = typeof message.sourceToken === "string" ? message.sourceToken : "";
+    // Real source bearer from the coach's own tab; absent -> "" -> fails closed.
+    const sourceToken = await collectSourceToken(message.tabId, allowedOrigins);
 
     try {
         const result = await runReplay({
@@ -371,24 +416,46 @@ async function handleStartImport(message) {
             allowedOrigins,
         });
         if (result.status === "complete" || result.status === "partial") {
+            // Both finalise, but a partial walk reports a DISTINCT state (not success).
             await completeIngest(intent);
-            broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_succeeded" } });
+            const partial = result.status === "partial";
+            broadcastStatus({
+                ...currentSnapshot,
+                intent: { ...intent, status: partial ? "ingest_partial" : "ingest_succeeded" },
+                lastError: partial ? partialDetail(result) : null,
+            });
             notifyComplete(platform);
         }
         else {
-            const detail = result.status === "cancelled" ? "import cancelled" : "import failed";
-            broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: detail });
+            broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: failDetail(result) });
         }
     }
     catch (err) {
-        // Source auth loss is fail-closed but NOT a TGP logout: the TGP tokens are
-        // untouched here (only makeSender's own 401 path clears them). Surface a
-        // source-specific message so the coach re-authenticates the SOURCE site.
+        // TGP auth loss already broadcast the friendly "session expired" state; keep it.
+        if (isTgpAuthLost(err)) {
+            return;
+        }
+        // Source auth loss is fail-closed but NOT a TGP logout: prompt a source re-login.
         const detail = isAuthLost(err)
             ? "source sign-in required — open your source platform and try again"
             : (err instanceof Error ? err.message : "import failed");
         broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: detail });
     }
+}
+
+// Terminal detail carrying only counts + failure category/status — never a
+// response body or PII (a 5xx skip stays diagnosable via lastSkipStatus).
+function partialDetail(result) {
+    const parts = [];
+    if (result.degraded === true) parts.push("some pages were skipped");
+    if (result.truncated === true) parts.push("reached the import safety limit");
+    const why = parts.length > 0 ? parts.join("; ") : "incomplete";
+    return `partial import (${why}) — ${result.entities} record(s) imported`;
+}
+function failDetail(result) {
+    if (result.status === "cancelled") return "import cancelled";
+    const s = result.lastSkipStatus;
+    return typeof s === "number" || typeof s === "string" ? `import failed — source responded ${s}` : "import failed";
 }
 
 // ---- capture control --------------------------------------------------------
@@ -469,21 +536,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return true; // async response
     }
     if (isStartIngest(message)) {
-        void handleStartIngest(message);
+        // Shared single-flight (see importInFlight): reject a second concurrent run.
+        if (importInFlight) {
+            sendResponse({ ok: false, error: "import_in_progress" });
+            return false;
+        }
+        importInFlight = true;
+        void handleStartIngest(message).finally(() => { importInFlight = false; });
         sendResponse({ ok: true });
         return false;
     }
     if (isStartImport(message)) {
-        // A crawl reuses the coach's SOURCE session and drives TGP ingest, so it
-        // may only be triggered by one of THIS extension's own pages — an
-        // extension-id match alone is not enough (a compromised content script
-        // shares the id). Gate on the full trusted-page shape.
+        // A crawl reuses the coach's SOURCE session, so it may only be triggered by
+        // one of THIS extension's own pages — an id match alone is not enough (a
+        // compromised content script shares the id). Gate on the trusted-page shape.
         if (!isTrustedExtensionPage(sender)) {
             sendResponse({ ok: false, error: "untrusted_sender" });
             return false;
         }
-        // Single-flight: reject a second concurrent run. Set the flag BEFORE the
-        // async handler so a race between two messages cannot both pass.
+        // Shared single-flight (see importInFlight): reject a second concurrent run.
         if (importInFlight) {
             sendResponse({ ok: false, error: "import_in_progress" });
             return false;
