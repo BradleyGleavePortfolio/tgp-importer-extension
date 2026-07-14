@@ -1,10 +1,15 @@
 {
   "name": "tgp-importer-extension",
-  "version": "0.2.0-design",
+  "version": "0.3.0-rc.1",
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "check:ratio": "node scripts/check-test-ratio.mjs",
+    "check:banned": "node scripts/check-banned.mjs",
+    "check:loc": "node scripts/check-prod-loc.mjs",
+    "check:flags": "node scripts/check-flag-discipline.mjs",
+    "gates": "npm run check:banned && npm run check:loc && npm run check:flags && npm run check:ratio"
   },
   "devDependencies": {
     "vitest": "^1.6.0"

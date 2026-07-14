@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>TGP Importer — Sign in</title>
+    <title>TGP Importer — Pair</title>
     <style>
       body {
         width: 300px;
@@ -15,6 +15,11 @@
       }
       h1 {
         font-size: 15px;
+        margin: 0 0 8px;
+      }
+      #hint {
+        color: #94a3b8;
+        font-size: 13px;
         margin: 0 0 12px;
       }
       label {
@@ -31,7 +36,9 @@
         border-radius: 6px;
         background: #1e293b;
         color: #f8fafc;
-        font: 14px/1.45 system-ui, sans-serif;
+        font: 600 20px/1.45 ui-monospace, monospace;
+        letter-spacing: 6px;
+        text-align: center;
       }
       button {
         width: 100%;
@@ -48,14 +55,6 @@
         opacity: 0.6;
         cursor: default;
       }
-      #signup {
-        display: inline-block;
-        margin-top: 14px;
-        color: #38bdf8;
-        text-decoration: none;
-        font-size: 13px;
-        cursor: pointer;
-      }
       #error {
         margin-top: 10px;
         color: #f87171;
@@ -65,16 +64,22 @@
     </style>
   </head>
   <body>
-    <h1>Sign in to TGP</h1>
-    <form id="login-form">
-      <label for="email">Email</label>
-      <input id="email" type="email" autocomplete="username" required />
-      <label for="password">Password</label>
-      <input id="password" type="password" autocomplete="current-password" required />
-      <button id="submit" type="submit">Sign in</button>
+    <h1>Pair with TGP</h1>
+    <p id="hint">Enter the 6-digit code from your TGP mobile app.</p>
+    <form id="pair-form">
+      <label for="code">Pairing code</label>
+      <input
+        id="code"
+        inputmode="numeric"
+        autocomplete="one-time-code"
+        maxlength="6"
+        pattern="\d{6}"
+        autofocus
+        required
+      />
+      <button id="submit" type="submit">Pair</button>
     </form>
-    <a id="signup" href="#">Create an Account →</a>
     <div id="error" hidden></div>
-    <script type="module" src="login.js"></script>
+    <script type="module" src="pair.js"></script>
   </body>
 </html>

@@ -21,8 +21,10 @@ Doctrine anchors used here:
    terminated at any time and has no persistent globals across restarts.
    *Source:* Chrome Extensions MV3 service-worker lifecycle docs —
    https://developer.chrome.com/docs/extensions/develop/concepts/service-workers/lifecycle
-   *Design consequence:* refresh token in `chrome.storage.local`; access token
-   rehydrated on wake (DESIGN §4).
+   *Design consequence:* refresh token in `chrome.storage.session` (survives a
+   service-worker restart within a browser session, but is cleared on browser
+   restart → intentional re-pair); access token rehydrated in memory on wake
+   (DESIGN §4). No secret is ever written to `chrome.storage.local`.
 
 2. **Cross-device identity bridge is a short-lived server-minted secret** — a
    desktop Chrome extension and a mobile-native app share no origin, cookies,
@@ -68,8 +70,9 @@ Doctrine anchors used here:
    `cookies` permission plus host access.
    *Source:* Chrome `chrome.cookies` API reference —
    https://developer.chrome.com/docs/extensions/reference/api/cookies
-   *Design consequence:* `cookies` permission already declared in
-   `manifest.json`.
+   *Design consequence:* `cookies` permission is NOT declared (least privilege).
+   Session reuse uses in-tab `credentials: "include"` under host_permissions;
+   the Cookies API is intentionally omitted.
 
 ---
 

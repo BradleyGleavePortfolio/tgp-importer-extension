@@ -10,11 +10,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history so the diff-scoped gates can resolve the merge-base.
+          fetch-depth: 0
+          # On pull_request, check out the PR head (not the synthetic merge
+          # commit). R3 identity + diff gates measure the branch commits only.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
       - run: npm install
       - name: Run tests
         run: npm test
-      - name: Enforce R74 test:src >= 2.0
+      - name: Banned-token net (silent catches + R3 commit identity)
+        run: node scripts/check-banned.mjs
+      - name: Production LOC budget
+        run: node scripts/check-prod-loc.mjs
+      - name: Flag discipline (R109 / NO-DARK-MERGES)
+        run: node scripts/check-flag-discipline.mjs
+      - name: Enforce R74 test:src >= 2.0 (PR diff)
         run: node scripts/check-test-ratio.mjs

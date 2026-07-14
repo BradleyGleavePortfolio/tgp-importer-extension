@@ -2,23 +2,36 @@
 //
 // Responsibilities (see docs/DESIGN.md §2, §4, §7, §10):
 //   - On install: seed the storage schema + empty progress snapshot.
+//   - On `session_established`: hand the token pair to shared/session.js, the
+//     single session-ownership boundary. The pairing view (popup/pair.js) is
+//     the ONLY producer of this message.
 //   - On `start_ingest`: verify token, pick the extractor via detectPlatform,
 //     wire sendEntities (bearer POST) + broadcastStatus (runtime message).
-//   - On `request_status`: return the current snapshot.
-//   - Token lifecycle: refresh access token on 401; if refresh also 401, clear
-//     both tokens and broadcast `auth_required`.
+//   - On `request_status` / `request_session_state`: return the snapshot / a
+//     non-secret hasSession boolean.
+//   - Token lifecycle lives entirely in shared/session.js (memory-only access
+//     token, chrome.storage.session refresh token). On 401 mid-crawl we refresh
+//     once; if that also fails we clear local token state + broadcast
+//     `auth_required` (there is no server logout endpoint yet — no revocation
+//     is claimed).
 //   - On completion: chrome.notifications + POST /api/scout/ingest/complete.
-//   - On SW wake: the snapshot rehydrates from chrome.storage.local; both
-//     tokens live in memory/session storage only, so a fresh sign-in may be
-//     required. Do NOT resume an in-flight run (runs are idempotent per
-//     sourceId; the backend de-dupes on sourceId, so a re-emitted completed
-//     batch is harmless).
+//   - On SW wake: the snapshot rehydrates from disk; credentials live in
+//     memory / storage.session only, so a fresh pair may be required.
+//     Do NOT resume an in-flight run (runs are idempotent per sourceId; the
+//     backend de-dupes, so a re-emitted completed batch is harmless).
 //
 // R75: zero banned type-assertions — every narrowing is a real guard.
-// R76: this file stays comfortably under 400 LOC.
 import { TGP_API_ORIGIN, makeScoutIngestBody } from "./shared/protocol.js";
+import {
+    establishSession,
+    hasActiveSession,
+    getAccessToken,
+    refreshAccessToken,
+    clearTokens,
+} from "./shared/session.js";
 import { detectPlatform } from "./extractors/detect.js";
 import { TrueCoachExtractor } from "./extractors/truecoach.js";
+import { fetchWithTimeout, isTimeout } from "./shared/net.js";
 import {
     attachDebugger,
     stopCapture,
@@ -26,21 +39,14 @@ import {
     assertCaptureTabAllowed,
 } from "./shared/capture.js";
 
-// Storage schema keys. The snapshot + schema version persist on disk via
-// chrome.storage.local. Credentials never touch disk-persisted storage:
-// the REFRESH token lives in chrome.storage.session (memory-only, gone when
-// the browser session ends) and the access token is memory-only in this
-// worker (see §4) — with the `debugger` permission held, no credential is
-// ever written to disk.
+// On-disk storage schema keys. Only the non-secret snapshot + schema version
+// live in disk-persisted storage. The refresh secret is owned exclusively by
+// shared/session.js (chrome.storage.session); no credential ever touches
+// on-disk storage, even with the `debugger` permission held (§4).
 const STORAGE_KEYS = {
-    refreshToken: "tgp_refresh_token",
     snapshot: "tgp_status_snapshot",
     schemaVersion: "tgp_schema_version",
 };
-
-// Memory-only access token. Undefined after a SW death; rehydrated lazily via
-// the refresh endpoint on the first call that needs it.
-let accessTokenInMemory;
 
 // The one live snapshot the popup renders.
 let currentSnapshot = emptySnapshot();
@@ -58,11 +64,17 @@ function isStartIngest(m) {
 function isRequestStatus(m) {
     return isRecord(m) && m.kind === "request_status";
 }
+function isRequestSessionState(m) {
+    return isRecord(m) && m.kind === "request_session_state";
+}
 function isStartCapture(m) {
     return isRecord(m) && m.kind === "start_capture";
 }
 function isStopCapture(m) {
     return isRecord(m) && m.kind === "stop_capture";
+}
+function isSessionEstablished(m) {
+    return isRecord(m) && m.kind === "session_established";
 }
 function readTabId(m) {
     return isRecord(m) && typeof m.tabId === "number" ? m.tabId : null;
@@ -71,64 +83,10 @@ function readString(record, key) {
     return isRecord(record) && typeof record[key] === "string" ? record[key] : null;
 }
 
-// ---- token lifecycle --------------------------------------------------------
-
-async function readRefreshToken() {
-    const stored = await chrome.storage.session.get(STORAGE_KEYS.refreshToken);
-    return readString(stored, STORAGE_KEYS.refreshToken);
-}
-
-async function clearTokens() {
-    accessTokenInMemory = undefined;
-    await chrome.storage.session.remove(STORAGE_KEYS.refreshToken);
-}
-
-// Mint a fresh access token from the stored refresh token. Returns null when no
-// refresh token exists or the refresh call is rejected (caller handles auth).
-async function refreshAccessToken() {
-    const refreshToken = await readRefreshToken();
-    if (refreshToken === null) {
-        return null;
-    }
-    const res = await fetch(`${TGP_API_ORIGIN}/auth/extension/refresh`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ refresh_token: refreshToken }),
-    });
-    if (!res.ok) {
-        return null;
-    }
-    const body = await res.json();
-    const next = readString(body, "access_token");
-    if (next === null) {
-        return null;
-    }
-    accessTokenInMemory = next;
-    // Honour refresh-token rotation when the backend returns a new one.
-    const rotated = readString(body, "refresh_token");
-    if (rotated !== null) {
-        await chrome.storage.session.set({ [STORAGE_KEYS.refreshToken]: rotated });
-    }
-    return next;
-}
-
-// Return a usable access token, minting one from the refresh token if the
-// in-memory copy is absent (cold SW wake). Throws when no session exists.
-async function getAccessToken() {
-    if (typeof accessTokenInMemory === "string" && accessTokenInMemory.length > 0) {
-        return accessTokenInMemory;
-    }
-    const minted = await refreshAccessToken();
-    if (minted === null) {
-        throw new Error("no_session");
-    }
-    return minted;
-}
-
 // ---- ingest transport -------------------------------------------------------
 
-// POST a batch to /api/scout/ingest with the bearer token. On 401, refresh once
-// and retry. If the retry also 401s, invoke onAuthLost and stop.
+// POST a batch to /api/scout/ingest with the bearer token (finite timeout).
+// On 401, refresh once and retry. If the retry also 401s, invoke onAuthLost and stop.
 function makeSender(intent, onAuthLost) {
     return async function sendEntities(entityType, entities) {
         // Entities pass through VERBATIM — each is the camelCase makeEntity()
@@ -136,7 +94,7 @@ function makeSender(intent, onAuthLost) {
         // backend ScoutEntityDto validates 1:1 (R80-CLARIFY-1). Re-mapping or
         // renaming here would 400 every batch.
         const body = JSON.stringify(makeScoutIngestBody(intent.intentId, entityType, entities));
-        const attempt = async (token) => fetch(`${TGP_API_ORIGIN}/api/scout/ingest`, {
+        const attempt = async (token) => fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/ingest`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
             body,
@@ -166,11 +124,21 @@ function makeSender(intent, onAuthLost) {
 
 async function completeIngest(intent) {
     const token = await getAccessToken();
-    await fetch(`${TGP_API_ORIGIN}/api/scout/ingest/complete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ intent_id: intent.intentId, platform: intent.platform }),
-    });
+    try {
+        await fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/ingest/complete`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ intent_id: intent.intentId, platform: intent.platform }),
+        });
+    }
+    catch (err) {
+        // Bounded: a hung complete must not pin the MV3 worker. Fail closed so
+        // the caller can surface ingest_failed rather than hang forever.
+        if (isTimeout(err)) {
+            throw new Error("complete_timeout");
+        }
+        throw err;
+    }
 }
 
 // ---- install / wake ---------------------------------------------------------
@@ -315,6 +283,21 @@ async function handleStopCapture(tabId) {
 
 // ---- message router ---------------------------------------------------------
 
+// A token-bearing message is only trusted from one of THIS extension's own
+// pages (the popup / pairing view): same extension id, an extension-origin URL,
+// and no originating tab. A content script shares our id but carries a web-page
+// URL + a `tab`, so this rejects a compromised content script trying to inject
+// a forged session (§13.4) — ID-only trust is not enough for secrets.
+function isTrustedExtensionPage(sender) {
+    return (
+        isRecord(sender) &&
+        sender.id === chrome.runtime.id &&
+        sender.tab === undefined &&
+        typeof sender.url === "string" &&
+        sender.url.startsWith(`chrome-extension://${chrome.runtime.id}/`)
+    );
+}
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     // Only trust messages originating from this extension's own pages/scripts.
     // onMessageExternal is never registered, so cross-extension senders have no
@@ -324,6 +307,31 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     }
     if (isRequestStatus(message)) {
         void rehydrateSnapshot().then(() => sendResponse(currentSnapshot));
+        return true; // async response
+    }
+    if (isRequestSessionState(message)) {
+        // Non-secret routing/observability signal for the popup: a boolean only,
+        // never any token material.
+        hasActiveSession().then(
+            (has) => sendResponse({ ok: true, hasSession: has }),
+            () => sendResponse({ ok: true, hasSession: false }),
+        );
+        return true; // async response
+    }
+    if (isSessionEstablished(message)) {
+        // Secrets in flight: require a trusted extension-page sender, not just a
+        // matching extension id.
+        if (!isTrustedExtensionPage(sender)) {
+            return false;
+        }
+        const accessToken = readString(message, "accessToken");
+        const refreshToken = readString(message, "refreshToken");
+        // establishSession validates the payload and, on malformed input,
+        // rejects WITHOUT mutating any existing session (fail-closed). It does
+        // not broadcast, so it never clobbers an in-flight ingest snapshot.
+        establishSession(accessToken, refreshToken).then(sendResponse, () => {
+            sendResponse({ ok: false, error: "session_established_failed" });
+        });
         return true; // async response
     }
     if (isStartIngest(message)) {
@@ -356,4 +364,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
 });
 
-export { TGP_API_ORIGIN, clearTokens };
+// Internal token-lifecycle API, re-exported from the single owner
+// (shared/session.js) for the service-worker module graph + the test harness.
+// Never exposed on any runtime message surface (§13.4), so this is not a
+// token-leakage vector.
+export { TGP_API_ORIGIN };
+export { clearTokens, getAccessToken } from "./shared/session.js";

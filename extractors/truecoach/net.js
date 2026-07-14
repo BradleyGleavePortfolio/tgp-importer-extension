@@ -1,5 +1,6 @@
 // Runtime networking + date-window helpers for the TrueCoach extractor.
 // Kept separate from the pure parsers so the parse layer stays DOM/fetch-free.
+import { fetchWithTimeout } from "../../shared/net.js";
 import { TRUECOACH_API_BASE } from "../../shared/protocol.js";
 export const RATE_LIMIT_MS = 500; // ~2 requests/second
 export const CLIENTS_PER_PAGE = 25;
@@ -55,12 +56,17 @@ export function authHeaders(token) {
 }
 async function rawFetch(path, token, signal, rateMs = RATE_LIMIT_MS) {
     await sleep(rateMs, signal);
-    const res = await fetch(`${TRUECOACH_API_BASE}${path}`, {
-        method: "GET",
-        headers: authHeaders(token),
-        credentials: "include",
-        signal,
-    });
+    // fetchWithTimeout composes caller signal + finite deadline (shared/net.js).
+    const res = await fetchWithTimeout(
+        fetch,
+        `${TRUECOACH_API_BASE}${path}`,
+        {
+            method: "GET",
+            headers: authHeaders(token),
+            credentials: "include",
+            signal,
+        },
+    );
     if (!res.ok) {
         throw new Error(`GET ${path} -> ${res.status}`);
     }

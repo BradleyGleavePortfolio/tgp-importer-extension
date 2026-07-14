@@ -90,7 +90,7 @@ extension popup.
    backend, if the code is unexpired and unused, returns
    `{ access_token, refresh_token, chosen_platform }` bound to the coach's
    TGP account. Both tokens are stored per §4 (refresh in
-   `chrome.storage.local`, access in memory only). The chosen platform is
+   `chrome.storage.session`, access in memory only). The chosen platform is
    stored in `chrome.storage.local` under `session.chosen_platform` so the
    popup can render the platform-specific CTA on next open.
 8. **Auto-open source platform + popup fires.** With pairing complete, the
@@ -194,20 +194,37 @@ by the v0.1 implementation PR (this design PR is docs-only). The v0.2
     rotated refresh token) given a valid refresh token. Used for **token
     rotation** and to recover from a 401 mid-crawl.
   - `POST /auth/extension/logout` → **revokes** the coach's extension refresh
-    token and its rotation family. Called on explicit disconnect/logout and on
-    uninstall cleanup; after it succeeds the extension clears local token state
-    and returns to the pairing view (threat model §13.4).
-- **Storage rules (MV3-aware, unchanged from v0.2).**
-  - The **refresh token** is persisted in `chrome.storage.local`.
+    token and its rotation family. **Extension-wiring status (v0.3 RC):** this
+    call is **not yet wired** in the extension. `clearTokens()` today performs a
+    **local-only** clear (drops the in-memory access token and removes the
+    refresh token from `chrome.storage.session`) and makes **no server-side
+    revocation guarantee**; server revocation still occurs via reuse-detection
+    on the next refresh (§13.4) and admin-forced revocation. Wiring the explicit
+    `/auth/extension/logout` call is tracked as a follow-up; until then the code
+    comment in `shared/session.js` is the source of truth and must not claim
+    revocation. This resolves the prior doc/code ambiguity (the doc implied the
+    call was wired; it is not).
+- **Storage rules (MV3-aware).**
+  - The **refresh token** is persisted in `chrome.storage.session` — a trusted,
+    browser-session-scoped store that survives service-worker restarts but is
+    cleared when the browser session ends. It is **never** written to
+    `chrome.storage.local` or `.sync`. Rationale: `storage.session` keeps the
+    only persisted secret out of on-disk storage, and its browser-session
+    lifetime makes **browser restart intentionally require a fresh pair** (a
+    coach who quits Chrome re-pairs from the mobile app — no long-lived bearer
+    is ever left at rest on disk).
   - The **access token** is kept **in memory only** — in a background
     worker-scoped variable. It is **never** written to `chrome.storage.session`
     or `.local`. Rationale: an MV3 service worker is killed frequently and
     unpredictably; treating the access token as ephemeral avoids leaving a
     live bearer at rest.
   - **On service-worker wake**, the worker has no in-memory access token. It
-    **rehydrates** by reading the refresh token from `chrome.storage.local` and
-    calling `/auth/extension/refresh` to mint a fresh access token on demand
-    (lazily, on the first call that needs it).
+    **rehydrates** by reading the refresh token from `chrome.storage.session`
+    (which outlives the worker within the same browser session) and calling
+    `/auth/extension/refresh` to mint a fresh access token on demand (lazily,
+    on the first call that needs it). After a **browser restart** the session
+    store is empty, so there is nothing to rehydrate and the popup returns to
+    the pairing view.
   - If refresh itself returns 401, the worker clears both tokens and broadcasts
     `auth_required`; the popup then falls back to the pairing view. The coach
     re-initiates from the mobile app to get a new pairing code.
@@ -233,7 +250,7 @@ DOM, and auth are identical to the flagship host — only the hostname prefix
 changes.
 
 - **Coverage:** *free.* A **wildcard host-permission**
-  (`*://*.truecoach.co/*`) plus `detectPlatform(url)` matching on the hostname
+  (`https://*.truecoach.co/*`) plus `detectPlatform(url)` matching on the hostname
   **suffix** picks the right extractor regardless of the brand prefix.
 - **Per-brand effort:** **zero.** No new manifest entry, no new code per brand.
 
@@ -294,9 +311,12 @@ These are **non-negotiable** design constraints. Each is sourced in
 
 - **Chrome MV3 sandbox.** The background is a **service worker** that can be
   **terminated at any time**. There are **no persistent globals** across SW
-  deaths. Any state that must survive a wake (the refresh token, the chosen
-  platform, the progress snapshot schema) lives in `chrome.storage.local`;
-  the access token is rehydrated via `/auth/extension/refresh` on wake (§4).
+  deaths. Non-secret state that must survive a wake (the chosen platform, the
+  progress snapshot schema) lives in `chrome.storage.local`; the **refresh
+  token** lives in `chrome.storage.session` (survives SW restarts, cleared on
+  browser restart → re-pair) and the access token is rehydrated in memory via
+  `/auth/extension/refresh` on wake (§4). No secret is ever written to
+  `chrome.storage.local`.
 - **Cross-device identity bridge is a short-lived server-minted secret.**
   A desktop Chrome extension and a mobile-native app share no origin, no
   cookies, no runtime messaging channel. The only cross-device bridge that
@@ -319,8 +339,7 @@ These are **non-negotiable** design constraints. Each is sourced in
   `new Function`, no remote code. Every module in this repo is a static file
   loaded by the manifest.
 - **Cookies API.** Reading the source platform's session cookie (e.g. the
-  TrueCoach session) requires the `cookies` permission — **already present** in
-  `manifest.json`.
+  TrueCoach session) uses in-tab `credentials: "include"` on same-origin fetches under host_permissions — the `cookies` API permission is **not** required and is intentionally omitted (least privilege).
 
 ---
 
@@ -341,11 +360,16 @@ contract. Each carries an R131 re-verification trigger (see
   captures on 2026-06-30**. Re-verify quarterly per R131 (next trigger:
   2026-09-30).
 - **The backend exposes `/api/extension/pair/*` and `/auth/extension/refresh`.**
-  These endpoint groups are **not yet built** in full — they are a **TGP-side
-  dependency** (see §Backend dependencies). Until they exist, the pairing flow
-  cannot complete end-to-end. `POST /auth/extension/refresh` was delivered by
-  IMPORTER-A (#496 in `growth-project-backend`, merged 2026-07); the pairing
-  endpoints are new work.
+  As of the v0.3 RC these contracts are **merged**: `POST /auth/extension/refresh`
+  by IMPORTER-A (#496 in `growth-project-backend`) and the pairing endpoints
+  (`/api/extension/pair/redeem`, `init`, `status`) by IMPORTER-D (#502). Because
+  the extension's SOLE auth path now has a live backend contract, `PAIRING_ENABLED`
+  ships **true** for the RC (R109 / NO-DARK-MERGES); the
+  `scripts/check-flag-discipline.mjs` gate pins it on. The one remaining
+  extension-side gap is the explicit `/auth/extension/logout` wiring (§4) —
+  local-only clear until then. **Production readiness caveat:** enabling the flag
+  couples this build to those endpoints being live in the target environment; a
+  release tag is deliberately **not** cut in this PR.
 - **The inline email/password assumption from v0.2 is retired.** DESIGN.md
   v0.2 §8 listed *"coaches accept inline email/password"* as a challengeable
   assumption. v0.3 removes the inline login surface entirely, so the
@@ -353,7 +377,7 @@ contract. Each carries an R131 re-verification trigger (see
 - **The extension recognises source platforms by these exact origin patterns.**
   Static, install-time coverage is precisely two match patterns:
   `https://app.truecoach.co/*` (flagship host — `content_scripts.matches` and
-  `host_permissions`) and `*://*.truecoach.co/*` (the Tier-1 brand-subdomain
+  `host_permissions`) and `https://*.truecoach.co/*` (the Tier-1 brand-subdomain
   wildcard in `host_permissions`, resolved to the TrueCoach extractor by
   `detectPlatform(url)` matching on the `.truecoach.co` hostname **suffix**).
   Tier-2 vanity domains are **not** in this set at install time; each is added
@@ -558,16 +582,23 @@ explicitly:
   (`POST /auth/extension/logout`, §13.7 / §4) and on admin-forced revocation
   (operator or security response). Revocation invalidates the refresh token
   server-side immediately; the next refresh fails and the extension clears
-  local state and returns to the pairing view.
+  local state and returns to the pairing view. **v0.3 RC caveat:** the extension
+  does not yet *initiate* `/auth/extension/logout`; local logout is a local-only
+  `clearTokens()` (§4). Server-side revocation therefore currently flows from
+  reuse-detection on the next refresh and admin-forced revocation, not from an
+  extension-initiated logout call.
 - **Rotation cadence.** The refresh window matches the Supabase default; every
   `POST /auth/extension/refresh` MAY return a rotated refresh token, and the
   extension replaces the stored one atomically. Access tokens are short-lived
   and minted on demand.
-- **Key material storage.** The access token lives
-  in memory / `chrome.storage.session` **only**, never `chrome.storage.local`.
-  The **sole** persisted secret is the rotating refresh token in
-  `chrome.storage.local` (required for MV3 wake, §4); it is narrowly scoped to
-  the extension audience and single-use per rotation.
+- **Key material storage.** The access token lives **in memory only**, never
+  `chrome.storage.session` or `chrome.storage.local`. The **sole** persisted
+  secret is the rotating refresh token in `chrome.storage.session` (required to
+  survive an MV3 service-worker restart within a browser session, §4); it is
+  narrowly scoped to the extension audience and single-use per rotation. Nothing
+  secret is ever written to `chrome.storage.local`, and `storage.session`'s
+  browser-session lifetime means a browser restart clears it → intentional
+  re-pair.
 - **Stolen-refresh mitigation.** Refresh tokens are **single-use with reuse
   detection**: presenting an already-rotated refresh token is treated as a
   compromise signal → the backend **revokes the entire token family** for that

@@ -39,7 +39,10 @@ describe("storage policy — no token ever touches chrome.storage.local", () => 
     it("scans a non-empty production source set", () => {
         const rels = files.map((f) => f.slice(ROOT.length + 1));
         expect(rels).toContain("background.js");
-        expect(rels).toContain(join("popup", "login.js"));
+        expect(rels).toContain(join("shared", "session.js"));
+        expect(rels).toContain(join("popup", "pair.js"));
+        // The forbidden inline-login surface must not exist (DESIGN §§3,4,12).
+        expect(rels).not.toContain(join("popup", "login.js"));
     });
 
     it("finds no line coupling chrome.storage.local with token handling", () => {
@@ -55,11 +58,28 @@ describe("storage policy — no token ever touches chrome.storage.local", () => 
         expect(offenders).toEqual([]);
     });
 
-    it("refresh-token writes go through chrome.storage.session", () => {
-        const login = readFileSync(join(ROOT, "popup", "login.js"), "utf8");
-        expect(login).toContain("chrome.storage.session.set({ [STORAGE_KEY_REFRESH]: refreshToken })");
+    it("shared/session.js is the sole owner of refresh-token storage.session I/O", () => {
+        const session = readFileSync(join(ROOT, "shared", "session.js"), "utf8");
+        expect(session).toContain("chrome.storage.session.set({ [REFRESH_TOKEN_KEY]: refreshToken })");
+        expect(session).toContain("chrome.storage.session.get(REFRESH_TOKEN_KEY)");
+        expect(session).toContain("chrome.storage.session.remove(REFRESH_TOKEN_KEY)");
+        // The worker must NOT do its own refresh-token storage I/O — it delegates
+        // to the single owner, so there is exactly one place secrets are stored.
         const background = readFileSync(join(ROOT, "background.js"), "utf8");
-        expect(background).toContain("chrome.storage.session.get(STORAGE_KEYS.refreshToken)");
-        expect(background).toContain("chrome.storage.session.remove(STORAGE_KEYS.refreshToken)");
+        expect(background).not.toMatch(/chrome\.storage\.session\.\w+/);
+    });
+
+    it("shared/pairing.js is the only producer and relays session_established", () => {
+        const pairing = readFileSync(join(ROOT, "shared", "pairing.js"), "utf8");
+        expect(pairing).toContain('kind: "session_established"');
+        // The producer owns no storage — it hands tokens to the worker only.
+        expect(pairing).not.toMatch(/chrome\.storage\.(local|session|sync)\.\w+/);
+    });
+
+    it("the pairing popup owns no session state and never calls chrome.storage", () => {
+        const pair = readFileSync(join(ROOT, "popup", "pair.js"), "utf8");
+        // The single ownership boundary is the background worker, so the popup
+        // must not invoke any storage API (prose comments are fine; calls not).
+        expect(pair).not.toMatch(/chrome\.storage\.(local|session|sync)\.\w+/);
     });
 });
