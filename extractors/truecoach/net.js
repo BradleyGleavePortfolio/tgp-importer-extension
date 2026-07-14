@@ -56,40 +56,21 @@ export function authHeaders(token) {
 }
 async function rawFetch(path, token, signal, rateMs = RATE_LIMIT_MS) {
     await sleep(rateMs, signal);
-    // Finite timeout in addition to the caller abort signal: a hung competitor
-    // origin must not pin the MV3 worker. Abort either path via the shared
-    // controller; caller's signal still cancels the crawl.
-    const controller = new AbortController();
-    const onCallerAbort = () => controller.abort();
-    if (signal) {
-        if (signal.aborted) {
-            controller.abort();
-        }
-        else {
-            signal.addEventListener("abort", onCallerAbort, { once: true });
-        }
+    // fetchWithTimeout composes caller signal + finite deadline (shared/net.js).
+    const res = await fetchWithTimeout(
+        fetch,
+        `${TRUECOACH_API_BASE}${path}`,
+        {
+            method: "GET",
+            headers: authHeaders(token),
+            credentials: "include",
+            signal,
+        },
+    );
+    if (!res.ok) {
+        throw new Error(`GET ${path} -> ${res.status}`);
     }
-    try {
-        const res = await fetchWithTimeout(
-            fetch,
-            `${TRUECOACH_API_BASE}${path}`,
-            {
-                method: "GET",
-                headers: authHeaders(token),
-                credentials: "include",
-                signal: controller.signal,
-            },
-        );
-        if (!res.ok) {
-            throw new Error(`GET ${path} -> ${res.status}`);
-        }
-        return res;
-    }
-    finally {
-        if (signal) {
-            signal.removeEventListener("abort", onCallerAbort);
-        }
-    }
+    return res;
 }
 export async function getJson(path, token, signal, rateMs = RATE_LIMIT_MS) {
     return (await rawFetch(path, token, signal, rateMs)).json();

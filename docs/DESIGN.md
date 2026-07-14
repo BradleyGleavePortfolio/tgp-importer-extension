@@ -340,7 +340,6 @@ These are **non-negotiable** design constraints. Each is sourced in
   loaded by the manifest.
 - **Cookies API.** Reading the source platform's session cookie (e.g. the
   TrueCoach session) uses in-tab `credentials: "include"` on same-origin fetches under host_permissions — the `cookies` API permission is **not** required and is intentionally omitted (least privilege).
-  `manifest.json`.
 
 ---
 

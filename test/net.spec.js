@@ -111,3 +111,43 @@ describe("isTimeout", () => {
         expect(isTimeout(undefined)).toBe(false);
     });
 });
+
+describe("fetchWithTimeout — caller signal composition", () => {
+    it("caller abort is composed (not dropped by timeout controller)", async () => {
+        const ac = new AbortController();
+        let seenSignal;
+        const fetchImpl = vi.fn((_url, init) => {
+            seenSignal = init.signal;
+            return new Promise((_resolve, reject) => {
+                init.signal.addEventListener("abort", () => {
+                    const err = new Error("aborted");
+                    err.name = "AbortError";
+                    reject(err);
+                });
+            });
+        });
+        const p = fetchWithTimeout(fetchImpl, "https://x/y", { signal: ac.signal }, 60000);
+        // Let the fetch start, then abort via caller.
+        await Promise.resolve();
+        ac.abort();
+        await expect(p).rejects.toMatchObject({ name: "AbortError" });
+        expect(seenSignal).toBeDefined();
+        expect(seenSignal.aborted).toBe(true);
+    });
+
+    it("pre-aborted caller signal fails closed immediately", async () => {
+        const ac = new AbortController();
+        ac.abort();
+        const fetchImpl = vi.fn((_url, init) => {
+            if (init.signal.aborted) {
+                const err = new Error("aborted");
+                err.name = "AbortError";
+                return Promise.reject(err);
+            }
+            return Promise.resolve({ ok: true });
+        });
+        await expect(
+            fetchWithTimeout(fetchImpl, "https://x/y", { signal: ac.signal }, 60000),
+        ).rejects.toMatchObject({ name: "AbortError" });
+    });
+});
