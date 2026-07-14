@@ -36,6 +36,10 @@ let accessTokenInMemory;
 // token value — robust even if the same token string recurs).
 let stateEpoch = 0;
 
+// Coalesce concurrent cold-wake refreshes so the same refresh token is never
+// presented twice in parallel (backend reuse-detection would force a re-pair).
+let refreshInFlight = null;
+
 // Serializes state transitions. Each transition chains onto the previous one so
 // they apply atomically relative to each other; a rejected transition never
 // breaks the chain for the next.
@@ -116,6 +120,16 @@ export function establishSession(accessToken, refreshToken) {
 // token — the prior session state is preserved and the caller fails closed,
 // exactly as establishSession does (no asymmetric wipe / no torn pair).
 export async function refreshAccessToken() {
+    if (refreshInFlight !== null) {
+        return refreshInFlight;
+    }
+    refreshInFlight = refreshAccessTokenOnce().finally(() => {
+        refreshInFlight = null;
+    });
+    return refreshInFlight;
+}
+
+async function refreshAccessTokenOnce() {
     const snapshot = await withStateLock(async () => ({
         token: await readRefreshToken(),
         epoch: stateEpoch,

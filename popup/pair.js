@@ -58,6 +58,10 @@ el("pair-form").addEventListener("submit", (event) => {
         }
         showError(result.error);
         disableSubmit(false);
+    }).catch(() => {
+        // Messaging/runtime failure — never leave the sole sign-in form wedged.
+        showError("Something went wrong pairing this device. Try again.");
+        disableSubmit(false);
     });
 });
 

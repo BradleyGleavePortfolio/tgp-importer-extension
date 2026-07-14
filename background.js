@@ -31,6 +31,7 @@ import {
 } from "./shared/session.js";
 import { detectPlatform } from "./extractors/detect.js";
 import { TrueCoachExtractor } from "./extractors/truecoach.js";
+import { fetchWithTimeout, isTimeout } from "./shared/net.js";
 import {
     attachDebugger,
     stopCapture,
@@ -84,8 +85,8 @@ function readString(record, key) {
 
 // ---- ingest transport -------------------------------------------------------
 
-// POST a batch to /api/scout/ingest with the bearer token. On 401, refresh once
-// and retry. If the retry also 401s, invoke onAuthLost and stop.
+// POST a batch to /api/scout/ingest with the bearer token (finite timeout).
+// On 401, refresh once and retry. If the retry also 401s, invoke onAuthLost and stop.
 function makeSender(intent, onAuthLost) {
     return async function sendEntities(entityType, entities) {
         // Entities pass through VERBATIM — each is the camelCase makeEntity()
@@ -93,7 +94,7 @@ function makeSender(intent, onAuthLost) {
         // backend ScoutEntityDto validates 1:1 (R80-CLARIFY-1). Re-mapping or
         // renaming here would 400 every batch.
         const body = JSON.stringify(makeScoutIngestBody(intent.intentId, entityType, entities));
-        const attempt = async (token) => fetch(`${TGP_API_ORIGIN}/api/scout/ingest`, {
+        const attempt = async (token) => fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/ingest`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
             body,
@@ -123,11 +124,21 @@ function makeSender(intent, onAuthLost) {
 
 async function completeIngest(intent) {
     const token = await getAccessToken();
-    await fetch(`${TGP_API_ORIGIN}/api/scout/ingest/complete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ intent_id: intent.intentId, platform: intent.platform }),
-    });
+    try {
+        await fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/ingest/complete`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ intent_id: intent.intentId, platform: intent.platform }),
+        });
+    }
+    catch (err) {
+        // Bounded: a hung complete must not pin the MV3 worker. Fail closed so
+        // the caller can surface ingest_failed rather than hang forever.
+        if (isTimeout(err)) {
+            throw new Error("complete_timeout");
+        }
+        throw err;
+    }
 }
 
 // ---- install / wake ---------------------------------------------------------
