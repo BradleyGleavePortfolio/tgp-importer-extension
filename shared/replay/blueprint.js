@@ -39,6 +39,12 @@
 
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
 
+// Canonical :param name grammar — a colon followed by one or more of these chars
+// (digit-led names like ":1" included). This is the SINGLE source of truth: the
+// normalizer's presence check below AND the engine's substitution both build from
+// it, so a template this file accepts is exactly a template the engine fills.
+export const PARAM_NAME_CHARS = "A-Za-z0-9_";
+
 // Hosts refused outright as apiBase OR as an allowed origin: IP literals (rejected
 // wholesale — blueprints address hosts by name) and loopback/link-local/localhost,
 // the classic SSRF pivots. This is a resolve-free, name-literal check; a NAME that
@@ -206,9 +212,16 @@ function normalizeStep(step, seenIds) {
     // fills placeholders with collected ids and MUST encodeURIComponent each value
     // so it cannot inject "/", "\", "?", "#", or ".." — this file fixes placeholder
     // SYNTAX, the engine owns value ENCODING across the seam (PR-C1a).
-    const hasParam = /:[A-Za-z0-9_]/.test(step.template);
+    const hasParam = new RegExp(`:[${PARAM_NAME_CHARS}]`).test(step.template);
     if (hasParam && forEach === null) {
         throw new Error(`blueprint step "${step.id}": template has a :param but no forEach set to fill it`);
+    }
+    // A step that fans out over its OWN collected set (collectAs === forEach) would
+    // feed each fetched id back into its own iteration — a self-amplifying crawl the
+    // budgets bound but never intend. Reject it as structurally invalid up front.
+    const collectAs = isNonEmptyString(step.collectAs) ? step.collectAs : null;
+    if (forEach !== null && collectAs === forEach) {
+        throw new Error(`blueprint step "${step.id}": collectAs "${collectAs}" must not equal its own forEach set`);
     }
     return {
         id: step.id,
@@ -217,7 +230,7 @@ function normalizeStep(step, seenIds) {
         template: step.template,
         itemsPath,
         idField,
-        collectAs: isNonEmptyString(step.collectAs) ? step.collectAs : null,
+        collectAs,
         forEach,
         pagination: normalizePagination(step.pagination, step.id),
     };
