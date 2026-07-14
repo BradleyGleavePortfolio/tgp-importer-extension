@@ -333,9 +333,25 @@ describe("normalizeBlueprint — step templates must be root-relative (no origin
             steps: [{ id: "s", entityType: "t", template: "things" }],
         }))).toThrow(/root-relative/);
     });
-    it("rejects a template embedding a scheme mid-string", () => {
+    // A "://" that lives INSIDE the path (not at the origin position) stays
+    // on-origin under WHATWG URL join, so it is a benign path — not an escape.
+    // The origin-escape proof (sentinel resolution) is authoritative; a blanket
+    // includes("://") reject would only over-restrict legitimate paths.
+    it("accepts a template whose path segment contains :// (stays on-origin)", () => {
         expect(() => normalizeBlueprint(base({
             steps: [{ id: "s", entityType: "t", template: "/redirect://evil.test" }],
+        }))).not.toThrow();
+    });
+    it("accepts a template carrying an https:// URL in a query value (on-origin)", () => {
+        expect(() => normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/redirect?url=https://ok.test/x" }],
+        }))).not.toThrow();
+    });
+    it("still rejects a genuine origin escape even though the naive prefix passes", () => {
+        // "//evil.test" would pass a startsWith("/") check but resolves off-origin;
+        // the sentinel proof must still catch it.
+        expect(() => normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "//evil.test/steal" }],
         }))).toThrow(/root-relative/);
     });
     // Under WHATWG URL join semantics a backslash aliases "/", so "/\host"

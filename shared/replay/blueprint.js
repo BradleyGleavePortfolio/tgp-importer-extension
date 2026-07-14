@@ -166,16 +166,16 @@ function normalizeStep(step, seenIds) {
         throw new Error(`blueprint step "${step.id}": template is required`);
     }
     // A template is a ROOT-RELATIVE path joined onto apiBase; an off-origin
-    // template would redirect the credentialed crawl elsewhere. A string prefix
-    // check is NOT enough: under WHATWG URL join a backslash aliases "/" (so
-    // "/\host" collapses to "//host") and C0 controls (TAB/LF/CR) are stripped
-    // mid-parse — both escape off-origin while passing startsWith checks. Reject
-    // backslashes/controls outright, then MECHANICALLY prove the resolved origin
-    // cannot differ by resolving against a sentinel and requiring it stay there.
+    // template would redirect the credentialed crawl elsewhere. Backslashes alias
+    // "/" and C0 controls (TAB/LF/CR) are stripped mid-parse — both escape
+    // off-origin past a naive startsWith, so reject them outright, then
+    // MECHANICALLY prove the resolved origin is unchanged against a sentinel. A
+    // "://" inside a path/query (e.g. "/redirect?url=https://x") stays on-origin
+    // under join, so we do NOT blanket-reject it — the sentinel proof is decisive.
     if (/[\\\x00-\x1F\x7F]/.test(step.template)) {
         throw new Error(`blueprint step "${step.id}": template must not contain backslashes or control characters`);
     }
-    if (!step.template.startsWith("/") || step.template.startsWith("//") || step.template.includes("://")) {
+    if (!step.template.startsWith("/") || step.template.startsWith("//")) {
         throw new Error(`blueprint step "${step.id}": template must be a root-relative path ("/...") with no origin`);
     }
     const SENTINEL = "https://blueprint.invalid";
