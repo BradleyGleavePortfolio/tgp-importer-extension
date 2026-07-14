@@ -166,12 +166,54 @@ PR. No backend contract is newly required; ingest/progress/complete already exis
 
 ## NEXT ACTION (named dependent PRs)
 
-**PR-C1a — Bounded replay engine** (immediate follow-up, opened against this
-branch). Adds `shared/replay/engine.js`, importing the contract shipped here. It
-carries the collision-safe JSON-tuple dedupe key and the honest
-`partial`/`failed`/`cancelled`/`complete` result status (a malformed page,
-retry-exhaustion, or a budget-truncated crawl must NOT report ordinary `complete`),
-with the full behavioral test matrix. It imports the contract and never the reverse.
+**PR-C1a — Bounded replay engine** (immediate follow-up; retargeted onto `main`
+after PR #4 squash-merged, so its diff is ONLY the engine + its tests + the one
+contract change it needs — it never re-lands PR #4's lines). Adds
+`shared/replay/engine.js`, importing the contract shipped in PR #4. It carries the
+collision-safe dedupe key and the honest `partial`/`failed`/`cancelled`/`complete`
+result status (a malformed page, retry-exhaustion, or a budget-truncated crawl must
+NOT report ordinary `complete`), with the full behavioral test matrix. It imports
+the contract and never the reverse.
+
+Hardened at this head against the EXT-PR5 Lens A + Lens B live audits (all P2/P3
+closed, each with a behavioral test):
+
+- **Per-CONTEXT visited set** (Lens A P2-1 / P3-1). `visited` is scoped to one
+  `runContext` invocation, not the whole run. Two steps that legitimately share an
+  endpoint URL both execute; a static-template `forEach` step emits for every parent
+  context; intra-context cursor/page cycles are still broken. Cross-context
+  idempotency is the emitted-set's job.
+- **Context-scoped dedupe key** (Lens B P2-1). The idempotency key is the tuple
+  `[step.id, contextLabel, sourceId]` (contextLabel = the fan-out parent id). A child
+  id unique only within its parent is kept distinct across parents; a same-context
+  repeat (retry / replayed page) still dedupes. A JSON tuple cannot collide across a
+  field boundary the way a delimiter-joined string can.
+- **LOCKED envelope** (Lens B P2-2). The engine emits all four `_interface.js`
+  fields — `sourceId`, `sourcePlatform` (= `bp.platform`), `capturedAt` (from the
+  injected deterministic `now()`), `payload` — not a two-field partial. The docstring
+  is corrected to match.
+- **Threaded `allowedOrigins`** (Lens A P3-2). The REQUIRED SSRF allowlist capability
+  is forwarded into `normalizeBlueprint(blueprint, { allowedOrigins })`; a
+  missing/empty/off-allowlist origin fails closed BEFORE any fetch.
+- **Self-referential fan-out rejected** (Lens A P3-3). `normalizeBlueprint` now
+  throws when a step's `collectAs` equals its own `forEach`; the engine also snapshots
+  the parent id set so a fan-out loop can never observe self-appended ids.
+- **Honest progress** (Lens B P3-1). The tautological `total` field (always == `sent`)
+  is dropped; progress reports only the meaningful `sent` count.
+- **URL-free synthetic sourceId** (Lens B P3-2). An id-less item gets the bounded,
+  deterministic key `${step.id}#${context}#${page}#${index}` — never the request URL,
+  so no cursor/query token is persisted into a stored `sourceId`.
+- **True per-step `maxPagesPerStep`** (Lens B P3-3). The page counter is a per-step
+  aggregate across all fan-out contexts, so `maxPagesPerStep` caps the whole step
+  (not N × the cap for N parents). The global `maxPages` remains the outer ceiling.
+
+**CI reconciliation.** No `ci.yml` change is needed: `main` already machine-enforces
+`PROD_LOC_CAP=400` on the `pull_request` review gate (600 on `push`). With PR-C1a
+retargeted onto `main`, the PR-scoped diff is just the engine (< 400), so the 400 gate
+passes; the `push` diff is likewise measured against `main` (no stacked parent), so it
+is truthful too. The abandoned engine-branch commit `dfd67be` (which *skipped* the
+per-PR gates on `push`) is intentionally NOT carried — skipping gates would weaken the
+`push` build; `main`'s looser-cap-on-push approach is stronger and already correct.
 
 **PR-C1b — Live wiring layer** (after PR-C1a). Adds `shared/replay/resolve.js`
 (`resolveBlueprint(platform)` registry, `unknown_platform` for all others), the

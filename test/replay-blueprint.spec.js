@@ -168,6 +168,16 @@ describe("normalizeBlueprint — rejections (fail closed)", () => {
             ],
         }))).toThrow(/not collected by any earlier step/);
     });
+    it("rejects a self-referential step whose collectAs equals its own forEach", () => {
+        // Feeding a step's freshly-collected ids back into its own fan-out is a
+        // self-amplifying crawl; reject it as structurally invalid up front.
+        expect(() => normalizeBlueprint(base({
+            steps: [
+                { id: "seed", entityType: "seed", template: "/seed", collectAs: "loop" },
+                { id: "loop", entityType: "node", template: "/n/:id", forEach: "loop", collectAs: "loop" },
+            ],
+        }))).toThrow(/must not equal its own forEach/);
+    });
 });
 
 // ---------------------------------------------------------------------------

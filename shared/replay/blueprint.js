@@ -210,6 +210,13 @@ function normalizeStep(step, seenIds) {
     if (hasParam && forEach === null) {
         throw new Error(`blueprint step "${step.id}": template has a :param but no forEach set to fill it`);
     }
+    // A step that fans out over its OWN collected set (collectAs === forEach) would
+    // feed each fetched id back into its own iteration — a self-amplifying crawl the
+    // budgets bound but never intend. Reject it as structurally invalid up front.
+    const collectAs = isNonEmptyString(step.collectAs) ? step.collectAs : null;
+    if (forEach !== null && collectAs === forEach) {
+        throw new Error(`blueprint step "${step.id}": collectAs "${collectAs}" must not equal its own forEach set`);
+    }
     return {
         id: step.id,
         entityType: step.entityType,
@@ -217,7 +224,7 @@ function normalizeStep(step, seenIds) {
         template: step.template,
         itemsPath,
         idField,
-        collectAs: isNonEmptyString(step.collectAs) ? step.collectAs : null,
+        collectAs,
         forEach,
         pagination: normalizePagination(step.pagination, step.id),
     };
