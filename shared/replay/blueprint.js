@@ -27,30 +27,31 @@
 //
 // normalizeBlueprint(bp, opts) fills defaults and validates; it throws on a
 // structurally invalid or unsafe blueprint so a bad descriptor fails closed
-// BEFORE any network call. Because blueprints will be produced by auto-inference
-// from UNTRUSTED passive capture (PR-C2), the normalizer also confines WHERE the
-// crawl may go: https only, no IP-literal / loopback / link-local / private hosts,
-// no embedded credentials, and — when the trusted caller/registry passes an
-// `allowedOrigins` capability — the apiBase origin must be on that allowlist.
-// Step templates must be root-relative paths, so no step can redirect off-origin.
-// The core stays SITE-AGNOSTIC: the allowlist is injected by the caller, never a
-// competitor map hardcoded here.
+// BEFORE any network call. Blueprints are auto-inferred from UNTRUSTED capture
+// (PR-C2), so the normalizer confines WHERE the crawl may go: https only, no
+// IP-literal loopback/link-local/localhost host, no embedded credentials, and —
+// REQUIRED — the caller must inject a non-empty `opts.allowedOrigins` capability
+// the apiBase origin must exactly match. A parse-time gate cannot prove a NAME
+// will not resolve to a private target, so name-resolution confinement is
+// delegated to that allowlist: only an origin the trusted caller observed passes.
+// Step templates must be root-relative, so no step can redirect off-origin. The
+// core stays SITE-AGNOSTIC: the allowlist is injected (PR-C1b), never hardcoded.
 
 const SAFE_METHODS = new Set(["GET", "HEAD"]);
 
-// Hosts we refuse outright regardless of any allowlist. IP literals are rejected
-// wholesale (blueprints address hosts by name); loopback/link-local/localhost are
-// the classic SSRF pivots (e.g. cloud metadata 169.254.169.254). This is a static,
-// resolve-free check — DNS-rebinding defence is out of scope for a parse-time gate.
+// Hosts refused outright as apiBase OR as an allowed origin: IP literals (rejected
+// wholesale — blueprints address hosts by name) and loopback/link-local/localhost,
+// the classic SSRF pivots. This is a resolve-free, name-literal check; a NAME that
+// resolves to a private target cannot be caught here, which is why a non-empty
+// allowedOrigins capability is REQUIRED below (name-resolution confinement).
 const IPV4_LITERAL = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 
 function isForbiddenHost(hostname) {
-    // Lower-case (case-insensitive names) AND strip a single trailing dot: a
-    // fully-qualified name like "localhost." or "svc.localhost." resolves to the
-    // same target as its dotless form, so it must be judged by the same rule. The
-    // WHATWG URL parser has already applied IDNA/punycode normalization to
-    // url.hostname, so homoglyph/fullwidth "localhost" arrives here as "localhost".
-    const host = hostname.toLowerCase().replace(/\.$/, "");
+    // Lower-case and strip ALL trailing dots: "localhost.", "localhost..", and
+    // "svc.localhost.." are fully-qualified spellings of the same target and must
+    // be judged by the same rule. WHATWG URL has already IDNA-normalized hostname,
+    // so fullwidth/homoglyph "localhost" arrives here as "localhost".
+    const host = hostname.toLowerCase().replace(/\.+$/, "");
     if (host === "localhost" || host.endsWith(".localhost")) {
         return true;
     }
@@ -60,50 +61,53 @@ function isForbiddenHost(hostname) {
     return IPV4_LITERAL.test(host); // any IPv4 literal (loopback/link-local/private/public)
 }
 
-// Validate the apiBase origin and return the canonical origin string. Throws
-// (fail-closed) on any unsafe scheme/host or an off-allowlist origin.
-function assertSafeApiBase(apiBase, allowedOrigins) {
+// Validate a URL's scheme/credentials/host confinement and return the URL object.
+// Shared by apiBase AND every allowed-origin entry, so the allowlist itself cannot
+// smuggle in an http/credentialed/loopback/IP-literal target.
+function assertSafeUrl(raw, label) {
     let url;
     try {
-        url = new URL(apiBase);
+        url = new URL(raw);
     }
     catch {
-        throw new Error(`blueprint.apiBase "${apiBase}" is not an absolute URL`);
+        throw new Error(`${label} "${raw}" is not an absolute URL`);
     }
     if (url.protocol !== "https:") {
-        throw new Error(`blueprint.apiBase "${apiBase}" must use https (got "${url.protocol}")`);
+        throw new Error(`${label} "${raw}" must use https (got "${url.protocol}")`);
     }
     if (url.username !== "" || url.password !== "") {
-        throw new Error(`blueprint.apiBase "${apiBase}" must not embed credentials`);
+        throw new Error(`${label} "${raw}" must not embed credentials`);
     }
     if (isForbiddenHost(url.hostname)) {
-        throw new Error(`blueprint.apiBase host "${url.hostname}" is not an allowed target (IP literal / loopback / link-local)`);
+        throw new Error(`${label} host "${url.hostname}" is not an allowed target (IP literal / loopback / link-local)`);
     }
-    if (allowedOrigins !== null && !allowedOrigins.has(url.origin)) {
+    return url;
+}
+
+// The caller MUST inject a NON-EMPTY allowedOrigins capability. A parse-time gate
+// cannot prove a hostname will not resolve to a private/link-local target (no DNS),
+// so the only safe rule is: a crawl may reach exactly the origins the trusted
+// caller explicitly observed. Absence/empty fails closed BEFORE any network call.
+// The allowlist is injected (site-agnostic) — never a hardcoded competitor map.
+function normalizeAllowedOrigins(opts) {
+    const raw = isRecord(opts) ? opts.allowedOrigins : undefined;
+    if (!Array.isArray(raw) || raw.length === 0 || !raw.every(isNonEmptyString)) {
+        throw new Error("allowedOrigins must be a non-empty string[] of https origins");
+    }
+    const set = new Set();
+    for (const o of raw) {
+        set.add(assertSafeUrl(o, "allowedOrigins entry").origin);
+    }
+    return set;
+}
+
+// Validate the apiBase and require its exact origin be on the allowlist.
+function assertSafeApiBase(apiBase, allowedOrigins) {
+    const url = assertSafeUrl(apiBase, "blueprint.apiBase");
+    if (!allowedOrigins.has(url.origin)) {
         throw new Error(`blueprint.apiBase origin "${url.origin}" is not in the allowed-origins allowlist`);
     }
     return url.origin;
-}
-
-function normalizeAllowedOrigins(opts) {
-    const raw = isRecord(opts) ? opts.allowedOrigins : undefined;
-    if (raw === undefined || raw === null) {
-        return null; // no allowlist supplied — intrinsic checks still apply
-    }
-    if (!Array.isArray(raw) || !raw.every(isNonEmptyString)) {
-        throw new Error("allowedOrigins must be a string[] of origins");
-    }
-    // Normalize each entry through URL so "https://h" and "https://h/" match.
-    const set = new Set();
-    for (const o of raw) {
-        try {
-            set.add(new URL(o).origin);
-        }
-        catch {
-            throw new Error(`allowedOrigins entry "${o}" is not a valid origin`);
-        }
-    }
-    return set;
 }
 
 export const DEFAULT_BUDGETS = Object.freeze({

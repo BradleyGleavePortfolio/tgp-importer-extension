@@ -22,11 +22,13 @@ rather than violate caps, never request an exception* — this is a chain of
 dependent PRs along clean import seams (each layer imports the one before it,
 never the reverse, so no PR carries dead code):
 
-1. **This PR (#4) — contract + lifecycle (396 prod LOC).** `blueprint.js` (296) +
+1. **This PR (#4) — contract + lifecycle (400 prod LOC).** `blueprint.js` (300) +
    `state.js` (100). Pure data schema + fail-closed normalization (incl. SSRF
    scheme/host/origin confinement — resolution-proven template confinement, backslash/
-   control-byte + trailing-dot-loopback rejection) + the prototype-safe bounded
-   transition table. Nothing invokes it at runtime yet; it is inert by construction.
+   control-byte + all-trailing-dots loopback rejection, and a REQUIRED caller-injected
+   `allowedOrigins` capability the apiBase origin must exactly match) + the
+   prototype-safe bounded transition table. Nothing invokes it at runtime yet; it is
+   inert by construction.
 2. **Chained engine PR (PR-C1a) — the bounded replay engine** (`shared/replay/engine.js`).
    Imports the contract from this PR. Carries the JSON-tuple dedupe key and the
    honest `partial`/`failed`/`cancelled`/`complete` result status with its own
@@ -123,10 +125,13 @@ existing snapshot shape.
 
 Generic capability WITHOUT: competitor code in the core (`shared/replay/*` has zero
 TrueCoach knowledge; the data adapter lands in `extractors/` in PR-C1b), off-target
-crawls (the normalizer confines apiBase to https + a caller-injected origin
-allowlist and refuses IP-literal / loopback / link-local / localhost hosts and
-embedded credentials, and forces root-relative step templates — no static
-competitor map in the core), destructive requests (GET/HEAD only, refused at parse
+crawls (the normalizer confines apiBase to https + a REQUIRED caller-injected
+origin allowlist — absence/empty fails closed before any network call — and refuses
+IP-literal / loopback / link-local / localhost hosts (all trailing dots stripped)
+and embedded credentials, validates each allowlist entry the same way, and forces
+root-relative step templates. Name-resolution confinement is delegated to that
+allowlist since a parse-time gate cannot resolve DNS; no static competitor map in
+the core — PR-C1b must inject the observed tab origin), destructive requests (GET/HEAD only, refused at parse
 otherwise), or credential exposure (design reuses the in-tab session, TGP bearer
 only for ingest, no token persisted/logged). The engine, orchestration, and CTA
 that make this LIVE arrive in later chained PRs; this PR ships only the inert,

@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-    normalizeBlueprint,
+    normalizeBlueprint as normalizeBlueprintStrict,
     readPath,
     extractItems,
     DEFAULT_BUDGETS,
@@ -9,6 +9,34 @@ import {
 // normalizeBlueprint is the fail-closed gate: a structurally invalid descriptor
 // throws BEFORE any network call, so a bad blueprint can never launch a crawl.
 // These tests pin both the accepted defaults and every rejection path.
+//
+// allowedOrigins is now a REQUIRED capability (name-based SSRF confinement — a
+// parse-time gate cannot prove a NAME won't resolve to a private target, so the
+// only safe rule is "reach exactly the origins the trusted caller observed").
+// The strict entrypoint (`normalizeBlueprintStrict`) is exercised directly by the
+// mandatory-allowlist tests below. For the ~70 structural tests that only care
+// about schema shape, this convenience wrapper derives a safe allowlist from the
+// apiBase origin so each test does not have to restate it. When opts is supplied
+// the wrapper passes it through untouched, so allowlist behavior is tested faithfully.
+
+function normalizeBlueprint(bp, opts) {
+    if (opts !== undefined) {
+        return normalizeBlueprintStrict(bp, opts);
+    }
+    const allowedOrigins = ["https://allow.invalid"];
+    try {
+        const u = new URL(bp.apiBase);
+        if (u.protocol === "https:") {
+            allowedOrigins.push(u.origin);
+        }
+    }
+    catch {
+        // Non-absolute apiBase: leave the sentinel only; the strict entrypoint's
+        // intrinsic apiBase check will reject with the expected message.
+        void 0;
+    }
+    return normalizeBlueprintStrict(bp, { allowedOrigins });
+}
 
 function base(extra = {}) {
     return {
@@ -147,7 +175,7 @@ describe("normalizeBlueprint — rejections (fail closed)", () => {
 // UNTRUSTED passive capture (PR-C2), so normalizeBlueprint must confine WHERE the
 // credentialed crawl can go BEFORE any network call: https only, no IP-literal /
 // loopback / link-local host, no embedded credentials, root-relative templates,
-// and (when supplied) an apiBase origin on the caller's allowlist. These are the
+// and a REQUIRED apiBase origin on the caller-injected allowlist. These are the
 // behavioral proofs of that boundary.
 // ---------------------------------------------------------------------------
 
@@ -201,6 +229,20 @@ describe("normalizeBlueprint — host confinement (no IP literals / loopback / l
     it("rejects a trailing-dot *.localhost. FQDN", () => {
         expect(() => normalizeBlueprint(base({ apiBase: "https://svc.localhost./base" }))).toThrow(/not an allowed target/);
     });
+    // Multi-dot FQDNs ("localhost..") resolve to the same loopback target on some
+    // stacks, so the strip must remove EVERY terminal dot, not just one.
+    for (const host of ["localhost..", "localhost...", "svc.localhost..", "localhost.%2e"]) {
+        it(`rejects a multi-trailing-dot ${host} FQDN`, () => {
+            expect(() => normalizeBlueprint(base({ apiBase: `https://${host}/base` }))).toThrow(/not an allowed target/);
+        });
+    }
+    // Numeric hosts with trailing dots canonicalize to (or strip down to) an IPv4
+    // literal, which is refused wholesale.
+    for (const host of ["127.0.0.1.", "127.0.0.1.."]) {
+        it(`rejects trailing-dot IPv4 literal ${host}`, () => {
+            expect(() => normalizeBlueprint(base({ apiBase: `https://${host}/base` }))).toThrow(/not an allowed target/);
+        });
+    }
     it("rejects an uppercase LOCALHOST", () => {
         expect(() => normalizeBlueprint(base({ apiBase: "https://LOCALHOST/base" }))).toThrow(/not an allowed target/);
     });
@@ -260,16 +302,13 @@ describe("normalizeBlueprint — allowedOrigins allowlist (injected capability)"
         expect(() => normalizeBlueprint(
             base({ apiBase: "https://api.test/base" }),
             { allowedOrigins: ["not a url"] },
-        )).toThrow(/valid origin/);
+        )).toThrow(/absolute URL/);
     });
     it("rejects a non-array allowedOrigins", () => {
         expect(() => normalizeBlueprint(
             base({ apiBase: "https://api.test/base" }),
             { allowedOrigins: "https://api.test" },
         )).toThrow(/string\[\]/);
-    });
-    it("ignores an absent allowlist (intrinsic checks only)", () => {
-        expect(() => normalizeBlueprint(base({ apiBase: "https://api.test/base" }), {})).not.toThrow();
     });
 });
 
@@ -520,7 +559,7 @@ describe("normalizeBlueprint — allowlist edge detail", () => {
         expect(() => normalizeBlueprint(
             base({ apiBase: "https://api.test/base" }),
             { allowedOrigins: [] },
-        )).toThrow(/allowlist/);
+        )).toThrow(/string\[\]/);
     });
     it("ignores extra opts keys and honours only allowedOrigins", () => {
         expect(() => normalizeBlueprint(
@@ -538,7 +577,66 @@ describe("normalizeBlueprint — allowlist edge detail", () => {
         expect(() => normalizeBlueprint(
             base({ apiBase: "https://api.test/base" }),
             { allowedOrigins: ["https://"] },
-        )).toThrow(/valid origin/);
+        )).toThrow(/absolute URL/);
+    });
+});
+
+// The allowlist is now a REQUIRED capability, exercised against the STRICT
+// entrypoint (no convenience-wrapper derivation). A parse-time gate cannot prove
+// a hostname won't resolve to a private/link-local target, so the only safe rule
+// is: a crawl may reach exactly the origins the trusted caller explicitly observed.
+// Absence/empty must fail closed BEFORE any network call, and each allowed origin
+// is itself validated so the allowlist cannot smuggle in an unsafe target.
+describe("normalizeBlueprint — allowedOrigins is a required capability (name-based SSRF)", () => {
+    it("rejects (fails closed) when opts is entirely absent", () => {
+        expect(() => normalizeBlueprintStrict(base())).toThrow(/string\[\]/);
+    });
+    it("rejects when opts is present but carries no allowedOrigins", () => {
+        expect(() => normalizeBlueprintStrict(base(), {})).toThrow(/string\[\]/);
+    });
+    it("rejects an empty allowedOrigins array", () => {
+        expect(() => normalizeBlueprintStrict(base(), { allowedOrigins: [] })).toThrow(/string\[\]/);
+    });
+    // A name that resolves to a link-local / private target (e.g. the cloud
+    // metadata endpoint) passes every resolve-free literal check, so the ONLY
+    // thing that stops it is the caller not having observed it.
+    it("rejects a private-resolving NAME (metadata endpoint) when it is not explicitly allowed", () => {
+        expect(() => normalizeBlueprintStrict(
+            base({ apiBase: "https://metadata.google.internal/x" }),
+        )).toThrow(/string\[\]/);
+    });
+    it("rejects a private-resolving NAME when a DIFFERENT origin is allowed", () => {
+        expect(() => normalizeBlueprintStrict(
+            base({ apiBase: "https://metadata.google.internal/x" }),
+            { allowedOrigins: ["https://api.test"] },
+        )).toThrow(/allowlist/);
+    });
+    it("accepts a private-resolving NAME ONLY when the caller explicitly observed it", () => {
+        expect(() => normalizeBlueprintStrict(
+            base({ apiBase: "https://metadata.google.internal/x" }),
+            { allowedOrigins: ["https://metadata.google.internal"] },
+        )).not.toThrow();
+    });
+    // The allowlist itself is validated entry-by-entry so it cannot become the
+    // smuggling vector for the very targets the host gate refuses.
+    it("rejects a loopback allowlist entry", () => {
+        expect(() => normalizeBlueprintStrict(base(), { allowedOrigins: ["https://localhost"] }))
+            .toThrow(/not an allowed target/);
+    });
+    it("rejects an http (non-https) allowlist entry", () => {
+        expect(() => normalizeBlueprintStrict(base(), { allowedOrigins: ["http://api.test"] }))
+            .toThrow(/https/);
+    });
+    it("rejects an IP-literal allowlist entry", () => {
+        expect(() => normalizeBlueprintStrict(base(), { allowedOrigins: ["https://127.0.0.1"] }))
+            .toThrow(/not an allowed target/);
+    });
+    it("rejects a credentialed allowlist entry", () => {
+        expect(() => normalizeBlueprintStrict(base(), { allowedOrigins: ["https://user:pass@api.test"] }))
+            .toThrow(/credentials/);
+    });
+    it("rejects a non-string allowlist entry", () => {
+        expect(() => normalizeBlueprintStrict(base(), { allowedOrigins: [123] })).toThrow(/string\[\]/);
     });
 });
 
