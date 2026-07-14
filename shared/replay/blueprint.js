@@ -45,7 +45,12 @@ const SAFE_METHODS = new Set(["GET", "HEAD"]);
 const IPV4_LITERAL = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 
 function isForbiddenHost(hostname) {
-    const host = hostname.toLowerCase();
+    // Lower-case (case-insensitive names) AND strip a single trailing dot: a
+    // fully-qualified name like "localhost." or "svc.localhost." resolves to the
+    // same target as its dotless form, so it must be judged by the same rule. The
+    // WHATWG URL parser has already applied IDNA/punycode normalization to
+    // url.hostname, so homoglyph/fullwidth "localhost" arrives here as "localhost".
+    const host = hostname.toLowerCase().replace(/\.$/, "");
     if (host === "localhost" || host.endsWith(".localhost")) {
         return true;
     }
@@ -156,10 +161,28 @@ function normalizeStep(step, seenIds) {
     if (!isNonEmptyString(step.template)) {
         throw new Error(`blueprint step "${step.id}": template is required`);
     }
-    // A template is a ROOT-RELATIVE path joined onto apiBase. Absolute or
-    // protocol-relative templates could redirect the crawl to another origin,
-    // escaping the apiBase confinement — refuse them at parse time.
+    // A template is a ROOT-RELATIVE path joined onto apiBase; an off-origin
+    // template would redirect the credentialed crawl elsewhere. A string prefix
+    // check is NOT enough: under WHATWG URL join a backslash aliases "/" (so
+    // "/\host" collapses to "//host") and C0 controls (TAB/LF/CR) are stripped
+    // mid-parse — both escape off-origin while passing startsWith checks. Reject
+    // backslashes/controls outright, then MECHANICALLY prove the resolved origin
+    // cannot differ by resolving against a sentinel and requiring it stay there.
+    if (/[\\\x00-\x1F\x7F]/.test(step.template)) {
+        throw new Error(`blueprint step "${step.id}": template must not contain backslashes or control characters`);
+    }
     if (!step.template.startsWith("/") || step.template.startsWith("//") || step.template.includes("://")) {
+        throw new Error(`blueprint step "${step.id}": template must be a root-relative path ("/...") with no origin`);
+    }
+    const SENTINEL = "https://blueprint.invalid";
+    let probe;
+    try {
+        probe = new URL(step.template, SENTINEL + "/");
+    }
+    catch {
+        throw new Error(`blueprint step "${step.id}": template is not a resolvable path`);
+    }
+    if (probe.origin !== SENTINEL || !probe.href.startsWith(SENTINEL + "/")) {
         throw new Error(`blueprint step "${step.id}": template must be a root-relative path ("/...") with no origin`);
     }
     const method = isNonEmptyString(step.method) ? step.method.toUpperCase() : "GET";
@@ -173,8 +196,13 @@ function normalizeStep(step, seenIds) {
         : [];
     const idField = isNonEmptyString(step.idField) ? step.idField : "id";
     const forEach = isNonEmptyString(step.forEach) ? step.forEach : null;
-    // A :param template must be fed by a forEach set; a bare template must not be.
-    const hasParam = /:[A-Za-z_]/.test(step.template);
+    // A :param placeholder is a colon + a name from [A-Za-z0-9_] (digit-led names
+    // like ":1" included, so detection is unambiguous). A template with any
+    // placeholder must be fed by a forEach set; a bare one must not be. The engine
+    // fills placeholders with collected ids and MUST encodeURIComponent each value
+    // so it cannot inject "/", "\", "?", "#", or ".." — this file fixes placeholder
+    // SYNTAX, the engine owns value ENCODING across the seam (PR-C1a).
+    const hasParam = /:[A-Za-z0-9_]/.test(step.template);
     if (hasParam && forEach === null) {
         throw new Error(`blueprint step "${step.id}": template has a :param but no forEach set to fill it`);
     }

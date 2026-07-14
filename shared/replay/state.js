@@ -78,11 +78,23 @@ export function isTerminal(state) {
 
 // Pure transition. Returns the next state, or null if the event is not legal
 // from `state` (caller decides whether that is a no-op or a programmer error).
+//
+// Lookups use Object.hasOwn so ONLY explicitly-listed transitions resolve: an
+// inherited Object.prototype key ("__proto__", "constructor", "toString",
+// "hasOwnProperty", …) passed as `state` or `event` returns null rather than a
+// truthy prototype member. This upholds the documented "anything not in the table
+// returns null" invariant even when a caller derives the event from an untrusted
+// message action string.
 export function transition(state, event) {
-    const row = TABLE[state];
-    if (row === undefined) {
+    if (typeof state !== "string" || typeof event !== "string") {
         return null;
     }
-    const next = row[event];
-    return next === undefined ? null : next;
+    if (!Object.hasOwn(TABLE, state)) {
+        return null;
+    }
+    const row = TABLE[state];
+    if (!Object.hasOwn(row, event)) {
+        return null;
+    }
+    return row[event];
 }

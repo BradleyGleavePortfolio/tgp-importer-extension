@@ -193,6 +193,17 @@ describe("normalizeBlueprint — host confinement (no IP literals / loopback / l
     it("rejects a *.localhost subdomain", () => {
         expect(() => normalizeBlueprint(base({ apiBase: "https://svc.localhost/base" }))).toThrow(/not an allowed target/);
     });
+    // A trailing-dot FQDN ("localhost.") resolves to the same loopback target, so
+    // it must be judged by the same rule — strip the terminal dot before the check.
+    it("rejects a trailing-dot localhost. FQDN", () => {
+        expect(() => normalizeBlueprint(base({ apiBase: "https://localhost./base" }))).toThrow(/not an allowed target/);
+    });
+    it("rejects a trailing-dot *.localhost. FQDN", () => {
+        expect(() => normalizeBlueprint(base({ apiBase: "https://svc.localhost./base" }))).toThrow(/not an allowed target/);
+    });
+    it("rejects an uppercase LOCALHOST", () => {
+        expect(() => normalizeBlueprint(base({ apiBase: "https://LOCALHOST/base" }))).toThrow(/not an allowed target/);
+    });
     it("accepts an ordinary public hostname", () => {
         expect(() => normalizeBlueprint(base({ apiBase: "https://app.truecoach.co/proxy/api" }))).not.toThrow();
     });
@@ -287,6 +298,39 @@ describe("normalizeBlueprint — step templates must be root-relative (no origin
         expect(() => normalizeBlueprint(base({
             steps: [{ id: "s", entityType: "t", template: "/redirect://evil.test" }],
         }))).toThrow(/root-relative/);
+    });
+    // Under WHATWG URL join semantics a backslash aliases "/", so "/\host"
+    // collapses to protocol-relative "//host" and escapes off-origin. A naive
+    // startsWith("//") check misses it; the backslash reject + resolution-based
+    // proof must catch it.
+    it("rejects a leading-backslash template that would collapse to //host", () => {
+        expect(() => normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/\\evil.test/steal" }],
+        }))).toThrow(/backslash|root-relative/);
+    });
+    it("rejects a /\\/host template", () => {
+        expect(() => normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/\\/evil.test/steal" }],
+        }))).toThrow(/backslash|root-relative/);
+    });
+    it("rejects any backslash anywhere in the template", () => {
+        expect(() => normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/a/b\\c" }],
+        }))).toThrow(/backslash/);
+    });
+    // C0 control bytes (TAB/LF/CR) are stripped mid-parse, collapsing "/<TAB>/host"
+    // into "//host" — an off-origin escape. Reject any control byte outright.
+    for (const [label, ch] of [["TAB", "\t"], ["LF", "\n"], ["CR", "\r"]]) {
+        it(`rejects a template containing a raw ${label} control byte`, () => {
+            expect(() => normalizeBlueprint(base({
+                steps: [{ id: "s", entityType: "t", template: `/${ch}/evil.test` }],
+            }))).toThrow(/control characters|root-relative/);
+        });
+    }
+    it("accepts a legitimate multi-segment root-relative template", () => {
+        expect(() => normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/clients/list/all" }],
+        }))).not.toThrow();
     });
 });
 
@@ -453,6 +497,21 @@ describe("normalizeBlueprint — step field preservation detail", () => {
         expect(() => normalizeBlueprint(base({
             steps: [{ id: "s", entityType: "t", template: "/t/:_ref" }],
         }))).toThrow(/no forEach/);
+    });
+    // A digit-led placeholder (":1") must also be recognized as a param, so it is
+    // not silently accepted without a forEach set to fill it.
+    it("treats a digit-led :param as a real param needing a forEach", () => {
+        expect(() => normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/t/:1" }],
+        }))).toThrow(/no forEach/);
+    });
+    it("accepts a digit-led :param when fed by an earlier forEach set", () => {
+        expect(() => normalizeBlueprint(base({
+            steps: [
+                { id: "p", entityType: "p", template: "/p", collectAs: "pids" },
+                { id: "c", entityType: "c", template: "/p/:1", forEach: "pids", idField: "id" },
+            ],
+        }))).not.toThrow();
     });
 });
 

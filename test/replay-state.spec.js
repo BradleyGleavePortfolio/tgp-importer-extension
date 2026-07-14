@@ -55,6 +55,25 @@ describe("state machine — illegal transitions return null", () => {
         expect(transition("bogus", EVENT.START)).toBeNull();
         expect(transition(STATE.READY, "bogus")).toBeNull();
     });
+
+    // Inherited Object.prototype keys must NOT resolve to a truthy prototype
+    // member — the lookup uses own-property checks so the documented "anything not
+    // in the table returns null" invariant holds even for prototype-pollution keys.
+    for (const key of ["__proto__", "constructor", "toString", "hasOwnProperty", "valueOf", "isPrototypeOf"]) {
+        it(`returns null when the event is the inherited key "${key}"`, () => {
+            expect(transition(STATE.READY, key)).toBeNull();
+        });
+        it(`returns null when the state is the inherited key "${key}"`, () => {
+            expect(transition(key, EVENT.START)).toBeNull();
+        });
+    }
+
+    it("returns null for a non-string state or event", () => {
+        expect(transition(null, EVENT.START)).toBeNull();
+        expect(transition(STATE.READY, null)).toBeNull();
+        expect(transition(undefined, undefined)).toBeNull();
+        expect(transition(42, {})).toBeNull();
+    });
 });
 
 describe("state machine — terminal re-arm", () => {
