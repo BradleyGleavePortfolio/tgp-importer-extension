@@ -128,14 +128,14 @@ export async function runReplay(options) {
     // One request with bounded retry. Returns the parsed body, or null when the
     // page should be skipped (malformed or retries exhausted). Throws AuthLost /
     // Abort to stop the whole run.
-    async function fetchPage(url, method) {
+    async function fetchPage(url, method, headers) {
         for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
             if (abortedNow()) {
                 throw new AbortError();
             }
             await pace();
             try {
-                return await fetchJson(url, { method, signal, timeoutMs: budgets.requestTimeoutMs });
+                return await fetchJson(url, { method, headers, signal, timeoutMs: budgets.requestTimeoutMs });
             }
             catch (err) {
                 if (isAuthLost(err)) {
@@ -176,6 +176,11 @@ export async function runReplay(options) {
     async function runContext(step, stepIndex, id) {
         const collect = step.collectAs !== null ? nextIdSet(step.collectAs) : null;
         const collectSeen = collect !== null ? new Set(collect) : null;
+        // Effective request headers: blueprint-level defaults, then step headers
+        // override per key. This is DATA-only; the trusted source-fetch layer still
+        // applies the bearer Authorization LAST, so a step can override any
+        // non-auth header but can never spoof Authorization.
+        const headers = { ...bp.headers, ...step.headers };
         const ctxLabel = id === null || id === undefined ? "_" : String(id);
         const path = fillTemplate(step.template, id);
         const pag = step.pagination;
@@ -211,7 +216,7 @@ export async function runReplay(options) {
             const thisPage = pageOrdinal;
             pageOrdinal += 1;
 
-            const body = await fetchPage(url, step.method);
+            const body = await fetchPage(url, step.method, headers);
             if (body === null) {
                 degraded = true; // a page was skipped — the walk is no longer whole
             }

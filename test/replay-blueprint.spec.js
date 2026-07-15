@@ -666,15 +666,97 @@ describe("normalizeBlueprint — allowedOrigins is a required capability (name-b
     });
 });
 
+describe("normalizeBlueprint — headers", () => {
+    it("absent blueprint AND step headers normalize to {}", () => {
+        const bp = normalizeBlueprint(base());
+        expect(bp.headers).toEqual({});
+        expect(bp.steps[0].headers).toEqual({});
+    });
+    it("keeps a valid blueprint-level header record", () => {
+        const bp = normalizeBlueprint(base({ headers: { Accept: "application/json" } }));
+        expect(bp.headers).toEqual({ Accept: "application/json" });
+    });
+    it("keeps a valid per-step header record", () => {
+        const bp = normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/t", headers: { Role: "Trainer" } }],
+        }));
+        expect(bp.steps[0].headers).toEqual({ Role: "Trainer" });
+    });
+    it("does not merge blueprint and step headers at normalize time (engine composes them)", () => {
+        const bp = normalizeBlueprint(base({
+            headers: { Accept: "application/json" },
+            steps: [{ id: "s", entityType: "t", template: "/t", headers: { Role: "Trainer" } }],
+        }));
+        expect(bp.headers).toEqual({ Accept: "application/json" });
+        expect(bp.steps[0].headers).toEqual({ Role: "Trainer" });
+    });
+    it("rejects non-plain-object blueprint headers (array)", () => {
+        expect(() => normalizeBlueprint(base({ headers: ["Accept"] }))).toThrow(/headers must be a plain object/);
+    });
+    it("rejects non-plain-object step headers (array)", () => {
+        expect(() => normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/t", headers: [] }],
+        }))).toThrow(/headers must be a plain object/);
+    });
+    it("rejects an empty-string header value", () => {
+        expect(() => normalizeBlueprint(base({ headers: { Accept: "" } }))).toThrow(/value must be a non-empty string/);
+    });
+    it("rejects a non-string header value", () => {
+        expect(() => normalizeBlueprint(base({ headers: { Accept: 5 } }))).toThrow(/value must be a non-empty string/);
+    });
+    it("rejects a non-string header value on a step", () => {
+        expect(() => normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/t", headers: { Role: null } }],
+        }))).toThrow(/value must be a non-empty string/);
+    });
+    it("null headers are treated as absent, not an error", () => {
+        const bp = normalizeBlueprint(base({ headers: null }));
+        expect(bp.headers).toEqual({});
+    });
+    // Header-injection confinement: CR/LF/NUL/DEL (and other C0 controls) are the
+    // request-splitting vector and must fail closed in BOTH names and values.
+    it.each([
+        ["CR", "\r"],
+        ["LF", "\n"],
+        ["NUL", "\x00"],
+        ["DEL", "\x7F"],
+    ])("rejects a %s control character in a header value", (_name, ch) => {
+        expect(() => normalizeBlueprint(base({ headers: { Accept: `application/json${ch}evil` } })))
+            .toThrow(/value must not contain control characters/);
+    });
+    it.each([
+        ["CR", "\r"],
+        ["LF", "\n"],
+        ["NUL", "\x00"],
+        ["DEL", "\x7F"],
+    ])("rejects a %s control character in a header name", (_name, ch) => {
+        expect(() => normalizeBlueprint(base({ headers: { [`X${ch}Injected`]: "v" } })))
+            .toThrow(/must not contain control characters or backslashes/);
+    });
+    it("rejects a backslash in a header name (not a valid field-name token char)", () => {
+        expect(() => normalizeBlueprint(base({ headers: { "X\\Bad": "v" } })))
+            .toThrow(/must not contain control characters or backslashes/);
+    });
+    it("keeps a backslash in a header VALUE (legal field-content byte)", () => {
+        const bp = normalizeBlueprint(base({ headers: { "User-Agent": "app\\1.0" } }));
+        expect(bp.headers["User-Agent"]).toBe("app\\1.0");
+    });
+    it("applies the same control-character guard to per-step headers", () => {
+        expect(() => normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/t", headers: { Role: "Trainer\r\nX: y" } }],
+        }))).toThrow(/value must not contain control characters/);
+    });
+});
+
 describe("normalizeBlueprint — return-shape guarantees", () => {
     it("returns exactly the documented top-level keys", () => {
         const bp = normalizeBlueprint(base());
-        expect(Object.keys(bp).sort()).toEqual(["apiBase", "budgets", "platform", "rateLimitMs", "steps"]);
+        expect(Object.keys(bp).sort()).toEqual(["apiBase", "budgets", "headers", "platform", "rateLimitMs", "steps"]);
     });
     it("returns exactly the documented step keys", () => {
         const step = normalizeBlueprint(base()).steps[0];
         expect(Object.keys(step).sort())
-            .toEqual(["collectAs", "entityType", "forEach", "id", "idField", "itemsPath", "method", "pagination", "template"]);
+            .toEqual(["collectAs", "entityType", "forEach", "headers", "id", "idField", "itemsPath", "method", "pagination", "template"]);
     });
     it("does not mutate the caller's input blueprint", () => {
         const input = base({ apiBase: "https://api.test/base/" });

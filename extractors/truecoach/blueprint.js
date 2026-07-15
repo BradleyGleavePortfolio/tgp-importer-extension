@@ -1,6 +1,6 @@
 // Data-only TrueCoach PlatformBlueprint — a VERIFICATION adapter with ZERO
-// executable extraction logic (only endpoint roles, id fields, a pagination
-// descriptor, and one fan-out edge as data) so the site-agnostic replay engine
+// executable extraction logic (only endpoint roles, id fields, request headers, a
+// pagination descriptor, and one fan-out edge as data) so the site-agnostic replay engine
 // can drive TrueCoach under the coach's own session. It is a deliberate SUBSET of
 // the hand-mapped TrueCoachExtractor, proving the generic engine does autonomous
 // multi-page traversal (list -> paginate -> fan-out over ids) against a real
@@ -18,6 +18,13 @@ export function truecoachBlueprint() {
         platform: "truecoach",
         apiBase: TRUECOACH_API_BASE,
         rateLimitMs: RATE_LIMIT_MS,
+        // Request headers the verified hand-mapped walk sends on every call. These
+        // are DATA the site-agnostic engine forwards verbatim; the SOURCE bearer is
+        // applied LAST by the trusted fetch layer, never declared here.
+        headers: {
+            Role: "Trainer",
+            Accept: "application/json, text/html",
+        },
         steps: [
             {
                 // Client roster, page-paginated; collect ids for the fan-out below.

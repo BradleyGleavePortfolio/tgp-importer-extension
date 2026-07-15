@@ -308,8 +308,22 @@ function tabOriginAllowlist(url) {
 // + in-tab cookies. A source 401/403 maps to AuthLostError so the run fails closed
 // WITHOUT clearTokens() — source auth loss never clears the TGP tokens.
 function makeSourceFetch(sourceToken) {
-    return async function fetchJson(url, { method, signal, timeoutMs }) {
-        const headers = sourceToken.length > 0 ? { Authorization: `Bearer ${sourceToken}` } : {};
+    return async function fetchJson(url, { method, headers: injected, signal, timeoutMs }) {
+        // Blueprint-declared headers are adapter DATA (auto-inferred from untrusted
+        // capture in PR-C2). Copy them in but DROP any Authorization the adapter
+        // tries to set (case-insensitively — fetch treats header names that way),
+        // then apply the coach's SOURCE bearer LAST. So adapter data can never spoof
+        // OR smuggle the source bearer, even when no live token is present.
+        const headers = {};
+        for (const [k, v] of Object.entries(injected ?? {})) {
+            if (k.toLowerCase() === "authorization") {
+                continue;
+            }
+            headers[k] = v;
+        }
+        if (sourceToken.length > 0) {
+            headers.Authorization = `Bearer ${sourceToken}`;
+        }
         const res = await fetchWithTimeout(fetch, url, { method, headers, credentials: "include", signal }, timeoutMs);
         if (res.status === 401 || res.status === 403) {
             throw new AuthLostError();
@@ -595,3 +609,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 // token-leakage vector.
 export { TGP_API_ORIGIN };
 export { clearTokens, getAccessToken } from "./shared/session.js";
+// Test-harness only: makeSourceFetch composes blueprint-declared (adapter) headers
+// with the SOURCE bearer, and the bearer MUST win. Exported so a test can prove
+// that spoof resistance directly against the real merge, not a reconstruction.
+export { makeSourceFetch };
