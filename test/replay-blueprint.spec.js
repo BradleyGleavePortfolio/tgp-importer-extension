@@ -666,6 +666,55 @@ describe("normalizeBlueprint — allowedOrigins is a required capability (name-b
     });
 });
 
+describe("normalizeBlueprint — headers", () => {
+    it("absent blueprint AND step headers normalize to {}", () => {
+        const bp = normalizeBlueprint(base());
+        expect(bp.headers).toEqual({});
+        expect(bp.steps[0].headers).toEqual({});
+    });
+    it("keeps a valid blueprint-level header record", () => {
+        const bp = normalizeBlueprint(base({ headers: { Accept: "application/json" } }));
+        expect(bp.headers).toEqual({ Accept: "application/json" });
+    });
+    it("keeps a valid per-step header record", () => {
+        const bp = normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/t", headers: { Role: "Trainer" } }],
+        }));
+        expect(bp.steps[0].headers).toEqual({ Role: "Trainer" });
+    });
+    it("does not merge blueprint and step headers at normalize time (engine composes them)", () => {
+        const bp = normalizeBlueprint(base({
+            headers: { Accept: "application/json" },
+            steps: [{ id: "s", entityType: "t", template: "/t", headers: { Role: "Trainer" } }],
+        }));
+        expect(bp.headers).toEqual({ Accept: "application/json" });
+        expect(bp.steps[0].headers).toEqual({ Role: "Trainer" });
+    });
+    it("rejects non-plain-object blueprint headers (array)", () => {
+        expect(() => normalizeBlueprint(base({ headers: ["Accept"] }))).toThrow(/headers must be a plain object/);
+    });
+    it("rejects non-plain-object step headers (array)", () => {
+        expect(() => normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/t", headers: [] }],
+        }))).toThrow(/headers must be a plain object/);
+    });
+    it("rejects an empty-string header value", () => {
+        expect(() => normalizeBlueprint(base({ headers: { Accept: "" } }))).toThrow(/value must be a non-empty string/);
+    });
+    it("rejects a non-string header value", () => {
+        expect(() => normalizeBlueprint(base({ headers: { Accept: 5 } }))).toThrow(/value must be a non-empty string/);
+    });
+    it("rejects a non-string header value on a step", () => {
+        expect(() => normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/t", headers: { Role: null } }],
+        }))).toThrow(/value must be a non-empty string/);
+    });
+    it("null headers are treated as absent, not an error", () => {
+        const bp = normalizeBlueprint(base({ headers: null }));
+        expect(bp.headers).toEqual({});
+    });
+});
+
 describe("normalizeBlueprint — return-shape guarantees", () => {
     it("returns exactly the documented top-level keys", () => {
         const bp = normalizeBlueprint(base());
