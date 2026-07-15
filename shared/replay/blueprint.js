@@ -7,7 +7,7 @@
 //
 // Shape (all keys optional unless noted):
 //   {
-//     platform: "truecoach",                 // provenance label only (REQUIRED)
+//     platform: "<platform-id>",              // provenance label only (REQUIRED)
 //     apiBase:  "https://host/base",          // absolute origin+base (REQUIRED)
 //     rateLimitMs: 500,                        // min interval between requests
 //     headers: { "Accept": "application/json" }, // request headers for EVERY step
@@ -15,15 +15,15 @@
 //     steps: [ Step, ... ]                     // ordered; >=1 (REQUIRED)
 //   }
 //   Step = {
-//     id: "clients",                           // unique within blueprint (REQUIRED)
-//     entityType: "client",                    // envelope entity_type (REQUIRED)
+//     id: "list",                              // unique within blueprint (REQUIRED)
+//     entityType: "record",                    // envelope entity_type (REQUIRED)
 //     method: "GET",                           // GET|HEAD only (default GET)
-//     template: "/clients" | "/clients/:id",   // path; :params filled per-item (REQUIRED)
-//     itemsPath: ["clients"],                  // path to the array in the body; [] = body is array
+//     template: "/records" | "/records/:id",   // path; :params filled per-item (REQUIRED)
+//     itemsPath: ["records"],                  // path to the array in the body; [] = body is array
 //     idField: "id",                           // field on each item used as source_id + collected id
-//     collectAs: "clientIds",                  // store item ids under this set name
-//     forEach: "clientIds",                    // fan out: one request per id in this set
-//     headers: { "Role": "Trainer" },          // per-step headers; override blueprint headers
+//     collectAs: "recordIds",                  // store item ids under this set name
+//     forEach: "recordIds",                    // fan out: one request per id in this set
+//     headers: { "X-Requested-With": "xhr" },  // per-step headers; override blueprint headers
 //     pagination: { style: "page"|"cursor", param, start, nextPath } | null
 //   }
 //
@@ -53,6 +53,12 @@ export const PARAM_NAME_CHARS = "A-Za-z0-9_";
 // resolves to a private target cannot be caught here, which is why a non-empty
 // allowedOrigins capability is REQUIRED below (name-resolution confinement).
 const IPV4_LITERAL = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
+
+// Header confinement char classes (see normalizeHeaders). Values reject C0/DEL
+// (the CR/LF/NUL request-splitting vector); names reject the same PLUS backslash
+// (not a valid RFC 7230 field-name token char).
+const HEADER_VALUE_FORBIDDEN = /[\x00-\x1F\x7F]/;
+const HEADER_NAME_FORBIDDEN = /[\x00-\x1F\x7F\\]/;
 
 function isForbiddenHost(hostname) {
     // Lower-case and strip ALL trailing dots: "localhost.", "localhost..", and
@@ -136,8 +142,18 @@ function isNonEmptyString(v) {
 // Normalize an optional headers descriptor to a plain Record<string,string>.
 // Absent (undefined/null) => {}. A present value MUST be a plain object whose
 // every key AND value is a non-empty string; anything else fails closed. Headers
-// are adapter DATA (auto-inferred from untrusted capture in PR-C2), so an empty
-// or non-string entry is rejected here rather than silently shipped to fetch.
+// are adapter DATA (auto-inferred from UNTRUSTED capture in PR-C2), so — mirroring
+// the template guard above — a control character or malformed name is rejected
+// here rather than silently shipped to fetch.
+//
+// Injection confinement (simplest rule consistent with HTTP header grammar):
+//   - NAMES and VALUES may never contain a C0 control or DEL (/[\x00-\x1F\x7F]/).
+//     CR/LF/NUL are the header-splitting / request-smuggling vector; DEL and the
+//     other C0s are illegal in both field-names and field-values regardless.
+//   - NAMES additionally reject backslash: a field-name is an RFC 7230 `token`, and
+//     "\" is not a token char (this also matches the template rule's backslash ban).
+//     VALUES keep backslash — it is a legal, common field-content byte (User-Agent,
+//     filenames), so banning it there would reject real headers with no safety gain.
 // Note: Authorization is applied LAST by the trusted source-fetch layer, so a
 // blueprint cannot spoof it even by declaring an "Authorization" header.
 function normalizeHeaders(h, label) {
@@ -152,8 +168,14 @@ function normalizeHeaders(h, label) {
         if (!isNonEmptyString(k)) {
             throw new Error(`${label} header name must be a non-empty string`);
         }
+        if (HEADER_NAME_FORBIDDEN.test(k)) {
+            throw new Error(`${label} header name "${k}" must not contain control characters or backslashes`);
+        }
         if (!isNonEmptyString(v)) {
             throw new Error(`${label} header "${k}" value must be a non-empty string`);
+        }
+        if (HEADER_VALUE_FORBIDDEN.test(v)) {
+            throw new Error(`${label} header "${k}" value must not contain control characters`);
         }
         out[k] = v;
     }

@@ -713,6 +713,39 @@ describe("normalizeBlueprint — headers", () => {
         const bp = normalizeBlueprint(base({ headers: null }));
         expect(bp.headers).toEqual({});
     });
+    // Header-injection confinement: CR/LF/NUL/DEL (and other C0 controls) are the
+    // request-splitting vector and must fail closed in BOTH names and values.
+    it.each([
+        ["CR", "\r"],
+        ["LF", "\n"],
+        ["NUL", "\x00"],
+        ["DEL", "\x7F"],
+    ])("rejects a %s control character in a header value", (_name, ch) => {
+        expect(() => normalizeBlueprint(base({ headers: { Accept: `application/json${ch}evil` } })))
+            .toThrow(/value must not contain control characters/);
+    });
+    it.each([
+        ["CR", "\r"],
+        ["LF", "\n"],
+        ["NUL", "\x00"],
+        ["DEL", "\x7F"],
+    ])("rejects a %s control character in a header name", (_name, ch) => {
+        expect(() => normalizeBlueprint(base({ headers: { [`X${ch}Injected`]: "v" } })))
+            .toThrow(/must not contain control characters or backslashes/);
+    });
+    it("rejects a backslash in a header name (not a valid field-name token char)", () => {
+        expect(() => normalizeBlueprint(base({ headers: { "X\\Bad": "v" } })))
+            .toThrow(/must not contain control characters or backslashes/);
+    });
+    it("keeps a backslash in a header VALUE (legal field-content byte)", () => {
+        const bp = normalizeBlueprint(base({ headers: { "User-Agent": "app\\1.0" } }));
+        expect(bp.headers["User-Agent"]).toBe("app\\1.0");
+    });
+    it("applies the same control-character guard to per-step headers", () => {
+        expect(() => normalizeBlueprint(base({
+            steps: [{ id: "s", entityType: "t", template: "/t", headers: { Role: "Trainer\r\nX: y" } }],
+        }))).toThrow(/value must not contain control characters/);
+    });
 });
 
 describe("normalizeBlueprint — return-shape guarantees", () => {
