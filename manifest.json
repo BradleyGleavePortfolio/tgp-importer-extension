@@ -9,9 +9,15 @@
     "service_worker": "background.js",
     "type": "module"
   },
+  "icons": {
+    "128": "popup/icon-128.png"
+  },
   "action": {
     "default_title": "TGP Importer",
-    "default_popup": "popup/popup.html"
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "128": "popup/icon-128.png"
+    }
   },
   "permissions": [
     "tabs",

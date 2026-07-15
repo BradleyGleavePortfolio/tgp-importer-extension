@@ -669,12 +669,12 @@ describe("normalizeBlueprint — allowedOrigins is a required capability (name-b
 describe("normalizeBlueprint — return-shape guarantees", () => {
     it("returns exactly the documented top-level keys", () => {
         const bp = normalizeBlueprint(base());
-        expect(Object.keys(bp).sort()).toEqual(["apiBase", "budgets", "platform", "rateLimitMs", "steps"]);
+        expect(Object.keys(bp).sort()).toEqual(["apiBase", "budgets", "headers", "platform", "rateLimitMs", "steps"]);
     });
     it("returns exactly the documented step keys", () => {
         const step = normalizeBlueprint(base()).steps[0];
         expect(Object.keys(step).sort())
-            .toEqual(["collectAs", "entityType", "forEach", "id", "idField", "itemsPath", "method", "pagination", "template"]);
+            .toEqual(["collectAs", "entityType", "forEach", "headers", "id", "idField", "itemsPath", "method", "pagination", "template"]);
     });
     it("does not mutate the caller's input blueprint", () => {
         const input = base({ apiBase: "https://api.test/base/" });

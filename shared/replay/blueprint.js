@@ -10,6 +10,7 @@
 //     platform: "truecoach",                 // provenance label only (REQUIRED)
 //     apiBase:  "https://host/base",          // absolute origin+base (REQUIRED)
 //     rateLimitMs: 500,                        // min interval between requests
+//     headers: { "Accept": "application/json" }, // request headers for EVERY step
 //     budgets: { maxPages, maxEntities, maxPagesPerStep, requestTimeoutMs },
 //     steps: [ Step, ... ]                     // ordered; >=1 (REQUIRED)
 //   }
@@ -22,6 +23,7 @@
 //     idField: "id",                           // field on each item used as source_id + collected id
 //     collectAs: "clientIds",                  // store item ids under this set name
 //     forEach: "clientIds",                    // fan out: one request per id in this set
+//     headers: { "Role": "Trainer" },          // per-step headers; override blueprint headers
 //     pagination: { style: "page"|"cursor", param, start, nextPath } | null
 //   }
 //
@@ -131,6 +133,33 @@ function isNonEmptyString(v) {
     return typeof v === "string" && v.length > 0;
 }
 
+// Normalize an optional headers descriptor to a plain Record<string,string>.
+// Absent (undefined/null) => {}. A present value MUST be a plain object whose
+// every key AND value is a non-empty string; anything else fails closed. Headers
+// are adapter DATA (auto-inferred from untrusted capture in PR-C2), so an empty
+// or non-string entry is rejected here rather than silently shipped to fetch.
+// Note: Authorization is applied LAST by the trusted source-fetch layer, so a
+// blueprint cannot spoof it even by declaring an "Authorization" header.
+function normalizeHeaders(h, label) {
+    if (h === undefined || h === null) {
+        return {};
+    }
+    if (!isRecord(h)) {
+        throw new Error(`${label} headers must be a plain object`);
+    }
+    const out = {};
+    for (const [k, v] of Object.entries(h)) {
+        if (!isNonEmptyString(k)) {
+            throw new Error(`${label} header name must be a non-empty string`);
+        }
+        if (!isNonEmptyString(v)) {
+            throw new Error(`${label} header "${k}" value must be a non-empty string`);
+        }
+        out[k] = v;
+    }
+    return out;
+}
+
 function normalizePagination(p, stepId) {
     if (p === undefined || p === null) {
         return null;
@@ -232,6 +261,7 @@ function normalizeStep(step, seenIds) {
         idField,
         collectAs,
         forEach,
+        headers: normalizeHeaders(step.headers, `blueprint step "${step.id}"`),
         pagination: normalizePagination(step.pagination, step.id),
     };
 }
@@ -287,6 +317,7 @@ export function normalizeBlueprint(bp, opts) {
         platform: bp.platform,
         apiBase: bp.apiBase.replace(/\/+$/, ""),
         rateLimitMs,
+        headers: normalizeHeaders(bp.headers, "blueprint"),
         budgets: normalizeBudgets(bp.budgets),
         steps,
     };

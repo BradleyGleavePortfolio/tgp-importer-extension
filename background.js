@@ -308,8 +308,14 @@ function tabOriginAllowlist(url) {
 // + in-tab cookies. A source 401/403 maps to AuthLostError so the run fails closed
 // WITHOUT clearTokens() — source auth loss never clears the TGP tokens.
 function makeSourceFetch(sourceToken) {
-    return async function fetchJson(url, { method, signal, timeoutMs }) {
-        const headers = sourceToken.length > 0 ? { Authorization: `Bearer ${sourceToken}` } : {};
+    return async function fetchJson(url, { method, headers: injected, signal, timeoutMs }) {
+        // Blueprint-declared headers are adapter DATA; spread them FIRST, then set
+        // Authorization LAST so a blueprint (auto-inferred from untrusted capture in
+        // PR-C2) can never spoof or clobber the coach's SOURCE bearer.
+        const headers = { ...injected };
+        if (sourceToken.length > 0) {
+            headers.Authorization = `Bearer ${sourceToken}`;
+        }
         const res = await fetchWithTimeout(fetch, url, { method, headers, credentials: "include", signal }, timeoutMs);
         if (res.status === 401 || res.status === 403) {
             throw new AuthLostError();
