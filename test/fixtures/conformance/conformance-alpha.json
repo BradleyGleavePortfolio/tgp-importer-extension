@@ -1,0 +1,93 @@
+{
+  "description": "Deterministic, NON-PRODUCTION conformance fixture for the synthetic 'conformance_alpha' adapter (V5 multi-adapter neutrality proof, PR-2b). It is STRUCTURALLY INDEPENDENT from TrueCoach: a single un-paginated coaches list that fans out into THREE cursor-paginated child families (members / routines / activity-log), string ids in four distinct shapes (ca_* / m-* / rt_* / al_*), a nested `profile` object, deliberately OMITTED optional fields, and deterministic POISON rows (an item missing its id field, and a non-object array element). `responses` is what the fake source API returns keyed by root-relative request path (plus ?after cursor); `expect_records` is the INDEPENDENTLY hand-authored golden the site-agnostic engine must reproduce verbatim. No real host, no credentials: conformance-alpha.test is an RFC-6761 reserved TLD that never resolves.",
+  "apiBase": "https://conformance-alpha.test",
+  "allowedOrigins": ["https://conformance-alpha.test"],
+  "responses": {
+    "/v2/coaches": {
+      "coaches": [
+        { "id": "ca_1001", "profile": { "name": "Alex Rivera", "timezone": "America/Denver" } },
+        { "id": "ca_1002", "profile": { "name": "Blair Osei" }, "region": "emea" }
+      ]
+    },
+
+    "/v2/coaches/ca_1001/members": {
+      "members": [
+        { "id": "m-5001", "profile": { "name": "Dana", "email": "dana@member.test" }, "status": "active" },
+        { "id": "m-5002", "profile": { "name": "Sam" } }
+      ],
+      "paging": { "after": "mc1" }
+    },
+    "/v2/coaches/ca_1001/members?after=mc1": {
+      "members": [
+        { "id": "m-5003", "profile": { "name": "Lee" } },
+        { "profile": { "name": "Ghost (no id — poison)" } },
+        "not-an-object-poison"
+      ],
+      "paging": {}
+    },
+    "/v2/coaches/ca_1002/members": {
+      "members": [
+        { "id": "m-5004", "profile": { "name": "Robin" } }
+      ],
+      "paging": {}
+    },
+
+    "/v2/coaches/ca_1001/routines": {
+      "routines": [
+        { "id": "rt_9001", "title": "Push A" },
+        { "id": "rt_9002", "title": "Pull B", "weeks": 6 }
+      ],
+      "paging": {}
+    },
+    "/v2/coaches/ca_1002/routines": {
+      "routines": [
+        { "id": "rt_9003", "title": "Full Body" }
+      ],
+      "paging": {}
+    },
+
+    "/v2/coaches/ca_1001/activity-log": {
+      "events": [
+        { "id": "al_0001", "type": "login", "at": "2026-07-01T00:00:00.000Z" }
+      ],
+      "paging": { "after": "ac1" }
+    },
+    "/v2/coaches/ca_1001/activity-log?after=ac1": {
+      "events": [
+        { "id": "al_0002", "type": "assign" }
+      ],
+      "paging": {}
+    },
+    "/v2/coaches/ca_1002/activity-log": {
+      "events": [
+        { "id": "al_0003", "type": "login" }
+      ],
+      "paging": {}
+    }
+  },
+
+  "expect_records": {
+    "coaches": [
+      { "sourceId": "ca_1001", "payload": { "id": "ca_1001", "profile": { "name": "Alex Rivera", "timezone": "America/Denver" } } },
+      { "sourceId": "ca_1002", "payload": { "id": "ca_1002", "profile": { "name": "Blair Osei" }, "region": "emea" } }
+    ],
+    "members": [
+      { "sourceId": "m-5001", "payload": { "id": "m-5001", "profile": { "name": "Dana", "email": "dana@member.test" }, "status": "active" } },
+      { "sourceId": "m-5002", "payload": { "id": "m-5002", "profile": { "name": "Sam" } } },
+      { "sourceId": "m-5003", "payload": { "id": "m-5003", "profile": { "name": "Lee" } } },
+      { "sourceId": "members#ca_1001#1#1", "payload": { "profile": { "name": "Ghost (no id — poison)" } } },
+      { "sourceId": "members#ca_1001#1#2", "payload": "not-an-object-poison" },
+      { "sourceId": "m-5004", "payload": { "id": "m-5004", "profile": { "name": "Robin" } } }
+    ],
+    "routines": [
+      { "sourceId": "rt_9001", "payload": { "id": "rt_9001", "title": "Push A" } },
+      { "sourceId": "rt_9002", "payload": { "id": "rt_9002", "title": "Pull B", "weeks": 6 } },
+      { "sourceId": "rt_9003", "payload": { "id": "rt_9003", "title": "Full Body" } }
+    ],
+    "activity-log": [
+      { "sourceId": "al_0001", "payload": { "id": "al_0001", "type": "login", "at": "2026-07-01T00:00:00.000Z" } },
+      { "sourceId": "al_0002", "payload": { "id": "al_0002", "type": "assign" } },
+      { "sourceId": "al_0003", "payload": { "id": "al_0003", "type": "login" } }
+    ]
+  }
+}
