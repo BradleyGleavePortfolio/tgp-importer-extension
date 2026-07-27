@@ -24,7 +24,12 @@ import { logNetworkEvent } from "./log.js";
 
 // The one persisted secret. Lives only in chrome.storage.session.
 export const REFRESH_TOKEN_KEY = "tgp_refresh_token";
-const REFRESH_ENDPOINT = `${TGP_API_ORIGIN}/auth/extension/refresh`;
+// The backend mounts a global `api` prefix whose exclude list does NOT contain
+// `auth`, so the real route is /api/auth/extension/refresh. Without the prefix
+// every refresh 404s: the coach is silently forced to re-pair on each cold
+// service-worker wake even though a valid refresh token is sitting in
+// chrome.storage.session.
+const REFRESH_ENDPOINT = `${TGP_API_ORIGIN}/api/auth/extension/refresh`;
 
 // Memory-only access token. Undefined after a service-worker death; rehydrated
 // lazily from the refresh token on the first call that needs it.

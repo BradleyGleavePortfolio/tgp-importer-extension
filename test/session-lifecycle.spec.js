@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // access token + mutex chain.
 
 const REFRESH_KEY = "tgp_refresh_token";
-const REFRESH_ENDPOINT = "https://api.tgp.coach/auth/extension/refresh";
+const REFRESH_ENDPOINT = "https://api.tgp.coach/api/auth/extension/refresh";
 
 // Minimal chrome.storage.session stub over a Map. `failSetOnce` makes the next
 // set() reject WITHOUT mutating the map, to model a persist failure.

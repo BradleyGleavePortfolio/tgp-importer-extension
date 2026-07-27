@@ -5,9 +5,10 @@ import { join } from "node:path";
 describe("background ingest transport is bounded", () => {
     it("routes scout ingest + complete through fetchWithTimeout", () => {
         const src = readFileSync(join(process.cwd(), "background.js"), "utf8");
-        expect(src).toMatch(/import \{ fetchWithTimeout, isTimeout \}/);
+        expect(src).toMatch(/import \{ fetchWithTimeout, isTimeout[^}]*\} from "\.\/shared\/net\.js"/);
         expect(src).toMatch(/fetchWithTimeout\(fetch, `\$\{TGP_API_ORIGIN\}\/api\/scout\/ingest`/);
         expect(src).toMatch(/fetchWithTimeout\(fetch, `\$\{TGP_API_ORIGIN\}\/api\/scout\/ingest\/complete`/);
+        expect(src).toMatch(/fetchWithTimeout\(fetch, `\$\{TGP_API_ORIGIN\}\/api\/scout\/progress`/);
         // No bare fetch( to tgp scout endpoints remain.
         expect(src).not.toMatch(/fetch\(`\$\{TGP_API_ORIGIN\}\/api\/scout\//);
     });

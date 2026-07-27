@@ -33,7 +33,8 @@ import { detectPlatform } from "./extractors/detect.js";
 import { TrueCoachExtractor } from "./extractors/truecoach.js";
 import { runReplay, AuthLostError, isAuthLost } from "./shared/replay/engine.js";
 import { resolveBlueprint, isUnknownPlatform } from "./shared/replay/resolve.js";
-import { fetchWithTimeout, isTimeout } from "./shared/net.js";
+import { fetchWithTimeout, isTimeout, parseRetryAfterMs, readHeader } from "./shared/net.js";
+import { createProgressReporter } from "./shared/progress.js";
 import {
     attachDebugger,
     stopCapture,
@@ -48,6 +49,11 @@ import {
 const STORAGE_KEYS = {
     snapshot: "tgp_status_snapshot",
     schemaVersion: "tgp_schema_version",
+    // Non-secret, stable per-install identifier the backend's progress DTO
+    // requires. Random, never derived from anything about the coach or machine,
+    // so it is not a fingerprint — it only lets the backend attribute concurrent
+    // progress streams to distinct installs.
+    deviceId: "tgp_device_id",
 };
 
 // The one live snapshot the popup renders.
@@ -139,14 +145,41 @@ function makeSender(intent, onAuthLost) {
     };
 }
 
-async function completeIngest(intent) {
+// Map an engine result status onto the backend's ScoutCompleteDto terminal_status
+// enum. The vocabularies are NOT the same: the engine's "complete" has no member
+// on the backend (it is "success"), and "empty" is an extension-side distinction
+// the backend has no word for — a clean-but-zero walk is reported as "partial"
+// plus an error_summary, because calling it success would assert the coach has no
+// data when the far likelier cause is blueprint drift.
+const TERMINAL_STATUS = {
+    complete: "success",
+    partial: "partial",
+    empty: "partial",
+    failed: "failed",
+};
+
+// POST the terminal settlement for a run. `terminal_status` is REQUIRED by
+// ScoutCompleteDto, and the backend runs a global ValidationPipe with
+// forbidNonWhitelisted, so an unknown field is a 400 — `platform` used to be sent
+// and is not on the DTO, which meant every complete was rejected and every run
+// stayed "running" on the backend forever. Only DTO fields go on the wire.
+async function completeIngest(intent, outcome = {}) {
     const token = await getAccessToken();
+    const terminalStatus = typeof outcome.terminalStatus === "string" ? outcome.terminalStatus : "success";
+    const body = { intent_id: intent.intentId, terminal_status: terminalStatus };
+    if (outcome.finalCounts !== undefined && outcome.finalCounts !== null) {
+        body.final_counts = outcome.finalCounts;
+    }
+    // Counts and status categories only — never a response body, URL, or PII.
+    if (typeof outcome.errorSummary === "string" && outcome.errorSummary.length > 0) {
+        body.error_summary = outcome.errorSummary.slice(0, 2000);
+    }
     let res;
     try {
         res = await fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/ingest/complete`, {
             method: "POST",
             headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ intent_id: intent.intentId, platform: intent.platform }),
+            body: JSON.stringify(body),
         });
     }
     catch (err) {
@@ -162,6 +195,37 @@ async function completeIngest(intent) {
     if (!res.ok) {
         throw new Error(`complete ${res.status}`);
     }
+}
+
+// ---- progress transport -----------------------------------------------------
+
+// Read (or mint once) the non-secret per-install device id the progress DTO
+// requires. Random UUID only — no coach, machine, or browser attribute is used.
+async function getDeviceId() {
+    const stored = await chrome.storage.local.get(STORAGE_KEYS.deviceId);
+    const existing = readString(stored, STORAGE_KEYS.deviceId);
+    if (existing !== null && existing.length > 0) {
+        return existing;
+    }
+    const minted = `ext-${crypto.randomUUID()}`;
+    await chrome.storage.local.set({ [STORAGE_KEYS.deviceId]: minted });
+    return minted;
+}
+
+// Bearer POST to /api/scout/progress. Rejects on a non-2xx so the reporter can
+// count it as a failed report; the reporter swallows it (progress is advisory and
+// must never fail an import).
+function postProgress(body) {
+    return getAccessToken().then(async (token) => {
+        const res = await fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/progress`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify(body),
+        });
+        if (!res.ok) {
+            throw new Error(`progress ${res.status}`);
+        }
+    });
 }
 
 // ---- install / wake ---------------------------------------------------------
@@ -266,7 +330,7 @@ async function handleStartIngest(message) {
 
     try {
         await extractor.run({ token: sourceToken, signal: controller.signal });
-        await completeIngest(intent);
+        await completeIngest(intent, { terminalStatus: TERMINAL_STATUS.complete });
         broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_succeeded" } });
         notifyComplete(platform);
     }
@@ -332,6 +396,15 @@ function makeSourceFetch(sourceToken) {
             const err = new Error(`source ${res.status}`);
             err.name = "HttpError";
             err.status = res.status;
+            if (res.status === 429) {
+                // Honour the source's own pacing hint (bounded at parse time).
+                // Absent/unparseable leaves it undefined and the engine falls
+                // back to its deterministic exponential backoff.
+                const hinted = parseRetryAfterMs(readHeader(res, "Retry-After"));
+                if (hinted !== null) {
+                    err.retryAfterMs = hinted;
+                }
+            }
             throw err;
         }
         try {
@@ -419,30 +492,54 @@ async function handleStartImport(message) {
     });
     // Real source bearer from the coach's own tab; absent -> "" -> fails closed.
     const sourceToken = await collectSourceToken(message.tabId, allowedOrigins);
+    const reporter = createProgressReporter({
+        postProgress,
+        intentId: intent.intentId,
+        deviceId: await getDeviceId(),
+    });
 
     try {
         const result = await runReplay({
             blueprint,
             fetchJson: makeSourceFetch(sourceToken),
             emit: (entityType, batch) => sendEntities(entityType, batch),
-            onProgress: (rows) => broadcastStatus({ ...currentSnapshot, intent, progress: rows }),
+            onProgress: (rows) => {
+                broadcastStatus({ ...currentSnapshot, intent, progress: rows });
+                reporter.report(rows);
+            },
             signal: controller.signal,
             allowedOrigins,
         });
-        if (result.status === "complete" || result.status === "partial") {
-            // Both finalise, but a partial walk reports a DISTINCT state (not success).
-            await completeIngest(intent);
-            const partial = result.status === "partial";
-            broadcastStatus({
-                ...currentSnapshot,
-                intent: { ...intent, status: partial ? "ingest_partial" : "ingest_succeeded" },
-                lastError: partial ? partialDetail(result) : null,
-            });
-            notifyComplete(platform);
-        }
-        else {
+        const terminalStatus = TERMINAL_STATUS[result.status];
+        if (terminalStatus === undefined) {
+            // cancelled — the coach stopped it, so there is nothing to settle.
             broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: failDetail(result) });
+            return;
         }
+        const detail = terminalDetail(result);
+        const settlement = {
+            terminalStatus,
+            finalCounts: { pages: result.pages, entities: result.entities },
+            errorSummary: detail ?? undefined,
+        };
+        if (result.status === "failed") {
+            // Settle best-effort so the intent does not sit "running" forever,
+            // but never let a failed settlement mask the source failure the coach
+            // actually needs to see.
+            await completeIngest(intent, settlement).catch(() => undefined);
+            broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: detail });
+            return;
+        }
+        // A non-failed outcome still requires a backend ack before we report it:
+        // a throw here surfaces as ingest_failed rather than a dishonest success.
+        await completeIngest(intent, settlement);
+        await reporter.flush(null, detail ?? undefined);
+        broadcastStatus({
+            ...currentSnapshot,
+            intent: { ...intent, status: intentStatusFor(result.status) },
+            lastError: detail,
+        });
+        notifyComplete(platform);
     }
     catch (err) {
         // TGP auth loss already broadcast the friendly "session expired" state; keep it.
@@ -455,6 +552,38 @@ async function handleStartImport(message) {
             : (err instanceof Error ? err.message : "import failed");
         broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: detail });
     }
+}
+
+// Popup-facing intent status per engine outcome. "empty" gets its OWN state:
+// showing it as succeeded would tell the coach their source has no data, and
+// showing it as failed would be wrong too — nothing errored. It needs checking.
+function intentStatusFor(engineStatus) {
+    if (engineStatus === "complete") {
+        return "ingest_succeeded";
+    }
+    if (engineStatus === "empty") {
+        return "ingest_empty";
+    }
+    if (engineStatus === "partial") {
+        return "ingest_partial";
+    }
+    return "ingest_failed";
+}
+
+// One human/diagnostic line per outcome, or null when the run was wholly clean.
+// Counts and status categories only — never a response body or PII.
+function terminalDetail(result) {
+    if (result.status === "complete") {
+        return null;
+    }
+    if (result.status === "empty") {
+        return "no records found — the source returned 0 records with no errors, "
+            + "which usually means the import adapter is out of date. Nothing was changed.";
+    }
+    if (result.status === "partial") {
+        return partialDetail(result);
+    }
+    return failDetail(result);
 }
 
 // Terminal detail carrying only counts + failure category/status — never a

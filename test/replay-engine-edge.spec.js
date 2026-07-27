@@ -119,7 +119,9 @@ describe("runReplay — empty fan-out set", () => {
             },
         ]);
         const result = await run({ blueprint, fetchJson, emit });
-        expect(result.status).toBe("complete");
+        // A clean walk that yielded nothing is "empty", never "complete": the far
+        // likelier explanation is adapter drift, not a coach with no data.
+        expect(result.status).toBe("empty");
         expect(emitted).toHaveLength(0);
         expect(fetchJson).toHaveBeenCalledTimes(1); // only the empty parent page
     });

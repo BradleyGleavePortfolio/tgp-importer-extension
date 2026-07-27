@@ -46,17 +46,34 @@ export function isAborted(err) {
 }
 
 const DEFAULT_MAX_ATTEMPTS = 3;
+// Deterministic backoff: base * 2^(attempt-1), no jitter. Jitter would make the
+// delay sequence untestable, and the walk is already serialized behind pace() so
+// there is no thundering herd to spread out.
+export const DEFAULT_BACKOFF_BASE_MS = 500;
+export const MAX_BACKOFF_MS = 30000;
 
 function isRetryable(err) {
     if (isTimeout(err)) {
         return true;
     }
-    // HttpError carries a numeric status; 5xx is transient, 4xx (except auth,
-    // handled separately) is not. A bare network Error is treated as transient.
+    // HttpError carries a numeric status. 429 is the source asking us to slow
+    // down — retryable, and the one 4xx that is. 5xx is transient; every other
+    // 4xx (auth is handled separately) is not.
     if (err instanceof Error && typeof err.status === "number") {
-        return err.status >= 500;
+        return err.status === 429 || err.status >= 500;
     }
     return err instanceof Error && err.name !== "MalformedResponseError";
+}
+
+// How long to wait before the next attempt. A server-supplied Retry-After wins
+// when present (already clamped at parse time), otherwise exponential backoff.
+// Both are capped at MAX_BACKOFF_MS so no response can stall the run unboundedly.
+export function backoffDelayMs(err, attempt, baseMs = DEFAULT_BACKOFF_BASE_MS) {
+    const hinted = err instanceof Error && typeof err.retryAfterMs === "number" && err.retryAfterMs >= 0
+        ? err.retryAfterMs
+        : null;
+    const delay = hinted !== null ? hinted : baseMs * 2 ** (attempt - 1);
+    return Math.min(delay, MAX_BACKOFF_MS);
 }
 
 // Fill :params in a template with a single id value (generic: every :param in a
@@ -92,6 +109,7 @@ export async function runReplay(options) {
         now = () => Date.now(),
         sleep = (ms) => new Promise((r) => setTimeout(r, ms)),
         maxAttempts = DEFAULT_MAX_ATTEMPTS,
+        backoffBaseMs = DEFAULT_BACKOFF_BASE_MS,
         allowedOrigins,
     } = options;
 
@@ -155,7 +173,10 @@ export async function runReplay(options) {
                         : (err instanceof Error ? err.name : "error");
                     return null; // give up on this page; the run stays bounded
                 }
-                // transient — retry (next loop iteration)
+                // Transient — wait, then retry. Backing off matters most for 429:
+                // retrying a rate-limit immediately just burns the remaining
+                // attempts and can escalate the source's throttling.
+                await sleep(backoffDelayMs(err, attempt, backoffBaseMs));
             }
         }
         return null;
@@ -309,13 +330,24 @@ export async function runReplay(options) {
     // Honest terminal status: a skipped page or a budget-truncated walk is NOT an
     // ordinary "complete". If pages were skipped and nothing was emitted at all the
     // run could not produce data (failed); if it degraded or was truncated but still
-    // emitted something it is partial; only a whole, untruncated walk is complete.
+    // emitted something it is partial.
+    //
+    // A technically-clean walk that yielded ZERO entities is its own outcome
+    // ("empty"), never "complete". Every request succeeded and every page parsed,
+    // so nothing looks wrong — but the overwhelmingly likely cause is blueprint
+    // drift: the source renamed itemsPath, moved the endpoint, or now returns a
+    // different shape. Reporting that as a completed import silently tells the
+    // coach their data moved when nothing did. "empty" forces the distinction to
+    // be surfaced and verified instead of swallowed.
     let status;
     if (degraded && totalEntities === 0) {
         status = "failed";
     }
     else if (degraded || truncated) {
         status = "partial";
+    }
+    else if (totalEntities === 0) {
+        status = "empty";
     }
     else {
         status = "complete";
