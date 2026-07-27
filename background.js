@@ -201,15 +201,22 @@ async function completeIngest(intent, outcome = {}) {
 
 // Read (or mint once) the non-secret per-install device id the progress DTO
 // requires. Random UUID only — no coach, machine, or browser attribute is used.
+// Returns "" if storage is unavailable: progress is advisory, so a storage
+// failure must silence reporting, never fail the coach's import.
 async function getDeviceId() {
-    const stored = await chrome.storage.local.get(STORAGE_KEYS.deviceId);
-    const existing = readString(stored, STORAGE_KEYS.deviceId);
-    if (existing !== null && existing.length > 0) {
-        return existing;
+    try {
+        const stored = await chrome.storage.local.get(STORAGE_KEYS.deviceId);
+        const existing = readString(stored, STORAGE_KEYS.deviceId);
+        if (existing !== null && existing.length > 0) {
+            return existing;
+        }
+        const minted = `ext-${crypto.randomUUID()}`;
+        await chrome.storage.local.set({ [STORAGE_KEYS.deviceId]: minted });
+        return minted;
     }
-    const minted = `ext-${crypto.randomUUID()}`;
-    await chrome.storage.local.set({ [STORAGE_KEYS.deviceId]: minted });
-    return minted;
+    catch {
+        return "";
+    }
 }
 
 // Bearer POST to /api/scout/progress. Rejects on a non-2xx so the reporter can

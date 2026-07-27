@@ -289,6 +289,18 @@ describe("/api/scout/progress — live wiring", () => {
         expect(await settle(mock)).toBe("ingest_succeeded");
     });
 
+    it("does not fail the import when the device id cannot be read or persisted", async () => {
+        // Progress is strictly advisory. If chrome.storage.local is unavailable
+        // the reporter must simply go quiet — a reporting-channel fault can never
+        // be allowed to cost the coach their migration.
+        const mock = await load(withSourceTab());
+        mock.chrome.storage.local.get = async () => { throw new Error("storage unavailable"); };
+        const { progressBodies } = routeRun(mock, { clients: [{ id: "c1" }] });
+        await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
+        expect(await settle(mock)).toBe("ingest_succeeded");
+        expect(progressBodies).toHaveLength(0);
+    });
+
     it("never puts token material on the progress wire", async () => {
         const mock = await load(withSourceTab());
         const { progressBodies } = routeRun(mock, { clients: [{ id: "c1" }] });
