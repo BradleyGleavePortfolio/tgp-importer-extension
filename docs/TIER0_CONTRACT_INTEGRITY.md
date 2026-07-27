@@ -97,6 +97,18 @@ blueprint inference (PR-C2) merges.
 - **Distinguishing genuine emptiness from drift.** `empty` says "verify this",
   not "this is drift". Actually deciding requires the drift canary, which is a
   capture/induction concern behind the C1 freeze.
+- **Per-entity emptiness.** `empty` is a whole-run test, so a two-step blueprint
+  where one step still returns records and another's `itemsPath` no longer
+  resolves classifies as `complete`/`success` — a partial drift is invisible.
+  One endpoint changing shape is the *more* common drift mode than all of them
+  changing at once, so this is a real remaining gap, not a theoretical one. It is
+  out of scope here because the honest fix is not a stricter terminal test: a
+  step legitimately yielding zero (a coach with no goals set) is indistinguishable
+  from a drifted step without a prior expectation to compare against. That
+  expectation is the drift canary's job — a per-entity baseline from the last
+  successful run — which is the same C1-gated capture concern above. The counts
+  needed to feed it already exist in `progress[]` and are now posted, so the
+  input side of that rung is already in place.
 - **Retry budget across pages.** Backoff is per-page. A source that 429s every
   page still walks every page. A run-level rate-limit circuit breaker is a
   separate, larger change.

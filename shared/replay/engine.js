@@ -50,7 +50,10 @@ const DEFAULT_MAX_ATTEMPTS = 3;
 // delay sequence untestable, and the walk is already serialized behind pace() so
 // there is no thundering herd to spread out.
 export const DEFAULT_BACKOFF_BASE_MS = 500;
-export const MAX_BACKOFF_MS = 30000;
+// Deliberately well under MV3's ~30s idle-termination threshold: a worker asleep
+// in backoff has no pending fetch keeping it alive, and a kill mid-run leaves the
+// intent unsettled — the exact "running forever" failure this rung exists to fix.
+export const MAX_BACKOFF_MS = 10000;
 
 function isRetryable(err) {
     if (isTimeout(err)) {

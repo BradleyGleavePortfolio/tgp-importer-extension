@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
+// report() is fire-and-forget, so "did the post happen" is only observable once
+// the microtask queue has drained — not after a fixed number of ticks.
+const drain = () => new Promise((r) => setTimeout(r, 0));
 import {
     createProgressReporter,
     PROGRESS_MAX_ENTRIES,
@@ -144,10 +147,10 @@ describe("progress reporter — bounded rate", () => {
     it("allows the next report once the interval has elapsed", async () => {
         const { reporter, posts, advance } = makeReporter();
         reporter.report(rows(["client", 1]));
-        await Promise.resolve();
+        await drain();
         advance(PROGRESS_MIN_INTERVAL_MS);
         reporter.report(rows(["client", 2]));
-        await Promise.resolve();
+        await drain();
         expect(posts).toHaveLength(2);
     });
 
@@ -159,7 +162,10 @@ describe("progress reporter — bounded rate", () => {
             await Promise.resolve();
             advance(100);
         }
-        expect(posts.length).toBeLessThanOrEqual(240);
+        // One per PROGRESS_MIN_INTERVAL_MS over 60s is ~60. Asserting the real
+        // ceiling (not merely the backend's 240) means a weakened throttle fails
+        // here rather than only showing up as production 429s.
+        expect(posts.length).toBeLessThanOrEqual(61);
         expect(posts.length).toBeGreaterThan(0);
     });
 
@@ -194,6 +200,52 @@ describe("progress reporter — bounded rate", () => {
         expect(sent).toBe(true);
         expect(posts).toHaveLength(2);
         expect(posts[1].progress[0].count_committed).toBe(2);
+    });
+
+    it("flush waits for an in-flight report instead of being dropped", async () => {
+        // The terminal flush carries the run's final counts. Skipping it because a
+        // throttled report was still outstanding would leave the backend's last
+        // view of the run permanently stale — a silent undercount of the import.
+        let release;
+        const gate = new Promise((r) => { release = r; });
+        const posts = [];
+        let first = true;
+        const { reporter } = makeReporter({
+            postProgress: async (body) => {
+                posts.push(body);
+                if (first) {
+                    first = false;
+                    await gate;
+                }
+            },
+        });
+        reporter.report(rows(["client", 1]));
+        await Promise.resolve();
+        expect(posts).toHaveLength(1);
+        const flushed = reporter.flush(rows(["client", 9]));
+        release();
+        await expect(flushed).resolves.toBe(true);
+        expect(posts).toHaveLength(2);
+        expect(posts[1].progress[0].count_committed).toBe(9);
+    });
+
+    it("a failed in-flight report does not stop the terminal flush from landing", async () => {
+        const posts = [];
+        let first = true;
+        const { reporter } = makeReporter({
+            postProgress: async (body) => {
+                posts.push(body);
+                if (first) {
+                    first = false;
+                    throw new Error("progress 429");
+                }
+            },
+        });
+        reporter.report(rows(["client", 1]));
+        await Promise.resolve();
+        await expect(reporter.flush(rows(["client", 5]))).resolves.toBe(true);
+        expect(posts).toHaveLength(2);
+        expect(posts[1].progress[0].count_committed).toBe(5);
     });
 });
 
@@ -314,10 +366,10 @@ describe("progress reporter — postProgress call discipline", () => {
     it("respects a caller-supplied minimum interval", async () => {
         const { reporter, posts, advance } = makeReporter({ minIntervalMs: 50 });
         reporter.report(rows(["client", 1]));
-        await Promise.resolve();
+        await drain();
         advance(50);
         reporter.report(rows(["client", 2]));
-        await Promise.resolve();
+        await drain();
         expect(posts).toHaveLength(2);
     });
 });

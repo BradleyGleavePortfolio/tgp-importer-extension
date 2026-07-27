@@ -163,10 +163,11 @@ const TERMINAL_STATUS = {
 // forbidNonWhitelisted, so an unknown field is a 400 — `platform` used to be sent
 // and is not on the DTO, which meant every complete was rejected and every run
 // stayed "running" on the backend forever. Only DTO fields go on the wire.
-async function completeIngest(intent, outcome = {}) {
+// `outcome.terminalStatus` is required rather than defaulted: a success-shaped
+// default is exactly how a run that did something else ends up reported as one.
+async function completeIngest(intent, outcome) {
     const token = await getAccessToken();
-    const terminalStatus = typeof outcome.terminalStatus === "string" ? outcome.terminalStatus : "success";
-    const body = { intent_id: intent.intentId, terminal_status: terminalStatus };
+    const body = { intent_id: intent.intentId, terminal_status: outcome.terminalStatus };
     if (outcome.finalCounts !== undefined && outcome.finalCounts !== null) {
         body.final_counts = outcome.finalCounts;
     }
@@ -270,12 +271,20 @@ function broadcastAuthRequired(message) {
     chrome.runtime.sendMessage({ kind: "auth_required" }).catch(() => undefined);
 }
 
-function notifyComplete(platform) {
+// The OS notification is the most visible surface and often the ONLY one a
+// coach sees, so it must not say "complete" for an outcome the popup is about to
+// flag. An empty (drift-suspected) or partial walk gets its own wording.
+function notifyOutcome(platform, engineStatus) {
+    const message = engineStatus === "empty"
+        ? `Import from ${platform} found no records — check the popup.`
+        : (engineStatus === "partial"
+            ? `Import from ${platform} finished incomplete — check the popup.`
+            : `Import from ${platform} complete.`);
     chrome.notifications.create({
         type: "basic",
         iconUrl: "popup/icon-128.png",
         title: "TGP Importer",
-        message: `Import from ${platform} complete.`,
+        message,
     });
 }
 
@@ -339,7 +348,7 @@ async function handleStartIngest(message) {
         await extractor.run({ token: sourceToken, signal: controller.signal });
         await completeIngest(intent, { terminalStatus: TERMINAL_STATUS.complete });
         broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_succeeded" } });
-        notifyComplete(platform);
+        notifyOutcome(platform, "complete");
     }
     catch (err) {
         // TGP-side auth loss already broadcast the friendly re-pair state; keep it.
@@ -403,14 +412,12 @@ function makeSourceFetch(sourceToken) {
             const err = new Error(`source ${res.status}`);
             err.name = "HttpError";
             err.status = res.status;
-            if (res.status === 429) {
-                // Honour the source's own pacing hint (bounded at parse time).
-                // Absent/unparseable leaves it undefined and the engine falls
-                // back to its deterministic exponential backoff.
-                const hinted = parseRetryAfterMs(readHeader(res, "Retry-After"));
-                if (hinted !== null) {
-                    err.retryAfterMs = hinted;
-                }
+            // Honour the source's own pacing hint (bounded at parse time). 503 is
+            // the other status that commonly carries it. Absent/unparseable leaves
+            // it undefined and the engine falls back to exponential backoff.
+            const hinted = parseRetryAfterMs(readHeader(res, "Retry-After"));
+            if (hinted !== null) {
+                err.retryAfterMs = hinted;
             }
             throw err;
         }
@@ -546,7 +553,7 @@ async function handleStartImport(message) {
             intent: { ...intent, status: intentStatusFor(result.status) },
             lastError: detail,
         });
-        notifyComplete(platform);
+        notifyOutcome(platform, result.status);
     }
     catch (err) {
         // TGP auth loss already broadcast the friendly "session expired" state; keep it.

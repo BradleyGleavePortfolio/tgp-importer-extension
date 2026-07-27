@@ -235,6 +235,34 @@ describe("empty outcome — surfaced, not swallowed", () => {
     });
 });
 
+describe("outcome notification — the most visible surface must not overclaim", () => {
+    it("does not say the import is complete when the walk was empty", async () => {
+        const mock = await load(withSourceTab());
+        routeRun(mock, { clients: [] });
+        await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
+        expect(await settle(mock)).toBe("ingest_empty");
+        const message = mock.notifications.at(-1).message;
+        expect(message).not.toMatch(/complete/);
+        expect(message).toMatch(/no records/);
+    });
+
+    it("still says complete for a genuinely clean populated walk", async () => {
+        const mock = await load(withSourceTab());
+        routeRun(mock, { clients: [{ id: "c1" }] });
+        await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
+        expect(await settle(mock)).toBe("ingest_succeeded");
+        expect(mock.notifications.at(-1).message).toMatch(/complete/);
+    });
+
+    it("raises no notification at all on a failed walk", async () => {
+        const mock = await load(withSourceTab());
+        routeRun(mock, { clients: [], sourceStatus: 404 });
+        await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
+        expect(await settle(mock)).toBe("ingest_failed");
+        expect(mock.notifications).toHaveLength(0);
+    });
+});
+
 describe("/api/scout/progress — live wiring", () => {
     it("posts progress with the DTO field names during a real run", async () => {
         const mock = await load(withSourceTab());

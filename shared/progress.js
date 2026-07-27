@@ -47,7 +47,9 @@ export function createProgressReporter(options) {
     // arbitrary subset.
     const highWater = new Map();
     let lastSentAt = null;
-    let inFlight = false;
+    // The outstanding POST, or null. Held as a promise rather than a boolean so a
+    // forced flush can WAIT for it instead of being dropped.
+    let inFlight = null;
 
     function absorb(rows) {
         if (!Array.isArray(rows)) {
@@ -84,8 +86,14 @@ export function createProgressReporter(options) {
         if (intent.length === 0 || device.length === 0) {
             return false; // cannot satisfy the DTO — stay silent rather than 400
         }
-        if (inFlight) {
-            return false;
+        if (inFlight !== null) {
+            if (!force) {
+                return false;
+            }
+            // A terminal flush carries the run's final counts, so dropping it
+            // because a throttled report is still outstanding would leave the
+            // backend's last view of the run permanently stale. Wait instead.
+            await inFlight;
         }
         const at = now();
         if (!force && lastSentAt !== null && at - lastSentAt < minIntervalMs) {
@@ -101,17 +109,23 @@ export function createProgressReporter(options) {
             body.lastError = detail;
         }
         lastSentAt = at;
-        inFlight = true;
+        // Invoked synchronously (no extra microtask), then made never-rejecting so
+        // an awaiting flush cannot inherit a report's failure.
+        let posted;
         try {
-            await postProgress(body);
-            return true;
+            posted = Promise.resolve(postProgress(body));
         }
         catch {
-            return false; // advisory only — never surface a progress failure
+            posted = Promise.reject(new Error("progress post threw"));
         }
-        finally {
-            inFlight = false;
-        }
+        const clear = () => {
+            if (inFlight === pending) {
+                inFlight = null;
+            }
+        };
+        const pending = posted.then(() => { clear(); return true; }, () => { clear(); return false; });
+        inFlight = pending;
+        return pending;
     }
 
     return {
