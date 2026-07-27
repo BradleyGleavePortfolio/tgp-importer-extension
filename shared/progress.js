@@ -109,21 +109,11 @@ export function createProgressReporter(options) {
             body.lastError = detail;
         }
         lastSentAt = at;
-        // Invoked synchronously (no extra microtask), then made never-rejecting so
-        // an awaiting flush cannot inherit a report's failure.
-        let posted;
-        try {
-            posted = Promise.resolve(postProgress(body));
-        }
-        catch {
-            posted = Promise.reject(new Error("progress post threw"));
-        }
-        const clear = () => {
-            if (inFlight === pending) {
-                inFlight = null;
-            }
-        };
-        const pending = posted.then(() => { clear(); return true; }, () => { clear(); return false; });
+        // The IIFE calls postProgress synchronously (so no extra microtask) while
+        // turning a synchronous throw into a rejection; `pending` then never
+        // rejects, so an awaiting flush cannot inherit a report's failure.
+        const done = (ok) => { inFlight = null; return ok; };
+        const pending = (async () => postProgress(body))().then(() => done(true), () => done(false));
         inFlight = pending;
         return pending;
     }
