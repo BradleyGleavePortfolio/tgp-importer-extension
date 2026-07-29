@@ -188,11 +188,33 @@ describe("ingest/complete — strict DTO whitelist", () => {
 
     it("reports final_counts and omits error_summary on a clean success", async () => {
         const mock = await load(withSourceTab());
+        const { completeBodies } = routeRun(mock, { clients: [{ id: "c1" }], notes: [{ id: "n1" }] });
+        await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
+        await settle(mock);
+        // Per ENTITY TYPE, matching the entity_type vocabulary the progress stream
+        // already uses. "pages" is not an entity and a bare total cannot tell a
+        // coach whether their notes came across.
+        expect(completeBodies[0].final_counts).toEqual({ clients: 1, notes: 1 });
+        expect("error_summary" in completeBodies[0]).toBe(false);
+    });
+
+    it("never reports pages or a bare total as if they were entity types", async () => {
+        const mock = await load(withSourceTab());
         const { completeBodies } = routeRun(mock, { clients: [{ id: "c1" }] });
         await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
         await settle(mock);
-        expect(completeBodies[0].final_counts.entities).toBeGreaterThan(0);
-        expect("error_summary" in completeBodies[0]).toBe(false);
+        expect("pages" in completeBodies[0].final_counts).toBe(false);
+        expect("entities" in completeBodies[0].final_counts).toBe(false);
+    });
+
+    it("keeps a zero-yield entity type visible in the tally", async () => {
+        // A drifted step that returns nothing must appear as 0, not vanish: an
+        // absent key is indistinguishable from a step that was never attempted.
+        const mock = await load(withSourceTab());
+        const { completeBodies } = routeRun(mock, { clients: [{ id: "c1" }], notes: [] });
+        await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
+        await settle(mock);
+        expect(completeBodies[0].final_counts).toEqual({ clients: 1, notes: 0 });
     });
 
     it("attaches a bounded error_summary explaining an empty walk", async () => {

@@ -15,6 +15,8 @@ no product-gate change.
 | 3 | `POST /api/scout/progress` was never called | The endpoint existed and nothing used it. A long crawl was invisible server-side. |
 | 4 | A clean walk yielding zero entities reported `complete` | Every request 200, every page parsed, zero records out — reported to the coach as a successful import. The overwhelmingly likely cause is adapter drift, and "import complete, 0 records" is indistinguishable from "you have no clients". This is the failure mode most able to lose a whole migration without anyone noticing. |
 | 5 | 429 was classified non-retryable, and retries had no delay | A rate-limited page was dropped outright. A 5xx burned all three attempts inside one event-loop turn. Both lose data. |
+| 6 | A run that **threw** was never settled | Defect 1 fixed the body of the complete call, but only on the path where `runReplay` *returns*. A source 401/403 raises `AuthLostError` and propagates, so the run left the orchestration through the catch — which broadcast `ingest_failed` and posted nothing. The coach saw a finished import; the backend intent stayed `running` forever. A source session expiring mid-crawl is the single most routine way a real import ends. |
+| 7 | `final_counts` was `{ pages, entities }` | Read as the per-entity tally the field name promises, that is a count of two entity types no coach has: `pages` is not an entity, and `entities` is a run total wearing an entity's name. A coach reconciling a migration could not tell from the settled record whether their notes came across. |
 
 ## What changed
 
@@ -30,10 +32,44 @@ no product-gate change.
   flight, ≤64 entries, every string clamped to the DTO's `MaxLength`. Monotone:
   `count_committed` is a per-entity high-water mark. Advisory: it cannot throw,
   so a progress failure can never fail an import.
+- **`shared/replay/engine.js`** — `result.counts`, a per-entity tally summed by
+  `entityType` across steps. Built through a `Map`, so an `entityType` of
+  `__proto__` (adapter data, auto-inferred from untrusted capture in PR-C2)
+  becomes a real own property instead of silently discarding its count.
 - **`background.js`** — maps engine status onto the backend's terminal enum,
-  sends only DTO-declared fields, settles every non-cancelled outcome, attaches
-  `retryAfterMs` from a 429 response, mints a non-secret device id, wires the
-  progress reporter.
+  sends only DTO-declared fields, settles every non-cancelled outcome —
+  *including the ones that threw* — attaches `retryAfterMs` from a 429 response,
+  mints a non-secret device id, wires the progress reporter, and reports
+  `final_counts` as the per-entity tally.
+
+### Settling a run that threw
+
+`settleFailed()` posts `terminal_status: failed` on the catch path, **before**
+the `ingest_failed` broadcast. Ordering is the substance of the fix, not a
+detail: a broadcast that lands first opens a window in which the coach has been
+told the import ended while the backend still has it running, and an MV3 worker
+suspended in that window never closes it.
+
+Three constraints hold it honest:
+
+- **`final_counts` is omitted, not guessed.** No tally exists on this path and
+  the DTO makes the field optional, so nothing is asserted about what landed.
+- **At most one settlement per intent.** `settlementSent` is set before the
+  first complete, so a *rejected* complete on an otherwise good run is not
+  re-settled as `failed` — that would record a failure for a run that did not
+  fail. The run still surfaces as `ingest_failed` to the coach, because an
+  unacknowledged settlement is not a confirmed import.
+- **It cannot mask the real fault.** The settlement is best-effort; the coach
+  still sees the source failure, and a source 401/403 still routes to a source
+  re-login rather than TGP pairing.
+
+A TGP-side auth loss is the one started intent still left unsettled, and
+deliberately: the tokens a complete would carry are exactly the ones just
+cleared, so the POST could only 401. Closing that intent needs a re-pair (or a
+backend-side expiry), not another unauthenticated call.
+
+The same catch-path gap existed on the legacy `start_ingest` entrypoint and is
+fixed identically.
 
 ### Status vocabularies are not the same
 
@@ -107,8 +143,13 @@ blueprint inference (PR-C2) merges.
   from a drifted step without a prior expectation to compare against. That
   expectation is the drift canary's job — a per-entity baseline from the last
   successful run — which is the same C1-gated capture concern above. The counts
-  needed to feed it already exist in `progress[]` and are now posted, so the
-  input side of that rung is already in place.
+  needed to feed it are now on the wire twice — live in `progress[]` and settled
+  in `final_counts`, where a drifted step shows as an explicit `0` rather than an
+  absent key — so the input side of that rung is in place. What is still missing
+  is only the baseline to compare them against.
+- **Settling a run lost to TGP auth.** See above: no credential survives to
+  authenticate the complete. Needs a backend-side expiry or a settle-on-re-pair,
+  neither of which is an extension-only change.
 - **Retry budget across pages.** Backoff is per-page. A source that 429s every
   page still walks every page. A run-level rate-limit circuit breaker is a
   separate, larger change.

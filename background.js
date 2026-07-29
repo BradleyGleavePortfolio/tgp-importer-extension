@@ -198,6 +198,18 @@ async function completeIngest(intent, outcome) {
     }
 }
 
+// Best-effort terminal settlement for a run that THREW — a source 401/403, an
+// ingest transport error, anything that escaped the orchestration. An intent that
+// was started and never settled sits "running" on the backend forever, which is
+// the same data-integrity defect as a rejected complete, just reached by a
+// different door. No counts are available on this path and `final_counts` is
+// optional, so it is omitted rather than guessed. Never throws: the failure the
+// coach actually needs to see must not be masked by a settlement fault.
+function settleFailed(intent, errorSummary) {
+    return completeIngest(intent, { terminalStatus: TERMINAL_STATUS.failed, errorSummary })
+        .catch(() => undefined);
+}
+
 // ---- progress transport -----------------------------------------------------
 
 // Read (or mint once) the non-secret per-install device id the progress DTO
@@ -344,8 +356,10 @@ async function handleStartIngest(message) {
         return;
     }
 
+    let settlementSent = false;
     try {
         await extractor.run({ token: sourceToken, signal: controller.signal });
+        settlementSent = true;
         await completeIngest(intent, { terminalStatus: TERMINAL_STATUS.complete });
         broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_succeeded" } });
         notifyOutcome(platform, "complete");
@@ -356,6 +370,11 @@ async function handleStartIngest(message) {
             return;
         }
         const detail = err instanceof Error ? err.message : "import failed";
+        // Same unsettled-intent defect as the replay path: an extractor that threw
+        // leaves the run "running" on the backend unless it is settled here.
+        if (!settlementSent) {
+            await settleFailed(intent, detail);
+        }
         broadcastStatus({
             ...currentSnapshot,
             intent: { ...intent, status: "ingest_failed" },
@@ -512,6 +531,11 @@ async function handleStartImport(message) {
         deviceId: await getDeviceId(),
     });
 
+    // Whether a settlement has already been POSTed for this intent. A throw AFTER
+    // that point is a rejected complete, not an unsettled run, and re-settling it
+    // as "failed" would put a failure on the coach's record for a run that did not
+    // fail.
+    let settlementSent = false;
     try {
         const result = await runReplay({
             blueprint,
@@ -533,9 +557,14 @@ async function handleStartImport(message) {
         const detail = terminalDetail(result);
         const settlement = {
             terminalStatus,
-            finalCounts: { pages: result.pages, entities: result.entities },
+            // A per-entity tally, keyed by the same entity types the progress
+            // stream reports. The previous { pages, entities } shape read as a
+            // count of two entity types the coach does not have: "pages" is not an
+            // entity at all, and "entities" is a total masquerading as one.
+            finalCounts: result.counts,
             errorSummary: detail ?? undefined,
         };
+        settlementSent = true;
         if (result.status === "failed") {
             // Settle best-effort so the intent does not sit "running" forever,
             // but never let a failed settlement mask the source failure the coach
@@ -556,7 +585,10 @@ async function handleStartImport(message) {
         notifyOutcome(platform, result.status);
     }
     catch (err) {
-        // TGP auth loss already broadcast the friendly "session expired" state; keep it.
+        // TGP auth loss already broadcast the friendly "session expired" state; keep
+        // it. The intent stays unsettled because the tokens it would be settled with
+        // are exactly the ones that were just cleared — an unauthenticated complete
+        // would only 401. Settling it needs a re-pair, not another POST here.
         if (isTgpAuthLost(err)) {
             return;
         }
@@ -564,6 +596,11 @@ async function handleStartImport(message) {
         const detail = isAuthLost(err)
             ? "source sign-in required — open your source platform and try again"
             : (err instanceof Error ? err.message : "import failed");
+        // The TGP session is still good on this path, so the started intent CAN be
+        // settled — and must be, before the coach is told the run is over.
+        if (!settlementSent) {
+            await settleFailed(intent, detail);
+        }
         broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: detail });
     }
 }

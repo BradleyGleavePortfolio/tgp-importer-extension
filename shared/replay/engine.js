@@ -131,6 +131,18 @@ export async function runReplay(options) {
     let degraded = false; // at least one page was skipped (malformed / retries exhausted)
     let lastSkipStatus = null; // status/category of the last skipped page (diagnostic only, no body)
 
+    // Per-entity totals for the terminal settlement. Two steps may legitimately
+    // feed the same entityType, so they are summed. Built through a Map so an
+    // entityType of "__proto__" becomes a real own property instead of silently
+    // dropping its count.
+    function entityCounts() {
+        const totals = new Map();
+        for (const row of progress) {
+            totals.set(row.entityType, (totals.get(row.entityType) ?? 0) + row.sent);
+        }
+        return Object.fromEntries(totals);
+    }
+
     const abortedNow = () => signal !== null && signal.aborted === true;
     const budgetLeft = () => totalPages < budgets.maxPages && totalEntities < budgets.maxEntities;
     let lastRequestAt = 0;
@@ -325,7 +337,7 @@ export async function runReplay(options) {
         // Abort is a normal terminal outcome (coach cancelled / auth lost upstream
         // triggered an abort); auth loss must propagate so the caller fails closed.
         if (isAborted(err)) {
-            return { status: "cancelled", pages: totalPages, entities: totalEntities, truncated, degraded, lastSkipStatus };
+            return { status: "cancelled", pages: totalPages, entities: totalEntities, counts: entityCounts(), truncated, degraded, lastSkipStatus };
         }
         throw err;
     }
@@ -355,5 +367,5 @@ export async function runReplay(options) {
     else {
         status = "complete";
     }
-    return { status, pages: totalPages, entities: totalEntities, truncated, degraded, lastSkipStatus };
+    return { status, pages: totalPages, entities: totalEntities, counts: entityCounts(), truncated, degraded, lastSkipStatus };
 }
