@@ -108,7 +108,7 @@ function isTgpAuthLost(err) {
 
 // POST a batch to /api/scout/ingest with the bearer token (finite timeout).
 // On 401, refresh once and retry. If the retry also 401s, invoke onAuthLost and stop.
-function makeSender(intent, onAuthLost) {
+function makeSender(intent, onAuthLost, tally) {
     return async function sendEntities(entityType, entities) {
         // Entities pass through VERBATIM — each is the camelCase makeEntity()
         // envelope { sourceId, sourcePlatform, capturedAt, payload } that the
@@ -140,14 +140,15 @@ function makeSender(intent, onAuthLost) {
         if (!res.ok) {
             throw new Error(`ingest ${entityType} -> ${res.status}`);
         }
+        // Counted only after the ack, so the tally records what landed.
+        tally?.set(entityType, (tally.get(entityType) ?? 0) + entities.length);
     };
 }
 
-// Engine word -> backend ScoutCompleteDto enum member -> popup state. NOT
+// Engine word -> backend ScoutCompleteDto member -> popup state. NOT
 // interchangeable: the backend has no "complete" and no word for "empty", so a
-// clean-but-zero walk settles as "partial" rather than a "success" that would
-// assert the coach has no data. An absent key means "cancelled", deliberately
-// never settled. Rationale: docs/TIER0_CONTRACT_INTEGRITY.md.
+// clean-but-zero walk settles "partial", never a "success" that would assert the
+// coach has no data. Absent key = cancelled. Why: docs/TIER0_CONTRACT_INTEGRITY.md.
 const OUTCOME = {
     complete: { terminal: "success", state: "ingest_succeeded" },
     partial: { terminal: "partial", state: "ingest_partial" },
@@ -157,9 +158,8 @@ const OUTCOME = {
 
 // POST the terminal settlement. `terminal_status` is REQUIRED by ScoutCompleteDto,
 // and forbidNonWhitelisted makes any undeclared field (`platform` used to be sent)
-// a 400 — which left every run "running" forever. So: only DTO fields, and
-// terminalStatus is required rather than defaulted, because a success-shaped
-// default is exactly how a run that did something else gets reported as one.
+// a 400 — which left every run "running" forever. So: only DTO fields, and no
+// default status, since a success-shaped default is how a run gets misreported.
 async function completeIngest(intent, outcome) {
     const token = await getAccessToken();
     const body = { intent_id: intent.intentId, terminal_status: outcome.terminalStatus };
@@ -179,25 +179,22 @@ async function completeIngest(intent, outcome) {
         });
     }
     catch (err) {
-        // Bounded: a hung complete must not pin the MV3 worker. Fail closed so
-        // the caller can surface ingest_failed rather than hang forever.
+        // Bounded: a hung complete must not pin the MV3 worker. Fail closed.
         if (isTimeout(err)) {
             throw new Error("complete_timeout");
         }
         throw err;
     }
-    // Never claim success without a backend ack: a non-2xx complete means the run
-    // did NOT finalise, so surface it instead of a dishonest ingest_succeeded.
+    // No ack, no claim: a non-2xx complete means the run did NOT finalise.
     if (!res.ok) {
         throw new Error(`complete ${res.status}`);
     }
 }
 
-// Best-effort settlement for a run that THREW. A started intent that is never
-// settled sits "running" on the backend forever — the same defect as a rejected
-// complete, reached by a different door. `final_counts` is optional and no tally
-// exists here, so it is omitted rather than guessed, and this never throws: the
-// failure the coach needs to see must not be masked by a settlement fault.
+// Best-effort settlement for a run that THREW: an unsettled intent sits "running"
+// forever. `final_counts` is optional and no tally exists here, so it is omitted
+// rather than guessed, and this never throws — the failure the coach needs to see
+// must not be masked by a settlement fault.
 function settleFailed(intent, errorSummary) {
     return completeIngest(intent, { terminalStatus: OUTCOME.failed.terminal, errorSummary })
         .catch(() => undefined);
@@ -205,8 +202,8 @@ function settleFailed(intent, errorSummary) {
 
 // ---- progress transport -----------------------------------------------------
 
-// Read (or mint once) the device id. Returns "" if storage is unavailable:
-// progress is advisory, so a storage fault silences reporting, never the import.
+// Read (or mint once) the device id. "" if storage is unavailable: progress is
+// advisory, so a storage fault silences reporting, never the import.
 async function getDeviceId() {
     try {
         const stored = await chrome.storage.local.get(STORAGE_KEYS.deviceId);
@@ -223,9 +220,8 @@ async function getDeviceId() {
     }
 }
 
-// Bearer POST to /api/scout/progress. Rejects on a non-2xx so the reporter can
-// count it as a failed report; the reporter swallows it (progress is advisory and
-// must never fail an import).
+// Bearer POST to /api/scout/progress. Rejects on a non-2xx so the reporter counts
+// it as a failed report; the reporter swallows it (progress must never fail a run).
 function postProgress(body) {
     return getAccessToken().then(async (token) => {
         const res = await fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/progress`, {
@@ -274,9 +270,8 @@ function broadcastAuthRequired(message) {
     chrome.runtime.sendMessage({ kind: "auth_required" }).catch(() => undefined);
 }
 
-// The OS notification is the most visible surface and often the ONLY one a
-// coach sees, so it must not say "complete" for an outcome the popup is about to
-// flag. An empty (drift-suspected) or partial walk gets its own wording.
+// The OS notification is often the ONLY surface a coach sees, so it must not say
+// "complete" for an outcome the popup is about to flag.
 function notifyOutcome(platform, engineStatus) {
     const message = engineStatus === "empty"
         ? `Import from ${platform} found no records — check the popup.`
@@ -327,10 +322,12 @@ async function handleStartIngest(message) {
     const intent = { intentId: `ext-${Date.now()}`, platform, status: "ingest_started" };
     broadcastStatus({ ...emptySnapshot(), intent, progress: [] });
 
+    // The extractor keeps no tally of its own, so the sender keeps one for it.
+    const tally = new Map();
     const sendEntities = makeSender(intent, () => {
         controller.abort();
         broadcastAuthRequired("session expired — please sign in again");
-    });
+    }, tally);
     const wrappedBroadcast = (snap) => broadcastStatus({ ...snap, intent });
 
     // The source-platform bearer token (e.g. TrueCoach) is captured in-tab and
@@ -350,10 +347,15 @@ async function handleStartIngest(message) {
     let settlementSent = false;
     try {
         await extractor.run({ token: sourceToken, signal: controller.signal });
+        // An extractor that emitted nothing is "empty", as on the replay path. This
+        // used to assert "success", so a drifted adapter reported 0 records as done.
+        const result = { status: tally.size === 0 ? "empty" : "complete", counts: Object.fromEntries(tally) };
+        const outcome = OUTCOME[result.status];
+        const detail = terminalDetail(result);
         settlementSent = true;
-        await completeIngest(intent, { terminalStatus: OUTCOME.complete.terminal });
-        broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_succeeded" } });
-        notifyOutcome(platform, "complete");
+        await completeIngest(intent, { terminalStatus: outcome.terminal, finalCounts: result.counts, errorSummary: detail ?? undefined });
+        broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: outcome.state }, lastError: detail });
+        notifyOutcome(platform, result.status);
     }
     catch (err) {
         // TGP-side auth loss already broadcast the friendly re-pair state; keep it.
@@ -361,8 +363,7 @@ async function handleStartIngest(message) {
             return;
         }
         const detail = err instanceof Error ? err.message : "import failed";
-        // Same unsettled-intent defect as the replay path: an extractor that threw
-        // leaves the run "running" on the backend unless it is settled here.
+        // Same unsettled-intent defect as the replay path, reached by this door.
         if (!settlementSent) {
             await settleFailed(intent, detail);
         }
@@ -539,7 +540,9 @@ async function handleStartImport(message) {
         });
         const outcome = OUTCOME[result.status];
         if (outcome === undefined) {
-            // cancelled — the coach stopped it, so there is nothing to settle.
+            // cancelled. Nothing aborts this run but the TGP auth-loss callback
+            // below, whose own path already cleared the tokens a complete needs —
+            // so there is no credential left to settle with. See the doc.
             broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: failDetail(result) });
             return;
         }

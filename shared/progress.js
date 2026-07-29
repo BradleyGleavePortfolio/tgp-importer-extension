@@ -4,10 +4,10 @@
 // 240-req/min throttle, and carrying a per-step view that can legitimately go
 // backwards between contexts. This adapter enforces both halves of the DTO's
 // contract — BOUNDED (one POST per minIntervalMs, never two in flight, capped
-// entries, every string clamped to the backend's MaxLength, so a report is never
-// throttled or rejected into losing the series) and MONOTONE (count_committed is
-// a high-water mark; a backwards count reads as data being lost). Reporting is
-// strictly advisory, so nothing here throws. Injected POST, no chrome.* calls.
+// entries, every string clamped to MaxLength, so a report is never throttled or
+// rejected into losing the series) and MONOTONE (count_committed is a high-water
+// mark; a backwards count reads as data being lost). Advisory, so nothing here
+// throws. Injected POST, no chrome.* calls.
 
 export const PROGRESS_MAX_ENTRIES = 64; // ScoutProgressDto @ArrayMaxSize(64)
 export const PROGRESS_MAX_ENTITY_TYPE = 64; // ScoutProgressEntryDto @MaxLength(64)
@@ -34,8 +34,7 @@ export function createProgressReporter(options) {
     const intent = clampString(intentId, PROGRESS_MAX_INTENT_ID);
     const device = clampString(deviceId, PROGRESS_MAX_DEVICE_ID);
     // entityType -> highest count ever observed. Insertion-ordered, so the
-    // PROGRESS_MAX_ENTRIES cap keeps the first entity types seen rather than an
-    // arbitrary subset.
+    // PROGRESS_MAX_ENTRIES cap keeps the first entity types seen, not a subset.
     const highWater = new Map();
     let lastSentAt = null;
     // The outstanding POST, or null. Held as a promise rather than a boolean so a
@@ -66,9 +65,8 @@ export function createProgressReporter(options) {
             .map(([entityType, count]) => ({
                 entity_type: entityType,
                 count_committed: count,
-                // The crawl discovers pages as it walks, so no true total exists
-                // mid-run. The committed count is the only honest lower bound,
-                // and using it keeps total_estimated monotone too.
+                // No true total exists mid-crawl, so the committed count is the
+                // only honest lower bound — and it keeps this monotone too.
                 total_estimated: count,
             }));
     }
@@ -81,9 +79,8 @@ export function createProgressReporter(options) {
             if (!force) {
                 return false;
             }
-            // A terminal flush carries the run's final counts, so dropping it
-            // because a throttled report is still outstanding would leave the
-            // backend's last view of the run permanently stale. Wait instead.
+            // Dropping a terminal flush because a throttled report is outstanding
+            // would leave the backend's last view permanently stale. Wait instead.
             await inFlight;
         }
         const at = now();
@@ -110,9 +107,8 @@ export function createProgressReporter(options) {
     }
 
     return {
-        // Per-batch hook: absorb the counts and post if the rate budget allows.
-        // Deliberately not awaited by the caller, so the crawl is never paced by
-        // the reporting channel.
+        // Per-batch: absorb, and post if the rate budget allows. Deliberately not
+        // awaited by the caller, so the crawl is never paced by this channel.
         report(rows, lastError) {
             absorb(rows);
             void send(false, lastError);

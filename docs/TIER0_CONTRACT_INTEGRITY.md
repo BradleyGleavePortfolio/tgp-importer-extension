@@ -41,7 +41,9 @@ no product-gate change.
   sends only DTO-declared fields, settles every non-cancelled outcome —
   *including the ones that threw* — attaches `retryAfterMs` from a 429 response,
   mints a non-secret device id, wires the progress reporter, and reports
-  `final_counts` as the per-entity tally.
+  `final_counts` as the per-entity tally. `makeSender` takes an optional `tally`
+  so the legacy `start_ingest` path, whose extractor keeps no counts of its own,
+  can settle truthfully too.
 
 ### The terminal flush runs on every settled path
 
@@ -88,8 +90,37 @@ deliberately: the tokens a complete would carry are exactly the ones just
 cleared, so the POST could only 401. Closing that intent needs a re-pair (or a
 backend-side expiry), not another unauthenticated call.
 
-The same catch-path gap existed on the legacy `start_ingest` entrypoint and is
-fixed identically.
+### The legacy `start_ingest` entrypoint
+
+`start_ingest` runs the hand-written TrueCoach extractor rather than the replay
+engine. It is **unreachable from the shipped UI** — `popup/popup.js` only ever
+sends `start_import`, and `docs/DESIGN.md` labels the CTA that would send
+`start_ingest` as future behaviour — but it is still a live message handler with
+real auth-gate and single-flight test coverage, so it is fixed rather than
+deleted.
+
+Three of the defects above reached it, and the fixes are not all identical:
+
+- **Defect 6 (unsettled throw)** — fixed identically: `settleFailed()` on the
+  catch path, guarded by the same `settlementSent` flag.
+- **Defects 4 and 7 (false `success`, untruthful counts)** — the extractor keeps
+  no tally, so this path used to post a bare `terminal_status: success` with no
+  counts at all. That is defect 4 in its purest form: an extractor whose selectors
+  have drifted emits nothing and the coach is told the import completed. The
+  sender now keeps the tally (`makeSender`'s `tally` argument, incremented **after**
+  the backend acks each batch, so it records what landed rather than what was
+  attempted), and the settlement derives its status from it through the same
+  `OUTCOME` table the replay path uses: an empty tally settles `empty` → `partial`
+  with the same `error_summary`, and a non-empty one carries per-entity
+  `final_counts`.
+- **Defects 3 and 8 (progress, terminal flush)** — **not** fixed here, and this
+  is a deliberate remaining gap rather than an oversight. `/api/scout/progress`
+  is fed from the engine's `onProgress` hook; the extractor has no equivalent, so
+  wiring it would mean adding a progress surface to the extractor rather than
+  correcting a contract. A `start_ingest` run therefore posts no progress rows at
+  all, which is honest-if-silent (the backend sees no series rather than a stale
+  one) and cannot produce the mid-crawl-forever reading defect 8 describes. If the
+  CTA ever ships, this is the work that has to ship with it.
 
 ### Status vocabularies are not the same
 
@@ -108,9 +139,19 @@ The backend has no `complete` member and no word for `empty`. A clean-but-zero
 walk is reported as `partial` with an `error_summary`, because calling it
 `success` would assert the coach has no data.
 
-`cancelled` is deliberately not settled: the coach stopped the run themselves,
-and the enum has no member that honestly describes it. Settling it as `failed`
-would put a failure on their record for an action they chose.
+`cancelled` is deliberately not settled, and the reason is narrower than "the
+coach stopped it". **There is no coach-facing cancel affordance** — nothing in
+`popup/` sends a stop message, and the only `controller.abort()` call site is the
+TGP auth-loss callback inside `makeSender`. So `cancelled` is reachable today by
+exactly one route: TGP auth loss. That route has already cleared the access and
+refresh tokens, so a complete posted from it could only 401. The abstention is
+forced by the missing credential, not by enum politeness.
+
+The enum gap is real too — nothing in `success|partial|failed` describes a
+deliberate stop — and it becomes the operative reason the moment a cancel button
+exists, because a coach-initiated stop would then reach this branch with working
+credentials. That is a contract change, not an extension change, so it is listed
+out of scope below rather than guessed at now.
 
 ## The replay state machine is NOT wired here
 
@@ -148,8 +189,9 @@ blueprint inference (PR-C2) merges.
 
 ## Deliberately out of scope
 
-- **Settling a `cancelled` run.** See above — no honest enum member exists.
-  Needs a backend contract change, not an extension change.
+- **Settling a `cancelled` run.** Not reachable with a usable credential today
+  (see above), and when a cancel affordance ships there is still no honest enum
+  member for it. Needs a backend contract change, not an extension change.
 - **`total_estimated` as a real total.** The crawl discovers pages as it walks,
   so no true total exists mid-run. The committed count is used as the only
   honest lower bound. A real estimate needs a count endpoint per entity type.

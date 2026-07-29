@@ -47,12 +47,10 @@ export function isAborted(err) {
 
 const DEFAULT_MAX_ATTEMPTS = 3;
 // Deterministic backoff: base * 2^(attempt-1), no jitter. Jitter would make the
-// delay sequence untestable, and the walk is already serialized behind pace() so
-// there is no thundering herd to spread out.
+// sequence untestable, and pace() already serializes the walk — no herd to spread.
 export const DEFAULT_BACKOFF_BASE_MS = 500;
-// Deliberately well under MV3's ~30s idle-termination threshold: a worker asleep
-// in backoff has no pending fetch keeping it alive, and a kill mid-run leaves the
-// intent unsettled — the exact "running forever" failure this rung exists to fix.
+// Well under MV3's ~30s idle-termination threshold: a worker asleep in backoff has
+// no pending fetch keeping it alive, and a kill mid-run leaves the intent unsettled.
 export const MAX_BACKOFF_MS = 10000;
 
 function isRetryable(err) {
@@ -133,8 +131,7 @@ export async function runReplay(options) {
 
     // Per-entity totals for the terminal settlement. Two steps may legitimately
     // feed the same entityType, so they are summed. Built through a Map so an
-    // entityType of "__proto__" becomes a real own property instead of silently
-    // dropping its count.
+    // entityType of "__proto__" becomes a real own property, not a dropped count.
     function entityCounts() {
         const totals = new Map();
         for (const row of progress) {
@@ -188,9 +185,8 @@ export async function runReplay(options) {
                         : (err instanceof Error ? err.name : "error");
                     return null; // give up on this page; the run stays bounded
                 }
-                // Transient — wait, then retry. Backing off matters most for 429:
-                // retrying a rate-limit immediately just burns the remaining
-                // attempts and can escalate the source's throttling.
+                // Transient — wait, then retry. This matters most for 429: retrying
+                // immediately burns the attempts and escalates the throttling.
                 await sleep(backoffDelayMs(err, attempt, backoffBaseMs));
             }
         }
@@ -334,8 +330,8 @@ export async function runReplay(options) {
         }
     }
     catch (err) {
-        // Abort is a normal terminal outcome (coach cancelled / auth lost upstream
-        // triggered an abort); auth loss must propagate so the caller fails closed.
+        // Abort is a normal terminal outcome; the only caller that aborts today is
+        // TGP auth loss. Source auth loss must propagate so the caller fails closed.
         if (isAborted(err)) {
             return { status: "cancelled", pages: totalPages, entities: totalEntities, counts: entityCounts(), truncated, degraded, lastSkipStatus };
         }
