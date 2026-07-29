@@ -49,15 +49,13 @@ export function isTimeout(err) {
     return err instanceof Error && err.name === "TimeoutError";
 }
 
-// Upper bound on any server-supplied Retry-After. A hostile or misconfigured
-// source can send "Retry-After: 86400"; honouring it would park an MV3 worker
-// for a day. Clamp at parse time so no caller can forget to bound it.
+// Upper bound on any server-supplied Retry-After. "Retry-After: 86400" would park
+// an MV3 worker for a day, so clamp at parse time — no caller can forget to.
 export const MAX_RETRY_AFTER_MS = 60000;
 
-// Parse an HTTP Retry-After header into a bounded, non-negative millisecond
-// delay. Both RFC 9110 forms are accepted: delta-seconds and HTTP-date. Returns
-// null when the header is absent or unparseable, so the caller falls back to its
-// own deterministic backoff rather than retrying instantly.
+// Both RFC 9110 forms (delta-seconds, HTTP-date) into a bounded non-negative ms
+// delay. null when absent or unparseable, so the caller falls back to its own
+// deterministic backoff rather than retrying instantly.
 export function parseRetryAfterMs(headerValue, nowMs = Date.now()) {
     if (typeof headerValue !== "string") {
         return null;
@@ -84,9 +82,8 @@ export function parseRetryAfterMs(headerValue, nowMs = Date.now()) {
     return Math.min(Math.max(at - nowMs, 0), MAX_RETRY_AFTER_MS);
 }
 
-// Read a header off a Response-like object without assuming a real Headers
-// instance (the extension's own tests and non-Chromium hosts may hand back a
-// plain object).
+// Read a header without assuming a real Headers instance (tests and non-Chromium
+// hosts may hand back a plain object).
 export function readHeader(res, name) {
     const headers = res && typeof res === "object" ? res.headers : null;
     if (headers === null || typeof headers !== "object" || typeof headers.get !== "function") {

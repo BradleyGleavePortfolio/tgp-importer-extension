@@ -79,12 +79,16 @@ function routeRun(mock, {
     clients = [],
     notes = [],
     sourceStatus = 200,
+    notesStatus = 200,
     completeStatus = 200,
     ingestStatus = 200,
     refreshOk = true,
 } = {}) {
     const completeBodies = [];
     const failedBroadcastFirst = [];
+    const progressBodies = [];
+    // How many progress posts had landed at the moment each complete went out.
+    const progressAtComplete = [];
     global.fetch.mockImplementation(async (url, init) => {
         if (url === REFRESH_URL) {
             return refreshOk
@@ -99,22 +103,27 @@ function routeRun(mock, {
             return { ok: true, status: 200, json: async () => ({ clients: page }) };
         }
         if (url.startsWith(NOTES_PREFIX)) {
+            if (notesStatus !== 200) {
+                return { ok: false, status: notesStatus, headers: new Headers({}), json: async () => ({}) };
+            }
             return { ok: true, status: 200, json: async () => ({ notes }) };
         }
         if (url === INGEST_URL) {
             return { ok: ingestStatus < 300, status: ingestStatus };
         }
         if (url === PROGRESS_URL) {
+            progressBodies.push(JSON.parse(init.body));
             return { ok: true, status: 204 };
         }
         if (url === COMPLETE_URL) {
             completeBodies.push(JSON.parse(init.body));
             failedBroadcastFirst.push(sawFailed(mock));
+            progressAtComplete.push(progressBodies.length);
             return { ok: completeStatus < 300, status: completeStatus };
         }
         throw new Error(`unrouted fetch ${url}`);
     });
-    return { completeBodies, failedBroadcastFirst };
+    return { completeBodies, failedBroadcastFirst, progressBodies, progressAtComplete };
 }
 
 async function runImport(mock) {
@@ -238,5 +247,57 @@ describe("TGP auth loss — no settlement is attempted", () => {
         await settle(mock, 3000);
         expect(mock.sent.some((m) => m && m.kind === "auth_required")).toBe(true);
         expect(completeBodies).toHaveLength(0);
+    });
+});
+
+describe("terminal progress flush — the backend's last view is not left mid-crawl", () => {
+    // The progress series and the settlement are two halves of one record. If the
+    // series stops at whatever the rate limiter last let through, an intent can go
+    // terminal with a progress view that still reads as an in-flight crawl —
+    // exactly the "is my migration stuck?" ambiguity progress exists to remove.
+    // Flushing is bounded and cannot throw, so it costs the run nothing.
+
+    it("flushes the final counts before settling a run that threw", async () => {
+        // Clients emit, then the notes step's 401 propagates out of runReplay.
+        const mock = await load(withSourceTab());
+        const r = routeRun(mock, { clients: [{ id: "c1" }], notesStatus: 401 });
+        expect(await runImport(mock)).toBe("ingest_failed");
+        expect(r.completeBodies).toHaveLength(1);
+        expect(r.progressBodies.length).toBeGreaterThan(0);
+        // At least one progress post had landed before the complete went out.
+        expect(r.progressAtComplete[0]).toBeGreaterThan(0);
+    });
+
+    it("carries the committed counts on that final flush, not a reset", async () => {
+        const mock = await load(withSourceTab());
+        const r = routeRun(mock, { clients: [{ id: "c1" }], notesStatus: 401 });
+        await runImport(mock);
+        const last = r.progressBodies.at(-1);
+        expect(last.progress.length).toBeGreaterThan(0);
+        expect(last.progress.some((row) => row.count_committed > 0)).toBe(true);
+    });
+
+    it("still settles when every progress post is rejected", async () => {
+        // Progress is advisory: a flush that fails must not cost the coach the
+        // settlement that keeps their intent from sitting "running" forever.
+        const mock = await load(withSourceTab());
+        const r = routeRun(mock, { clients: [{ id: "c1" }], notesStatus: 401 });
+        const inner = global.fetch.getMockImplementation();
+        global.fetch.mockImplementation(async (url, init) => (url === PROGRESS_URL
+            ? { ok: false, status: 429 }
+            : inner(url, init)));
+        expect(await runImport(mock)).toBe("ingest_failed");
+        expect(r.completeBodies).toHaveLength(1);
+        expect(r.completeBodies[0].terminal_status).toBe("failed");
+    });
+
+    it("puts no token material on that final flush", async () => {
+        const mock = await load(withSourceTab());
+        const r = routeRun(mock, { clients: [{ id: "c1" }], notesStatus: 401 });
+        await runImport(mock);
+        const serialized = JSON.stringify(r.progressBodies);
+        expect(serialized).not.toContain(SRC_JWT);
+        expect(serialized).not.toContain("TGP-ACCESS");
+        expect(serialized).not.toContain("seed-refresh");
     });
 });

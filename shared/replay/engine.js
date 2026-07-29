@@ -347,13 +347,10 @@ export async function runReplay(options) {
     // run could not produce data (failed); if it degraded or was truncated but still
     // emitted something it is partial.
     //
-    // A technically-clean walk that yielded ZERO entities is its own outcome
-    // ("empty"), never "complete". Every request succeeded and every page parsed,
-    // so nothing looks wrong — but the overwhelmingly likely cause is blueprint
-    // drift: the source renamed itemsPath, moved the endpoint, or now returns a
-    // different shape. Reporting that as a completed import silently tells the
-    // coach their data moved when nothing did. "empty" forces the distinction to
-    // be surfaced and verified instead of swallowed.
+    // A clean walk yielding ZERO entities is its own outcome ("empty"), never
+    // "complete": nothing looks wrong, but the likely cause is blueprint drift, and
+    // "import complete, 0 records" is indistinguishable from "you have no clients".
+    // "empty" forces that distinction to be verified instead of swallowed.
     let status;
     if (degraded && totalEntities === 0) {
         status = "failed";

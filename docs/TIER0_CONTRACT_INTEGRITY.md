@@ -17,6 +17,7 @@ no product-gate change.
 | 5 | 429 was classified non-retryable, and retries had no delay | A rate-limited page was dropped outright. A 5xx burned all three attempts inside one event-loop turn. Both lose data. |
 | 6 | A run that **threw** was never settled | Defect 1 fixed the body of the complete call, but only on the path where `runReplay` *returns*. A source 401/403 raises `AuthLostError` and propagates, so the run left the orchestration through the catch — which broadcast `ingest_failed` and posted nothing. The coach saw a finished import; the backend intent stayed `running` forever. A source session expiring mid-crawl is the single most routine way a real import ends. |
 | 7 | `final_counts` was `{ pages, entities }` | Read as the per-entity tally the field name promises, that is a count of two entity types no coach has: `pages` is not an entity, and `entities` is a run total wearing an entity's name. A coach reconciling a migration could not tell from the settled record whether their notes came across. |
+| 8 | The terminal progress flush only ran on the non-failed path | A failed or thrown run went terminal with its progress series frozen wherever the rate limiter last let a report through. The backend's newest progress row for a finished intent still read as an in-flight crawl — exactly the "is my migration stuck?" ambiguity `/api/scout/progress` exists to remove. |
 
 ## What changed
 
@@ -41,6 +42,25 @@ no product-gate change.
   *including the ones that threw* — attaches `retryAfterMs` from a 429 response,
   mints a non-secret device id, wires the progress reporter, and reports
   `final_counts` as the per-entity tally.
+
+### The terminal flush runs on every settled path
+
+`reporter.flush()` now precedes the settlement on the failed-result path and on
+the catch path, not just on the clean one. The progress series and the settlement
+are two halves of one record, so the series has to close before the intent goes
+terminal — a settled intent whose newest progress row is mid-crawl is a worse
+signal than no progress at all. The flush is safe to put on the failure paths for
+the same reason it is safe anywhere: it is bounded (one post, clamped strings,
+≤64 entries), it waits for at most one in-flight report, and it cannot throw, so
+it can never cost the coach the settlement that follows it.
+
+### Vocabulary, not a lookup chain
+
+The engine word → `terminal_status` → popup state mapping is one `OUTCOME` table
+rather than three parallel conditionals. That is the same behaviour expressed
+once: adding an outcome used to mean editing a status map, a popup-state
+function, and a detail function, with nothing forcing the three to agree. A
+missing key now means exactly one thing — `cancelled`, deliberately not settled.
 
 ### Settling a run that threw
 
@@ -92,7 +112,10 @@ walk is reported as `partial` with an `error_summary`, because calling it
 and the enum has no member that honestly describes it. Settling it as `failed`
 would put a failure on their record for an action they chose.
 
-## Item 6 — the replay state machine is NOT wired here
+## The replay state machine is NOT wired here
+
+(This was the sixth item on the original Tier-0 work list. The numbers in the
+defect table above are independent of that list — they are just row ids.)
 
 `shared/replay/state.js` is a pure transition table covering
 `ready → learning → confirming → importing → terminal`. It is **not** wired in

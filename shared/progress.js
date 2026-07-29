@@ -1,22 +1,13 @@
 // TGP Importer — bounded, monotone progress reporting for POST /api/scout/progress.
 //
-// The engine's onProgress fires once per emitted batch, which on a large crawl is
-// far more often than the backend's 240-req/min throttle allows and carries a
-// per-step view that can legitimately go backwards between contexts. This module
-// is the adapter between the two, and it enforces both halves of the contract the
-// backend DTO expects:
-//
-//   BOUNDED  — at most one POST per minIntervalMs and never two in flight, at most
-//              PROGRESS_MAX_ENTRIES entries, and every string clamped to the
-//              backend's MaxLength. An unbounded or oversized report would be
-//              throttled (429) or rejected (400) and lose the whole series.
-//   MONOTONE — count_committed is a per-entity high-water mark, so a report can
-//              never claim fewer records than an earlier one already did. A
-//              backwards count reads to the coach as data being lost.
-//
-// Reporting is strictly advisory: a failed progress POST must never fail an
-// import, so nothing here throws or rejects. No chrome.* calls and no token
-// handling — the POST is injected, so this is a pure, testable unit.
+// The engine's onProgress fires once per emitted batch: far above the backend's
+// 240-req/min throttle, and carrying a per-step view that can legitimately go
+// backwards between contexts. This adapter enforces both halves of the DTO's
+// contract — BOUNDED (one POST per minIntervalMs, never two in flight, capped
+// entries, every string clamped to the backend's MaxLength, so a report is never
+// throttled or rejected into losing the series) and MONOTONE (count_committed is
+// a high-water mark; a backwards count reads as data being lost). Reporting is
+// strictly advisory, so nothing here throws. Injected POST, no chrome.* calls.
 
 export const PROGRESS_MAX_ENTRIES = 64; // ScoutProgressDto @ArrayMaxSize(64)
 export const PROGRESS_MAX_ENTITY_TYPE = 64; // ScoutProgressEntryDto @MaxLength(64)

@@ -49,10 +49,8 @@ import {
 const STORAGE_KEYS = {
     snapshot: "tgp_status_snapshot",
     schemaVersion: "tgp_schema_version",
-    // Non-secret, stable per-install identifier the backend's progress DTO
-    // requires. Random, never derived from anything about the coach or machine,
-    // so it is not a fingerprint — it only lets the backend attribute concurrent
-    // progress streams to distinct installs.
+    // Non-secret per-install id the progress DTO requires. Random, never derived
+    // from any coach/machine attribute, so it is not a fingerprint.
     deviceId: "tgp_device_id",
 };
 
@@ -145,26 +143,23 @@ function makeSender(intent, onAuthLost) {
     };
 }
 
-// Map an engine result status onto the backend's ScoutCompleteDto terminal_status
-// enum. The vocabularies are NOT the same: the engine's "complete" has no member
-// on the backend (it is "success"), and "empty" is an extension-side distinction
-// the backend has no word for — a clean-but-zero walk is reported as "partial"
-// plus an error_summary, because calling it success would assert the coach has no
-// data when the far likelier cause is blueprint drift.
-const TERMINAL_STATUS = {
-    complete: "success",
-    partial: "partial",
-    empty: "partial",
-    failed: "failed",
+// Engine word -> backend ScoutCompleteDto enum member -> popup state. NOT
+// interchangeable: the backend has no "complete" and no word for "empty", so a
+// clean-but-zero walk settles as "partial" rather than a "success" that would
+// assert the coach has no data. An absent key means "cancelled", deliberately
+// never settled. Rationale: docs/TIER0_CONTRACT_INTEGRITY.md.
+const OUTCOME = {
+    complete: { terminal: "success", state: "ingest_succeeded" },
+    partial: { terminal: "partial", state: "ingest_partial" },
+    empty: { terminal: "partial", state: "ingest_empty" },
+    failed: { terminal: "failed", state: "ingest_failed" },
 };
 
-// POST the terminal settlement for a run. `terminal_status` is REQUIRED by
-// ScoutCompleteDto, and the backend runs a global ValidationPipe with
-// forbidNonWhitelisted, so an unknown field is a 400 — `platform` used to be sent
-// and is not on the DTO, which meant every complete was rejected and every run
-// stayed "running" on the backend forever. Only DTO fields go on the wire.
-// `outcome.terminalStatus` is required rather than defaulted: a success-shaped
-// default is exactly how a run that did something else ends up reported as one.
+// POST the terminal settlement. `terminal_status` is REQUIRED by ScoutCompleteDto,
+// and forbidNonWhitelisted makes any undeclared field (`platform` used to be sent)
+// a 400 — which left every run "running" forever. So: only DTO fields, and
+// terminalStatus is required rather than defaulted, because a success-shaped
+// default is exactly how a run that did something else gets reported as one.
 async function completeIngest(intent, outcome) {
     const token = await getAccessToken();
     const body = { intent_id: intent.intentId, terminal_status: outcome.terminalStatus };
@@ -198,24 +193,20 @@ async function completeIngest(intent, outcome) {
     }
 }
 
-// Best-effort terminal settlement for a run that THREW — a source 401/403, an
-// ingest transport error, anything that escaped the orchestration. An intent that
-// was started and never settled sits "running" on the backend forever, which is
-// the same data-integrity defect as a rejected complete, just reached by a
-// different door. No counts are available on this path and `final_counts` is
-// optional, so it is omitted rather than guessed. Never throws: the failure the
-// coach actually needs to see must not be masked by a settlement fault.
+// Best-effort settlement for a run that THREW. A started intent that is never
+// settled sits "running" on the backend forever — the same defect as a rejected
+// complete, reached by a different door. `final_counts` is optional and no tally
+// exists here, so it is omitted rather than guessed, and this never throws: the
+// failure the coach needs to see must not be masked by a settlement fault.
 function settleFailed(intent, errorSummary) {
-    return completeIngest(intent, { terminalStatus: TERMINAL_STATUS.failed, errorSummary })
+    return completeIngest(intent, { terminalStatus: OUTCOME.failed.terminal, errorSummary })
         .catch(() => undefined);
 }
 
 // ---- progress transport -----------------------------------------------------
 
-// Read (or mint once) the non-secret per-install device id the progress DTO
-// requires. Random UUID only — no coach, machine, or browser attribute is used.
-// Returns "" if storage is unavailable: progress is advisory, so a storage
-// failure must silence reporting, never fail the coach's import.
+// Read (or mint once) the device id. Returns "" if storage is unavailable:
+// progress is advisory, so a storage fault silences reporting, never the import.
 async function getDeviceId() {
     try {
         const stored = await chrome.storage.local.get(STORAGE_KEYS.deviceId);
@@ -360,7 +351,7 @@ async function handleStartIngest(message) {
     try {
         await extractor.run({ token: sourceToken, signal: controller.signal });
         settlementSent = true;
-        await completeIngest(intent, { terminalStatus: TERMINAL_STATUS.complete });
+        await completeIngest(intent, { terminalStatus: OUTCOME.complete.terminal });
         broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_succeeded" } });
         notifyOutcome(platform, "complete");
     }
@@ -531,10 +522,8 @@ async function handleStartImport(message) {
         deviceId: await getDeviceId(),
     });
 
-    // Whether a settlement has already been POSTed for this intent. A throw AFTER
-    // that point is a rejected complete, not an unsettled run, and re-settling it
-    // as "failed" would put a failure on the coach's record for a run that did not
-    // fail.
+    // A throw AFTER a settlement is a rejected complete, not an unsettled run;
+    // re-settling it as "failed" would record a failure for a run that did not fail.
     let settlementSent = false;
     try {
         const result = await runReplay({
@@ -548,40 +537,34 @@ async function handleStartImport(message) {
             signal: controller.signal,
             allowedOrigins,
         });
-        const terminalStatus = TERMINAL_STATUS[result.status];
-        if (terminalStatus === undefined) {
+        const outcome = OUTCOME[result.status];
+        if (outcome === undefined) {
             // cancelled — the coach stopped it, so there is nothing to settle.
             broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: failDetail(result) });
             return;
         }
         const detail = terminalDetail(result);
-        const settlement = {
-            terminalStatus,
-            // A per-entity tally, keyed by the same entity types the progress
-            // stream reports. The previous { pages, entities } shape read as a
-            // count of two entity types the coach does not have: "pages" is not an
-            // entity at all, and "entities" is a total masquerading as one.
-            finalCounts: result.counts,
-            errorSummary: detail ?? undefined,
-        };
+        // finalCounts is a per-entity tally keyed by the entity types the progress
+        // stream reports. The old { pages, entities } shape read as a count of two
+        // entity types no coach has: "pages" is not an entity, and "entities" is a
+        // run total wearing an entity's name.
+        const settlement = { terminalStatus: outcome.terminal, finalCounts: result.counts, errorSummary: detail ?? undefined };
+        // Close the progress series before the intent goes terminal: a settled
+        // intent whose newest progress row is mid-crawl reads as truncated.
+        await reporter.flush(null, detail ?? undefined);
         settlementSent = true;
         if (result.status === "failed") {
             // Settle best-effort so the intent does not sit "running" forever,
             // but never let a failed settlement mask the source failure the coach
             // actually needs to see.
             await completeIngest(intent, settlement).catch(() => undefined);
-            broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: detail });
+            broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: outcome.state }, lastError: detail });
             return;
         }
         // A non-failed outcome still requires a backend ack before we report it:
         // a throw here surfaces as ingest_failed rather than a dishonest success.
         await completeIngest(intent, settlement);
-        await reporter.flush(null, detail ?? undefined);
-        broadcastStatus({
-            ...currentSnapshot,
-            intent: { ...intent, status: intentStatusFor(result.status) },
-            lastError: detail,
-        });
+        broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: outcome.state }, lastError: detail });
         notifyOutcome(platform, result.status);
     }
     catch (err) {
@@ -599,26 +582,11 @@ async function handleStartImport(message) {
         // The TGP session is still good on this path, so the started intent CAN be
         // settled — and must be, before the coach is told the run is over.
         if (!settlementSent) {
+            await reporter.flush(null, detail);
             await settleFailed(intent, detail);
         }
         broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: detail });
     }
-}
-
-// Popup-facing intent status per engine outcome. "empty" gets its OWN state:
-// showing it as succeeded would tell the coach their source has no data, and
-// showing it as failed would be wrong too — nothing errored. It needs checking.
-function intentStatusFor(engineStatus) {
-    if (engineStatus === "complete") {
-        return "ingest_succeeded";
-    }
-    if (engineStatus === "empty") {
-        return "ingest_empty";
-    }
-    if (engineStatus === "partial") {
-        return "ingest_partial";
-    }
-    return "ingest_failed";
 }
 
 // One human/diagnostic line per outcome, or null when the run was wholly clean.
