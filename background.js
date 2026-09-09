@@ -35,6 +35,7 @@ import { runReplay, AuthLostError, isAuthLost } from "./shared/replay/engine.js"
 import { resolveBlueprint, isUnknownPlatform } from "./shared/replay/resolve.js";
 import { fetchWithTimeout, isTimeout, parseRetryAfterMs, readHeader } from "./shared/net.js";
 import { createProgressReporter } from "./shared/progress.js";
+import { logNetworkEvent } from "./shared/log.js";
 import {
     attachDebugger,
     stopCapture,
@@ -160,8 +161,18 @@ const OUTCOME = {
 // and forbidNonWhitelisted makes any undeclared field (`platform` used to be sent)
 // a 400 — which left every run "running" forever. So: only DTO fields, and no
 // default status, since a success-shaped default is how a run gets misreported.
+//
+// On a 401, refresh the access token once and retry — the same treatment
+// sendEntities() already gives every ingest-batch POST. Without this, a run
+// that fully succeeded (every entity already landed via sendEntities) could
+// still be reported ingest_failed purely because the access token happened to
+// expire in the gap between the last entity send and this call, even though a
+// refresh would have succeeded. This refresh-and-retry runs entirely inside
+// this function, strictly before the caller's settlement-then-broadcast
+// ordering point, and never calls onAuthLost/clearTokens itself: an
+// unrefreshable token here still surfaces as "complete 401" to the caller,
+// exactly as before, so settlementSent / at-most-once-per-intent is unaffected.
 async function completeIngest(intent, outcome) {
-    const token = await getAccessToken();
     const body = { intent_id: intent.intentId, terminal_status: outcome.terminalStatus };
     if (outcome.finalCounts !== undefined && outcome.finalCounts !== null) {
         body.final_counts = outcome.finalCounts;
@@ -170,20 +181,30 @@ async function completeIngest(intent, outcome) {
     if (typeof outcome.errorSummary === "string" && outcome.errorSummary.length > 0) {
         body.error_summary = outcome.errorSummary.slice(0, 2000);
     }
-    let res;
-    try {
-        res = await fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/ingest/complete`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify(body),
-        });
-    }
-    catch (err) {
-        // Bounded: a hung complete must not pin the MV3 worker. Fail closed.
-        if (isTimeout(err)) {
-            throw new Error("complete_timeout");
+    const attempt = async (token) => {
+        try {
+            return await fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/ingest/complete`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+                body: JSON.stringify(body),
+            });
         }
-        throw err;
+        catch (err) {
+            // Bounded: a hung complete must not pin the MV3 worker. Fail closed.
+            if (isTimeout(err)) {
+                throw new Error("complete_timeout");
+            }
+            throw err;
+        }
+    };
+    let token = await getAccessToken();
+    let res = await attempt(token);
+    if (res.status === 401) {
+        const refreshed = await refreshAccessToken();
+        if (refreshed !== null) {
+            token = refreshed;
+            res = await attempt(token);
+        }
     }
     // No ack, no claim: a non-2xx complete means the run did NOT finalise.
     if (!res.ok) {
@@ -192,12 +213,24 @@ async function completeIngest(intent, outcome) {
 }
 
 // Best-effort settlement for a run that THREW: an unsettled intent sits "running"
-// forever. `final_counts` is optional and no tally exists here, so it is omitted
-// rather than guessed, and this never throws — the failure the coach needs to see
-// must not be masked by a settlement fault.
-function settleFailed(intent, errorSummary) {
-    return completeIngest(intent, { terminalStatus: OUTCOME.failed.terminal, errorSummary })
-        .catch(() => undefined);
+// forever. `finalCounts` is optional and is only ever what the caller already
+// knows landed — on the primary replay path no tally exists at this point, so
+// it stays omitted rather than guessed; on the legacy start_ingest path
+// makeSender's own tally is passed so entities the backend already ACKed before
+// the failure are not silently dropped from the terminal report. This never
+// throws — the failure the coach needs to see must not be masked by a
+// settlement fault.
+function settleFailed(intent, errorSummary, finalCounts) {
+    const outcome = { terminalStatus: OUTCOME.failed.terminal, errorSummary };
+    if (finalCounts !== undefined && Object.keys(finalCounts).length > 0) {
+        outcome.finalCounts = finalCounts;
+    }
+    // Best-effort really means best-effort: if the settlement POST itself fails,
+    // the intent is left running server-side one level deeper, with no way for
+    // the coach to see it. That must not be TOTAL silence — log a PII-free signal
+    // so the failure is at least observable, without turning this into a throw.
+    return completeIngest(intent, outcome)
+        .catch(() => logNetworkEvent("settlement_network_error"));
 }
 
 // ---- progress transport -----------------------------------------------------
@@ -364,8 +397,13 @@ async function handleStartIngest(message) {
         }
         const detail = err instanceof Error ? err.message : "import failed";
         // Same unsettled-intent defect as the replay path, reached by this door.
+        // This path has no progress-channel fallback (deliberately — see
+        // docs/TIER0_CONTRACT_INTEGRITY.md), so the tally already ACKed by the
+        // backend before the throw is the only record of what landed. Carry it
+        // into the failure settlement rather than letting a later failure make
+        // those already-committed entities fully invisible in the terminal report.
         if (!settlementSent) {
-            await settleFailed(intent, detail);
+            await settleFailed(intent, detail, Object.fromEntries(tally));
         }
         broadcastStatus({
             ...currentSnapshot,
@@ -559,8 +597,9 @@ async function handleStartImport(message) {
         if (result.status === "failed") {
             // Settle best-effort so the intent does not sit "running" forever,
             // but never let a failed settlement mask the source failure the coach
-            // actually needs to see.
-            await completeIngest(intent, settlement).catch(() => undefined);
+            // actually needs to see. A failure of this POST itself must still be
+            // observable, not total silence, even though it stays non-throwing.
+            await completeIngest(intent, settlement).catch(() => logNetworkEvent("settlement_network_error"));
             broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: outcome.state }, lastError: detail });
             return;
         }

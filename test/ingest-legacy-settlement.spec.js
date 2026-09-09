@@ -232,3 +232,60 @@ describe("legacy start_ingest — a rejected batch is never counted", () => {
         expect("final_counts" in r.completeBodies[0]).toBe(false);
     });
 });
+
+describe("legacy start_ingest — already-ACKed entities survive a later failure", () => {
+    // This path has no progress-channel fallback (deliberate — defects 3/8 are
+    // not fixed here). The tally makeSender keeps is therefore the ONLY record
+    // of what the backend already acknowledged before a later step throws, and
+    // it must not be silently dropped from the terminal report.
+    it("carries the already-ACKed tally into the failure settlement, not an omission", async () => {
+        // /organizations succeeds and is ACKed by the backend (ingest 2xx); the
+        // very next source call (/clients) then 500s, aborting the whole
+        // extractor run — the same scenario the audit's own probe used.
+        const mock = await load();
+        const r = routeRun(mock, {
+            sourceBodies: {
+                "/organizations": {
+                    organizations: [{ id: 7, name: "Acme Strength" }],
+                    users: [{ id: 3, role: "Trainer", first_name: "Dana", last_name: "Reed" }],
+                },
+            },
+        });
+        const inner = global.fetch.getMockImplementation();
+        global.fetch.mockImplementation(async (url, init) => (
+            typeof url === "string" && url.startsWith(`${SRC_BASE}/clients`)
+                ? { ok: false, status: 500, headers: new Headers({}), json: async () => ({}), text: async () => "" }
+                : inner(url, init)
+        ));
+        await runLegacy(mock);
+        expect(await settle(mock)).toBe("ingest_failed");
+        expect(r.completeBodies).toHaveLength(1);
+        const complete = r.completeBodies[0];
+        expect(complete.terminal_status).toBe("failed");
+        // The identity batch WAS acked before /clients failed and the run failed
+        // — that already-committed count must still be visible here, not silently
+        // dropped the way it used to be.
+        expect("final_counts" in complete).toBe(true);
+        expect(complete.final_counts.identity).toBeGreaterThan(0);
+        expect(r.ingested.length).toBeGreaterThan(0);
+    });
+
+    it("omits final_counts (rather than sending an empty object) when nothing was ACKed yet", async () => {
+        // Nothing lands before the very first ingest batch is rejected, so there
+        // is nothing honest to report — an empty tally must stay an omission,
+        // matching the existing no-tally-yet contract on this path.
+        const mock = await load();
+        const r = routeRun(mock, {
+            sourceBodies: {
+                "/organizations": {
+                    organizations: [{ id: 7, name: "Acme Strength" }],
+                    users: [{ id: 3, role: "Trainer", first_name: "Dana", last_name: "Reed" }],
+                },
+            },
+            ingestStatus: () => 500,
+        });
+        await runLegacy(mock);
+        expect(await settle(mock)).toBe("ingest_failed");
+        expect("final_counts" in r.completeBodies[0]).toBe(false);
+    });
+});

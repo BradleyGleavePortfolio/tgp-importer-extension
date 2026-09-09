@@ -126,9 +126,9 @@ function routeRun(mock, {
     return { completeBodies, failedBroadcastFirst, progressBodies, progressAtComplete };
 }
 
-async function runImport(mock) {
+async function runImport(mock, ms) {
     await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
-    return settle(mock);
+    return settle(mock, ms);
 }
 
 describe("source auth loss — the started intent is still settled", () => {
@@ -199,6 +199,24 @@ describe("source auth loss — the started intent is still settled", () => {
         expect(snapshots(mock).at(-1).lastError).toMatch(/source sign-in required/);
     });
 
+    it("logs an observable, PII-free signal when the settlement POST itself fails", async () => {
+        // The settlement POST is best-effort and must stay non-throwing, but a
+        // total failure of it left the intent "running forever" one level deeper
+        // with ZERO observability. shared/log.js's logNetworkEvent exists for
+        // exactly this: a stable, secret-free event code, not a message body.
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const mock = await load(withSourceTab());
+        routeRun(mock, { sourceStatus: 401, completeStatus: 503 });
+        expect(await runImport(mock)).toBe("ingest_failed");
+        const lines = warn.mock.calls.map((c) => c[0]);
+        const parsed = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } });
+        expect(parsed.some((p) => p && p.event === "settlement_network_error")).toBe(true);
+        const serialized = JSON.stringify(lines);
+        expect(serialized).not.toContain(SRC_JWT);
+        expect(serialized).not.toContain("TGP-ACCESS");
+        warn.mockRestore();
+    });
+
     it("raises no success notification for a settled failure", async () => {
         const mock = await load(withSourceTab());
         routeRun(mock, { sourceStatus: 401 });
@@ -229,6 +247,111 @@ describe("settlement is attempted at most once per intent", () => {
         expect(await runImport(mock)).toBe("ingest_failed");
         expect(completeBodies).toHaveLength(1);
         expect(completeBodies[0].terminal_status).toBe("failed");
+    });
+
+    it("logs when the settlement POST fails on an engine-RETURNED failure, not just a throw", async () => {
+        // A retryable 5xx that exhausts retries makes runReplay RETURN
+        // {status:"failed"} rather than throw — a different call site
+        // (background.js's result.status==="failed" branch) posts the complete
+        // here. Both settlement-POST-failure call sites must log, not just the
+        // one reached via settleFailed on a throw.
+        const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+        const mock = await load(withSourceTab());
+        routeRun(mock, { sourceStatus: 503, completeStatus: 503 });
+        expect(await runImport(mock, 20000)).toBe("ingest_failed");
+        const parsed = warn.mock.calls
+            .map((c) => { try { return JSON.parse(c[0]); } catch { return null; } });
+        expect(parsed.some((p) => p && p.event === "settlement_network_error")).toBe(true);
+        warn.mockRestore();
+    }, 25000);
+});
+
+describe("completeIngest — refreshes an expired token once, same as sendEntities", () => {
+    // sendEntities already refreshes-and-retries once on a 401. completeIngest
+    // used to give up immediately on a 401, so a run that fully succeeded (every
+    // entity already landed) could still be reported ingest_failed purely
+    // because the access token happened to expire in the narrow gap between the
+    // last entity send and this call — even though a refresh would have
+    // succeeded. This is the false-failure window Finding 3 closes.
+    it("settles success after one 401 + refresh + retry on the complete POST", async () => {
+        const mock = await load(withSourceTab());
+        let completeAttempts = 0;
+        let refreshCalls = 0;
+        const { completeBodies } = routeRun(mock, { clients: [{ id: "c1" }], notes: [{ id: "n1" }] });
+        const inner = global.fetch.getMockImplementation();
+        global.fetch.mockImplementation(async (url, init) => {
+            if (url === REFRESH_URL) {
+                refreshCalls += 1;
+            }
+            if (url === COMPLETE_URL) {
+                completeAttempts += 1;
+                if (completeAttempts === 1) {
+                    return { ok: false, status: 401, json: async () => ({}) };
+                }
+            }
+            return inner(url, init);
+        });
+        expect(await runImport(mock)).toBe("ingest_succeeded");
+        expect(completeAttempts).toBe(2);
+        expect(refreshCalls).toBeGreaterThan(0);
+        expect(completeBodies).toHaveLength(1);
+        expect(completeBodies[0].terminal_status).toBe("success");
+    });
+
+    it("does not double-settle or break settlement-before-broadcast ordering on that retry", async () => {
+        const mock = await load(withSourceTab());
+        let completeAttempts = 0;
+        const { completeBodies, failedBroadcastFirst } = routeRun(mock, {
+            clients: [{ id: "c1" }],
+            notes: [{ id: "n1" }],
+        });
+        const inner = global.fetch.getMockImplementation();
+        global.fetch.mockImplementation(async (url, init) => {
+            if (url === COMPLETE_URL) {
+                completeAttempts += 1;
+                if (completeAttempts === 1) {
+                    return { ok: false, status: 401, json: async () => ({}) };
+                }
+            }
+            return inner(url, init);
+        });
+        expect(await runImport(mock)).toBe("ingest_succeeded");
+        expect(completeBodies).toHaveLength(1);
+        // Only one complete body was ever sent (the retry, not a second settlement
+        // attempt), and no failure was ever broadcast on this successful run.
+        expect(failedBroadcastFirst).toEqual([false]);
+    });
+
+    it("still surfaces ingest_failed if the retried complete also 401s (no refresh available)", async () => {
+        // If refresh itself cannot produce a usable token, completeIngest must
+        // still fail closed exactly as before — this fix only closes the
+        // refreshable-token gap, it must not mask a genuine TGP auth loss here.
+        // The initial session bootstrap needs one real refresh to mint the first
+        // access token, so only the LATER refresh (triggered by the complete's
+        // 401) is made to fail here.
+        const mock = await load(withSourceTab());
+        let refreshCalls = 0;
+        const { completeBodies } = routeRun(mock, { clients: [{ id: "c1" }], notes: [{ id: "n1" }] });
+        const inner = global.fetch.getMockImplementation();
+        global.fetch.mockImplementation(async (url, init) => {
+            if (url === REFRESH_URL) {
+                refreshCalls += 1;
+                if (refreshCalls > 1) {
+                    return { ok: false, status: 401, json: async () => ({}) };
+                }
+            }
+            if (url === COMPLETE_URL) {
+                return { ok: false, status: 401, json: async () => ({}) };
+            }
+            return inner(url, init);
+        });
+        expect(await runImport(mock)).toBe("ingest_failed");
+        // Both the original complete attempt and its retry 401'd (no body was
+        // ever accepted), and refresh itself was denied — so unlike the
+        // successful-refresh case above, no complete body reaches the mock
+        // server here. The run still resolves deterministically to
+        // ingest_failed rather than hanging or masking the failure as success.
+        expect(completeBodies).toHaveLength(0);
     });
 });
 

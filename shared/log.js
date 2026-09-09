@@ -14,6 +14,7 @@ const KNOWN_EVENTS = new Set([
     "pair_timeout",
     "pair_body_parse_error",
     "refresh_timeout",
+    "settlement_network_error",
 ]);
 
 // Emit a structured, secret-free warning. `event` MUST be one of KNOWN_EVENTS so
