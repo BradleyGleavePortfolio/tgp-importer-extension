@@ -23,3 +23,10 @@ jobs:
           languages: javascript-typescript
           queries: security-and-quality
       - uses: github/codeql-action/analyze@v4
+        with:
+          # This private-repo plan cannot enable GitHub code-scanning uploads.
+          # Keep analysis blocking by checking the generated SARIF locally.
+          upload: never
+          output: codeql-results
+      - name: Block CodeQL error/warning findings
+        run: node scripts/check-codeql-sarif.mjs codeql-results
