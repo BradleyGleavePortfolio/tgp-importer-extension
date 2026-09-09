@@ -44,6 +44,11 @@ describe("candidateKind", () => {
         expect(candidateKind(value)).toBeNull();
     });
 
+    it("requires six characters for an opaque identifier", () => {
+        expect(candidateKind("A1b2C")).toBeNull();
+        expect(candidateKind("A1b2C3")).toBe("opaque");
+    });
+
     it.each([
         "550e8400-e29b-11d4-a716-446655440000",
         "550e8400-e29b-21d4-a716-446655440000",
@@ -63,6 +68,7 @@ describe("candidateKind", () => {
         "ffffffff-ffff-ffff-ffff-ffffffffffff",
         "018f08b2-aac2-9c6e-8f12-123456789abc",
         "018f08b2-aac2-7c6e-7f12-123456789abc",
+        "018f08b2-aac2-7c6e-cf12-123456789abc",
     ])("rejects nil/max/invalid UUID policy case %s", (value) => {
         expect(candidateKind(value)).toBeNull();
     });

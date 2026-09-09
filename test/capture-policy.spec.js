@@ -153,6 +153,24 @@ describe("redactResponseBody — auth/secret material is stripped, PII preserved
         expect(out).toEqual({ [key]: BODY_REDACTED, name: "Dana" });
     });
 
+    it.each(["\u0430ccess_token", "t\u03bfken"])(
+        "redacts a mixed-script credential homoglyph key %s",
+        (key) => {
+            const sensitiveValue = "mixed-script-value-must-not-survive";
+            const output = redactResponseBody(JSON.stringify({ [key]: sensitiveValue }));
+            expect(JSON.parse(output)).toEqual({ [key]: BODY_REDACTED });
+            expect(output).not.toContain(sensitiveValue);
+        },
+    );
+
+    it.each(["metric_\u03b4elta", "\u043f\u0440\u043e\u0444\u0438\u043b\u044c_name", "na\u00efve_label"])(
+        "preserves legitimate Unicode field %s",
+        (key) => {
+            const input = JSON.stringify({ [key]: "ordinary-data" });
+            expect(redactResponseBody(input)).toBe(input);
+        },
+    );
+
     it("redacts credential-form strings nested under innocuous keys", () => {
         const input = JSON.stringify({
             message: "Bearer RAW-BEARER-SECRET",

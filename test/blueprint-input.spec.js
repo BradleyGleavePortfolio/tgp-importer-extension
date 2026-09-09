@@ -190,6 +190,32 @@ describe("normalizeCaptureSnapshot — fail-closed entry validation", () => {
         expect(JSON.stringify(result)).not.toContain("raw-secret");
     });
 
+    it.each(["\u0430ccess_token", "t\u03bfken"])(
+        "rejects a mixed-script credential homoglyph key %s without retaining its value",
+        (key) => {
+            const sensitiveValue = "mixed-script-value-must-not-survive";
+            const result = normalizeCaptureSnapshot([entry({
+                responseBody: JSON.stringify({ [key]: sensitiveValue }),
+            })]);
+            expect(result).toEqual({
+                observations: [],
+                excluded: [{ reason: "unredacted_sensitive_field", count: 1 }],
+            });
+            expect(JSON.stringify(result)).not.toContain(sensitiveValue);
+        },
+    );
+
+    it.each(["metric_\u03b4elta", "\u043f\u0440\u043e\u0444\u0438\u043b\u044c_name", "na\u00efve_label"])(
+        "preserves legitimate Unicode field %s",
+        (key) => {
+            const result = normalizeCaptureSnapshot([entry({
+                responseBody: JSON.stringify({ [key]: "ordinary-data" }),
+            })]);
+            expect(result.excluded).toEqual([]);
+            expect(result.observations[0].body[key]).toBe("ordinary-data");
+        },
+    );
+
     it.each(["Bearer RAW-BEARER-SECRET", "eyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.signature"])(
         "rejects credential-form value nested under an innocuous key",
         (message) => {
