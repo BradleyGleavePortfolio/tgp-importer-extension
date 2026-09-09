@@ -105,6 +105,9 @@ describe("normalizeCaptureSnapshot — fail-closed entry validation", () => {
     it.each([
         ["plain HTTP", { url: "http://coach.example/api" }, "unsafe_url"],
         ["embedded username", { url: "https://user@coach.example/api" }, "unsafe_url"],
+        ["localhost", { url: "https://localhost/api" }, "unsafe_url"],
+        ["IPv4 literal", { url: "https://127.0.0.1/api" }, "unsafe_url"],
+        ["IPv6 literal", { url: "https://[::1]/api" }, "unsafe_url"],
         ["malformed URL", { url: "not a url" }, "invalid_url"],
         ["empty URL", { url: "" }, "invalid_url"],
         ["POST", { method: "POST" }, "unsupported_method"],

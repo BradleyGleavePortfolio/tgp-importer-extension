@@ -241,6 +241,8 @@ describe("inferUrlTemplates — hostile and bounded input", () => {
     it.each([
         ["non-array input", null, "invalid_observations"],
         ["unsafe origin", [observation("/x", { origin: "http://coach.example" })], "invalid_observation"],
+        ["localhost origin", [observation("/x", { origin: "https://localhost" })], "invalid_observation"],
+        ["IP-literal origin", [observation("/x", { origin: "https://127.0.0.1" })], "invalid_observation"],
         ["unsupported method", [observation("/x", { method: "POST" })], "invalid_observation"],
         ["network-path path", [observation("//evil.example/x")], "invalid_observation"],
         ["backslash path", [observation("/safe\\evil")], "invalid_observation"],

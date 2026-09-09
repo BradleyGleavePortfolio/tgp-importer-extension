@@ -59,8 +59,10 @@ function groupBy(values, keyFor) {
 function isSafeOrigin(raw) {
     try {
         const url = new URL(raw);
+        const host = url.hostname.toLowerCase().replace(/\.+$/, "");
         return url.protocol === "https:" && url.username === "" && url.password === "" &&
-            url.origin === raw;
+            url.origin === raw && host !== "localhost" && !host.endsWith(".localhost") &&
+            !host.startsWith("[") && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
     }
     catch {
         return false;

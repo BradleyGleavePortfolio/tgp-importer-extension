@@ -110,7 +110,10 @@ function normalizeEntry(entry, limits) {
     catch {
         reject("invalid_url");
     }
-    if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || url.hostname === "") {
+    const host = url.hostname.toLowerCase().replace(/\.+$/, "");
+    if (url.protocol !== "https:" || url.username !== "" || url.password !== "" || host === "" ||
+        host === "localhost" || host.endsWith(".localhost") || host.startsWith("[") ||
+        /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) {
         reject("unsafe_url");
     }
     const method = typeof entry.method === "string" ? entry.method.toUpperCase() : "";
