@@ -88,13 +88,12 @@ function normalizeHeaders(raw, limits) {
         if (typeof value !== "string" || value.length > 4096 || /[\r\n\x00]/.test(value)) {
             reject("invalid_header");
         }
+        if (Object.hasOwn(out, name.toLowerCase())) reject("duplicate_header");
         if (SENSITIVE_KEY.test(name)) {
             if (!REDACTION.test(value)) reject("unredacted_sensitive_header");
-            out[name.toLowerCase()] = "[REDACTED]";
         }
-        else {
-            out[name.toLowerCase()] = value;
-        }
+        // Inference needs header-name consistency, never captured values.
+        out[name.toLowerCase()] = "[REDACTED]";
     }
     return out;
 }

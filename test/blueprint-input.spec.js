@@ -37,7 +37,7 @@ describe("normalizeCaptureSnapshot — accepted structural evidence", () => {
             status: 200,
             capturedAt: "2026-09-09T20:00:00.000Z",
             headers: {
-                accept: "application/json",
+                accept: "[REDACTED]",
                 authorization: "[REDACTED]",
                 cookie: "[REDACTED]",
             },
@@ -140,6 +140,22 @@ describe("normalizeCaptureSnapshot — fail-closed entry validation", () => {
         headers.__proto__ = "value";
         const result = normalizeCaptureSnapshot([entry({ requestHeaders: headers })]);
         expect(reasons(result)).toEqual({ invalid_header: 1 });
+    });
+
+    it("rejects case-insensitive duplicate header names deterministically", () => {
+        const result = normalizeCaptureSnapshot([entry({
+            requestHeaders: { Accept: "application/json", accept: "text/json" },
+        })]);
+        expect(reasons(result)).toEqual({ duplicate_header: 1 });
+    });
+
+    it("never retains values from non-sensitive custom headers", () => {
+        const secret = "opaque-private-value";
+        const result = normalizeCaptureSnapshot([entry({
+            requestHeaders: { "X-Custom-Context": secret },
+        })]);
+        expect(result.observations[0].headers["x-custom-context"]).toBe("[REDACTED]");
+        expect(JSON.stringify(result.observations[0].headers)).not.toContain(secret);
     });
 
     it("counts repeated rejection reasons without retaining rejected values", () => {

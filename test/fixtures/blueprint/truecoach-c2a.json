@@ -1,0 +1,35 @@
+[
+  {
+    "url": "https://app.truecoach.co/proxy/api/v2/clients/101?page=1&access_token=<redacted>",
+    "method": "GET",
+    "statusCode": 200,
+    "capturedAt": "2026-09-09T20:00:00.000Z",
+    "requestHeaders": {
+      "Accept": "application/json",
+      "Authorization": "<redacted>"
+    },
+    "responseBody": "{\"id\":101,\"name\":\"Dana Coach\",\"email\":\"dana@example.com\",\"access_token\":\"[REDACTED]\",\"profile\":{\"active\":true}}"
+  },
+  {
+    "url": "https://app.truecoach.co/proxy/api/v2/clients/102?page=2&access_token=<redacted>",
+    "method": "GET",
+    "statusCode": 200,
+    "capturedAt": "2026-09-09T20:00:01.000Z",
+    "requestHeaders": {
+      "Accept": "application/json",
+      "Authorization": "<redacted>"
+    },
+    "responseBody": "{\"email\":\"sam@example.com\",\"profile\":{\"active\":false},\"name\":\"Sam Lift\",\"id\":102,\"access_token\":\"[REDACTED]\"}"
+  },
+  {
+    "url": "https://app.truecoach.co/proxy/api/v2/clients/103?page=3&access_token=<redacted>",
+    "method": "GET",
+    "statusCode": 200,
+    "capturedAt": "2026-09-09T20:00:02.000Z",
+    "requestHeaders": {
+      "Accept": "application/json",
+      "Authorization": "<redacted>"
+    },
+    "responseBody": "{\"name\":\"Taylor Strong\",\"id\":103,\"access_token\":\"[REDACTED]\",\"profile\":{\"active\":true},\"email\":\"taylor@example.com\"}"
+  }
+]
