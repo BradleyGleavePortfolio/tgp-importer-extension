@@ -36,7 +36,7 @@ function splitPath(path, maxSegments) {
 }
 
 function supportedQueryKeys(value) {
-    if (!Array.isArray(value)) return [];
+    if (!Array.isArray(value) || value.length > 64) return [];
     return [...new Set(value.filter((key) => typeof key === "string" &&
         SUPPORTED_QUERY_KEYS.has(key.toLowerCase())).map((key) => key.toLowerCase()))].sort();
 }
@@ -91,7 +91,14 @@ export function inferUrlTemplates(observations, options) {
         }
         const kinds = segments.map(candidateKind);
         const skeleton = segments.map((segment, index) => kinds[index] ?? `=${segment}`);
-        rows.push({ ...observation, segments, kinds, skeleton: JSON.stringify(skeleton) });
+        rows.push({
+            origin: observation.origin,
+            method: observation.method,
+            queryKeys: observation.queryKeys,
+            segments,
+            kinds,
+            skeleton: JSON.stringify(skeleton),
+        });
     }
 
     const coarse = groupBy(rows, (row) => `${row.origin}\n${row.method}\n${row.skeleton}`);

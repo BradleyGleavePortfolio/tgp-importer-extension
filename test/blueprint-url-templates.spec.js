@@ -274,6 +274,13 @@ describe("inferUrlTemplates — hostile and bounded input", () => {
         expect(result.excluded).toEqual([{ reason: "invalid_observation", count: 1 }]);
     });
 
+    it("does not inspect an oversized query-key collection", () => {
+        const queryKeys = Array.from({ length: 65 }, (_, index) => `key-${index}`);
+        queryKeys[64] = "page";
+        const result = inferUrlTemplates([observation("/clients", { queryKeys })]);
+        expect(result.clusters[0].queryKeys).toEqual([]);
+    });
+
     it("does not include body PII or arbitrary observation properties", () => {
         const secret = "Dana Coach dana@private.test";
         const result = inferUrlTemplates([
