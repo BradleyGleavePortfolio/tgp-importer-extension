@@ -50,46 +50,32 @@ async function assertCaptureTabAllowed(tabId) {
 
 // ---- response-body secret redaction ------------------------------------------
 
-const BODY_REDACTED = "[REDACTED]";
-
-// Auth/secret field names, matched case-insensitively against object keys.
-// Deliberately NOT a substring match: "token_count" or "secret_santa_notes"
-// style fields would be data loss, and non-secret PII must survive intact.
-const SENSITIVE_BODY_KEY = new RegExp(
-    "^(access_token|refresh_token|id_token|token|api_key|authorization|" +
-    "cookie|set-cookie|password|secret)$",
-    "i",
-);
-
-// Fallbacks for bodies that are not JSON objects: bearer credentials and
-// JWT-shaped compact tokens embedded in text.
-const BEARER_PATTERN = /Bearer [A-Za-z0-9._-]+/g;
-const JWT_PATTERN = /eyJ[A-Za-z0-9._-]+/g;
+import { REDACTION as BODY_REDACTED, isCredentialKey, redactCredentialText } from "./credential-policy.js";
 
 function isRecord(value) {
     return typeof value === "object" && value !== null;
 }
 
-// Recursively redact sensitive keys in a parsed JSON value, in place.
-// Returns true when at least one value was replaced.
+// Iterative walk avoids attacker-controlled recursion; overflow redacts the
+// entire body rather than risking a partially inspected credential payload.
 function redactParsedValue(value) {
     let changed = false;
-    if (Array.isArray(value)) {
-        for (const item of value) {
-            changed = redactParsedValue(item) || changed;
-        }
-        return changed;
-    }
-    if (!isRecord(value)) {
-        return false;
-    }
-    for (const [key, child] of Object.entries(value)) {
-        if (SENSITIVE_BODY_KEY.test(key)) {
-            value[key] = BODY_REDACTED;
-            changed = true;
-        }
-        else {
-            changed = redactParsedValue(child) || changed;
+    let nodes = 0;
+    const pending = [value];
+    while (pending.length > 0) {
+        const current = pending.pop();
+        if (++nodes > 20000) return null;
+        if (Array.isArray(current)) for (const child of current) pending.push(child);
+        else if (isRecord(current)) for (const [key, child] of Object.entries(current)) {
+            if (isCredentialKey(key)) {
+                current[key] = BODY_REDACTED;
+                changed = true;
+            }
+            else if (typeof child === "string" && redactCredentialText(child) !== child) {
+                current[key] = redactCredentialText(child);
+                changed = true;
+            }
+            else if (isRecord(child)) pending.push(child);
         }
     }
     return changed;
@@ -98,7 +84,7 @@ function redactParsedValue(value) {
 // Regex fallback for non-JSON (or JSON-primitive) bodies: strip bearer
 // credentials and JWT-shaped tokens, preserve everything else verbatim.
 function redactTokenText(text) {
-    return text.replace(BEARER_PATTERN, BODY_REDACTED).replace(JWT_PATTERN, BODY_REDACTED);
+    return redactCredentialText(text);
 }
 
 // Redact auth/secret material from a captured response body string before it
@@ -120,7 +106,8 @@ function redactResponseBody(body) {
         // string can still carry a token.
         return redactTokenText(body);
     }
-    return redactParsedValue(parsed) ? JSON.stringify(parsed) : body;
+    const changed = redactParsedValue(parsed);
+    return changed === null ? JSON.stringify(BODY_REDACTED) : changed ? JSON.stringify(parsed) : body;
 }
 
 export {

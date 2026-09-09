@@ -24,7 +24,7 @@ describe("shapeSignature — stable structural identity", () => {
         const left = { name: "Dana", active: true, age: 40 };
         const right = { age: 12, active: false, name: "Sam" };
         expect(shapeSignature(left)).toBe(shapeSignature(right));
-        expect(shapeSignature(left)).toBe("object{active:boolean,age:number,name:string}");
+        expect(shapeSignature(left)).toBe("object{boolean*1,number*1,string*1}");
     });
 
     it("is independent of array value order and duplicate values", () => {
@@ -44,7 +44,7 @@ describe("shapeSignature — stable structural identity", () => {
         const strings = { client: { id: "private", enabled: true } };
         const numbers = { client: { id: 99, enabled: true } };
         expect(shapeSignature(strings, { maxDepth: 3 }))
-            .toBe("object{client:object{enabled:boolean,id:string}}");
+            .toBe("object{object{boolean*1,string*1}*1}");
         expect(shapeSignature(strings, { maxDepth: 3 }))
             .not.toBe(shapeSignature(numbers, { maxDepth: 3 }));
     });
@@ -53,7 +53,7 @@ describe("shapeSignature — stable structural identity", () => {
         const left = { client: { profile: { email: "dana@private.test" } } };
         const right = { client: { profile: { phone: "+1 555 0100" } } };
         expect(shapeSignature(left)).toBe(shapeSignature(right));
-        expect(shapeSignature(left)).toBe("object{client:object{profile:object(*)}}");
+        expect(shapeSignature(left)).toBe("object{object{object(*)*1}*1}");
     });
 
     it("supports a root-only depth budget", () => {
@@ -78,7 +78,7 @@ describe("shapeSignature — stable structural identity", () => {
         }, { maxDepth: 4 });
         for (const value of pii) expect(signature).not.toContain(value);
         expect(signature).toBe(
-            "object{address:string,email:string,name:string,notes:array[string],phone:string}",
+            "object{array[string]*1,string*4}",
         );
     });
 
@@ -89,7 +89,7 @@ describe("shapeSignature — stable structural identity", () => {
         const signature = shapeSignature(value);
         expect(signature).not.toContain(email);
         expect(signature).not.toContain(uuid);
-        expect(signature).toBe("object{<key>:boolean,ordinary_key:number}");
+        expect(signature).toBe("object{boolean*2,number*1}");
     });
 
     it("does not expose prototype-like keys", () => {
@@ -97,7 +97,7 @@ describe("shapeSignature — stable structural identity", () => {
         const signature = shapeSignature(value);
         expect(signature).not.toContain("__proto__");
         expect(signature).not.toContain("constructor");
-        expect(signature).toBe("object{<key>:number,safe:number}");
+        expect(signature).toBe("object{number*3}");
     });
 
     it("classifies non-finite and non-JSON scalars as unsupported", () => {
@@ -137,11 +137,35 @@ describe("shapeSignature — bounded collection work", () => {
         expect(left).not.toContain("private");
     });
 
+    it.each([
+        [1, "array[boolean|...]"],
+        [2, "array[boolean|null|...]"],
+        [3, "array[boolean|null|number]"],
+    ])("enforces maxVariants at limit-1/limit/limit+1 (%i)", (maxVariants, expected) => {
+        expect(shapeSignature([null, true, 1], { maxVariants })).toBe(expected);
+    });
+
+    it.each([
+        [1, "object{object(*)*1}"],
+        [2, "object{object{number*1}*1}"],
+        [3, "object{object{number*1}*1}"],
+    ])("enforces maxDepth at below/equal/above needed depth (%i)", (maxDepth, expected) => {
+        expect(shapeSignature({ nested: { value: 1 } }, { maxDepth })).toBe(expected);
+    });
+
+    it.each([
+        [1, "work(overflow)"],
+        [2, "object{number*1}"],
+        [3, "object{number*1}"],
+    ])("enforces maxNodes at below/equal/above needed work (%i)", (maxNodes, expected) => {
+        expect(shapeSignature({ value: 1 }, { maxNodes })).toBe(expected);
+    });
+
     it("handles cycles defensively even though normalized JSON cannot contain them", () => {
         const value = {};
         value.self = value;
         expect(shapeSignature(value, { maxDepth: 4 }))
-            .toBe("object{self:object(cycle)}");
+            .toBe("object{object(cycle)*1}");
     });
 
     it("uses defaults when numeric options are invalid", () => {
@@ -150,7 +174,7 @@ describe("shapeSignature — bounded collection work", () => {
             maxDepth: -1,
             maxCollection: 0,
             maxVariants: "many",
-        })).toBe("object{nested:object{deep:object(*)}}");
+        })).toBe("object{object{object(*)*1}*1}");
     });
 
     it("does not recurse into a huge array past the collection check", () => {
@@ -166,7 +190,9 @@ describe("clusterResponseShapes", () => {
             { body: { email: "sam@private.test", name: "Sam Lift", id: 2 } },
         ];
         expect(clusterResponseShapes(observations)).toEqual([{
-            signature: "object{email:string,id:number,name:string}",
+            origin: null,
+            method: null,
+            signature: "object{number*1,string*2}",
             observations: 2,
         }]);
     });
@@ -179,10 +205,10 @@ describe("clusterResponseShapes", () => {
             { body: null },
         ]);
         expect(result).toEqual([
-            { signature: "array[]", observations: 1 },
-            { signature: "null", observations: 1 },
-            { signature: "object{}", observations: 1 },
-            { signature: "string", observations: 1 },
+            { origin: null, method: null, signature: "array[]", observations: 1 },
+            { origin: null, method: null, signature: "null", observations: 1 },
+            { origin: null, method: null, signature: "object{}", observations: 1 },
+            { origin: null, method: null, signature: "string", observations: 1 },
         ]);
     });
 
@@ -207,7 +233,7 @@ describe("clusterResponseShapes", () => {
 
     it("treats a missing body as unsupported rather than throwing", () => {
         expect(clusterResponseShapes([{}])).toEqual([
-            { signature: "unsupported", observations: 1 },
+            { origin: null, method: null, signature: "unsupported", observations: 1 },
         ]);
     });
 
@@ -223,8 +249,8 @@ describe("clusterResponseShapes", () => {
             { body: 1 },
         ], { maxObservations: 2 });
         expect(result).toEqual([
-            { signature: "boolean", observations: 1 },
-            { signature: "null", observations: 1 },
+            { origin: null, method: null, signature: "boolean", observations: 1 },
+            { origin: null, method: null, signature: "null", observations: 1 },
         ]);
     });
 
@@ -234,8 +260,100 @@ describe("clusterResponseShapes", () => {
             { body: ["private", 1] },
         ], { maxCollection: 1 });
         expect(result).toEqual([
-            { signature: "array(overflow)", observations: 1 },
-            { signature: "object(overflow)", observations: 1 },
+            { origin: null, method: null, signature: "array(overflow)", observations: 1 },
+            { origin: null, method: null, signature: "object(overflow)", observations: 1 },
         ]);
+    });
+
+    it("partitions equivalent shapes by origin and method provenance", () => {
+        const result = clusterResponseShapes([
+            { origin: "https://one.example", method: "GET", body: { id: 1 } },
+            { origin: "https://two.example", method: "GET", body: { id: 2 } },
+            { origin: "https://one.example", method: "HEAD", body: { id: 3 } },
+        ]);
+        expect(result).toEqual([
+            {
+                origin: "https://one.example",
+                method: "GET",
+                signature: "object{number*1}",
+                observations: 1,
+            },
+            {
+                origin: "https://one.example",
+                method: "HEAD",
+                signature: "object{number*1}",
+                observations: 1,
+            },
+            {
+                origin: "https://two.example",
+                method: "GET",
+                signature: "object{number*1}",
+                observations: 1,
+            },
+        ]);
+    });
+
+    it("preserves privacy-safe multiplicity and child-type distribution", () => {
+        expect(shapeSignature({ DanaCoach: true }))
+            .toBe("object{boolean*1}");
+        expect(shapeSignature({ DanaCoach: true, SamLift: false }))
+            .toBe("object{boolean*2}");
+        expect(shapeSignature({ DanaCoach: true, SamLift: 2 }))
+            .toBe("object{boolean*1,number*1}");
+    });
+
+    it.each([
+        "DanaCoach", "dana_coach", "+15550100", "abc123", "Ｄａｎａ", "é", "e\u0301",
+    ])("never emits arbitrary object key %s", (key) => {
+        const signature = shapeSignature({ nested: { [key]: { id: 1 } } }, { maxDepth: 4 });
+        expect(signature).toBe("object{object{object{number*1}*1}*1}");
+        expect(signature).not.toContain(key);
+    });
+
+    it("clamps extreme depth options and never overflows the JavaScript stack", () => {
+        const root = {};
+        let cursor = root;
+        for (let i = 0; i < 12000; i += 1) {
+            cursor.next = {};
+            cursor = cursor.next;
+        }
+        expect(() => shapeSignature(root, {
+            maxDepth: Number.MAX_SAFE_INTEGER,
+            maxCollection: Number.MAX_SAFE_INTEGER,
+            maxNodes: Number.MAX_SAFE_INTEGER,
+        })).not.toThrow();
+        expect(shapeSignature(root, { maxDepth: Number.MAX_SAFE_INTEGER }))
+            .toContain("object(*)");
+    });
+
+    it.each([
+        [1, "object{number*1}"],
+        [2, "object{number*2}"],
+        [3, "object(overflow)"],
+    ])("enforces maxCollection at exact object boundary %i", (count, expected) => {
+        const value = Object.fromEntries(Array.from({ length: count }, (_, i) => [`private-${i}`, i]));
+        expect(shapeSignature(value, { maxCollection: 2 })).toBe(expected);
+    });
+
+    it("selects a canonical bounded subset for every observation permutation", () => {
+        const rows = [
+            { origin: "https://x.example", method: "GET", body: null },
+            { origin: "https://x.example", method: "GET", body: true },
+            { origin: "https://x.example", method: "GET", body: 1 },
+        ];
+        expect(clusterResponseShapes(rows, { maxObservations: 2 }))
+            .toEqual(clusterResponseShapes([...rows].reverse(), { maxObservations: 2 }));
+    });
+
+    it.each([
+        [1, 1], [2, 2], [3, 2],
+    ])("enforces maxObservations at limit-1/limit/limit+1 (%i)", (count, kept) => {
+        const rows = Array.from({ length: count }, (_, i) => ({
+            origin: "https://x.example",
+            method: "GET",
+            body: i === 0 ? null : i === 1,
+        }));
+        const result = clusterResponseShapes(rows, { maxObservations: 2 });
+        expect(result.reduce((sum, row) => sum + row.observations, 0)).toBe(kept);
     });
 });

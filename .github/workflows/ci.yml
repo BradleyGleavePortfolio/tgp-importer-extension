@@ -18,10 +18,13 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
-      - run: npm install
+          node-version: "22"
+          cache: npm
+      - run: npm ci
       - name: Run tests
         run: npm test
+      - name: Dependency audit (HIGH/CRITICAL block)
+        run: npm audit --audit-level=high
       - name: Banned-token net (silent catches + R3 commit identity)
         run: node scripts/check-banned.mjs
       - name: Production LOC budget
@@ -37,3 +40,7 @@ jobs:
         run: node scripts/check-flag-discipline.mjs
       - name: Enforce R74 test:src >= 2.0 (PR diff)
         run: node scripts/check-test-ratio.mjs
+      - name: Production fixture exclusion
+        run: node scripts/check-production-fixtures.mjs
+      - name: Deploy readiness board
+        run: node scripts/check-deploy-readiness.mjs

@@ -7,13 +7,13 @@ import { clusterResponseShapes } from "../shared/blueprint/shapes.js";
 
 function loadFixture() {
     const path = fileURLToPath(
-        new URL("./fixtures/blueprint/truecoach-c2a.json", import.meta.url),
+        new URL("./fixtures/blueprint/synthetic-truecoach-c2a.json", import.meta.url),
     );
     return JSON.parse(readFileSync(path, "utf8"));
 }
 
-describe("C2a fixture evidence", () => {
-    it("normalizes the redacted oracle fixture without exclusions", () => {
+describe("synthetic C2a fixture evidence (not a captured oracle)", () => {
+    it("normalizes the hand-authored redacted fixture without exclusions", () => {
         const result = normalizeCaptureSnapshot(loadFixture());
         expect(result.excluded).toEqual([]);
         expect(result.observations).toHaveLength(3);
@@ -30,7 +30,9 @@ describe("C2a fixture evidence", () => {
             clusters: [{
                 origin: "https://app.truecoach.co",
                 method: "GET",
-                template: "/proxy/api/v2/clients/:id",
+                pathPattern: "/{s6}/{s4}/v2/{s5}/:id",
+                dynamicSegments: 1,
+                replayCompatible: true,
                 queryKeys: ["page"],
                 observations: 3,
             }],
@@ -42,8 +44,9 @@ describe("C2a fixture evidence", () => {
         const normalized = normalizeCaptureSnapshot(loadFixture());
         const result = clusterResponseShapes(normalized.observations, { maxDepth: 3 });
         expect(result).toEqual([{
-            signature: "object{access_token:string,email:string,id:number,name:string," +
-                "profile:object{active:boolean}}",
+            origin: "https://app.truecoach.co",
+            method: "GET",
+            signature: "object{number*1,object{boolean*1}*1,string*3}",
             observations: 3,
         }]);
     });

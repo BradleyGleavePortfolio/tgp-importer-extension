@@ -7,6 +7,7 @@ import {
     redactResponseBody,
 } from "../shared/capture-policy.js";
 import { attachDebugger, stopCapture } from "../shared/capture.js";
+import { normalizeCaptureSnapshot } from "../shared/blueprint/input.js";
 
 const TAB = 21;
 
@@ -143,6 +144,32 @@ describe("redactResponseBody — auth/secret material is stripped, PII preserved
         expect(out.meta.auth.refresh_token).toBe(BODY_REDACTED);
     });
 
+    it.each([
+        "accessToken", "refreshToken", "auth_token", "client_secret", "sessionId",
+        "session_token", "jwt", "x-api-key", "private_key", "password_hash", "credit_card",
+    ])("shares the conservative credential alias classifier for %s", (key) => {
+        const input = JSON.stringify({ [key]: "raw-secret", name: "Dana" });
+        const out = JSON.parse(redactResponseBody(input));
+        expect(out).toEqual({ [key]: BODY_REDACTED, name: "Dana" });
+    });
+
+    it("redacts credential-form strings nested under innocuous keys", () => {
+        const input = JSON.stringify({
+            message: "Bearer RAW-BEARER-SECRET",
+            nested: { note: "eyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.signature" },
+        });
+        const out = JSON.parse(redactResponseBody(input));
+        expect(out).toEqual({
+            message: BODY_REDACTED,
+            nested: { note: BODY_REDACTED },
+        });
+    });
+
+    it("fails closed to a whole-body marker when the absolute walk budget is exceeded", () => {
+        const input = JSON.stringify(Array.from({ length: 20001 }, () => null));
+        expect(redactResponseBody(input)).toBe(JSON.stringify(BODY_REDACTED));
+    });
+
     it("does NOT redact non-secret PII — names and emails survive verbatim", () => {
         const input = JSON.stringify({
             clients: [{ id: 7, name: "Dana Coach", email: "dana@example.com" }],
@@ -224,5 +251,31 @@ describe("capture pipeline stores redacted bodies", () => {
         emitJson("red2", "https://app.truecoach.co/api/clients");
         const [entry] = await stopCapture(TAB);
         expect(entry.responseBody).toBe(body);
+    });
+
+    it("produces credential-safe evidence across the real capture to C2a boundary", async () => {
+        const raw = {
+            accessToken: "live-access",
+            client_secret: "live-client",
+            message: "Bearer RAW-BEARER-SECRET",
+            client: { name: "Dana" },
+        };
+        mock.onCommand("Network.getResponseBody", () => ({
+            body: JSON.stringify(raw),
+            base64Encoded: false,
+        }));
+        await attachDebugger(TAB);
+        emitJson("red3", "https://app.truecoach.co/api/clients");
+        const captured = await stopCapture(TAB);
+        const result = normalizeCaptureSnapshot(captured);
+        expect(result.excluded).toEqual([]);
+        expect(result.observations[0].body).toEqual({
+            accessToken: BODY_REDACTED,
+            client: { name: "Dana" },
+            client_secret: BODY_REDACTED,
+            message: BODY_REDACTED,
+        });
+        expect(JSON.stringify(result)).not.toContain("live-access");
+        expect(JSON.stringify(result)).not.toContain("RAW-BEARER-SECRET");
     });
 });

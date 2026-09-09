@@ -1,134 +1,129 @@
-// Deterministic URL-path evidence only. Query values and candidate identifiers
-// never enter the result.
-
+// Pure path-structure evidence. Arbitrary captured segments never enter output.
+import { compareText } from "./order.js";
 const SUPPORTED_QUERY_KEYS = new Set([
     "after", "before", "cursor", "end", "from", "limit", "offset", "page",
     "per_page", "since", "start", "to", "until",
 ]);
-const UUID = /^[a-f0-9]{8}-[a-f0-9]{4}-[1-5][a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/i;
+const UUID_SHAPE = /^[a-f0-9]{8}-[a-f0-9]{4}-([0-9a-f])[a-f0-9]{3}-([0-9a-f])[a-f0-9]{3}-[a-f0-9]{12}$/i;
 const INTEGER = /^(?:0|[1-9]\d*)$/;
-const SHORT_ID = /^(?=[A-Z0-9]{6,16}$)(?=.*[A-Z])(?=.*\d)[A-Z0-9]+$/;
-const PII_SEGMENT = /@|%40|^(?:<redacted>|\[redacted\])$/i;
-
+const OPAQUE = /^(?=.{6,64}$)(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_-]+$/;
+const VERSION = /^v\d{1,3}$/i;
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const DECIMAL = /^(?:0|[1-9]\d*)\.\d+$/;
+const HARD = Object.freeze({ minDistinct: 32, maxObservations: 1000, maxSegments: 32 });
+const MAX_PATH_CHARS = 1024 * 1024;
 function candidateKind(segment) {
-    if (UUID.test(segment)) return "uuid";
+    const match = typeof segment === "string" ? segment.match(UUID_SHAPE) : null;
+    if (match) return /[1-8]/i.test(match[1]) && /[89ab]/i.test(match[2]) ? "uuid" : null;
+    if (typeof segment !== "string" || /^[a-f0-9-]{32,40}$/i.test(segment)) return null;
     if (INTEGER.test(segment)) return "integer";
-    if (SHORT_ID.test(segment)) return "short";
-    return null;
+    return OPAQUE.test(segment) ? "opaque" : null;
 }
-
+function option(options, key, fallback, minimum = 1) {
+    const raw = options?.[key];
+    return Number.isInteger(raw) && raw >= minimum ? Math.min(raw, HARD[key]) : fallback;
+}
 function splitPath(path, maxSegments) {
-    if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") ||
-        /[\\\x00-\x1f\x7f?#]/.test(path)) return null;
-    const segments = path.split("/").slice(1);
-    let decoded;
+    if (typeof path !== "string" || path.length > 4096 || !path.startsWith("/") ||
+        path.startsWith("//") || /[\\\x00-\x1f\x7f?#]/.test(path)) return null;
+    const encoded = path.split("/").slice(1);
+    if (encoded.length > maxSegments || encoded.some((part) => part.length > 256)) return null;
     try {
-        decoded = segments.map((part) => decodeURIComponent(part));
-    }
-    catch {
-        return null;
-    }
-    if (segments.length > maxSegments || segments.some((part) => part.length > 256) ||
-        decoded.some((part) => PII_SEGMENT.test(part))) {
-        return null;
-    }
-    return segments;
+        const decoded = encoded.map((part) => decodeURIComponent(part).normalize("NFC"));
+        return decoded.some((part) => part.length > 256 || /@|^(?:<redacted>|\[redacted\])$/i.test(part)) ? null : decoded;
+    } catch { return null; }
 }
-
-function supportedQueryKeys(value) {
-    if (!Array.isArray(value) || value.length > 64) return [];
-    return [...new Set(value.filter((key) => typeof key === "string" &&
-        SUPPORTED_QUERY_KEYS.has(key.toLowerCase())).map((key) => key.toLowerCase()))].sort();
-}
-
-function templateFrom(segments, dynamic) {
-    return "/" + segments.map((segment, index) => dynamic.has(index) ? ":id" : segment).join("/");
-}
-
-function groupBy(values, keyFor) {
-    const groups = new Map();
-    for (const value of values) {
-        const key = keyFor(value);
-        const group = groups.get(key) ?? [];
-        group.push(value);
-        groups.set(key, group);
-    }
-    return groups;
-}
-
-function isSafeOrigin(raw) {
+function safeOrigin(raw) {
     try {
         const url = new URL(raw);
         const host = url.hostname.toLowerCase().replace(/\.+$/, "");
-        return url.protocol === "https:" && url.username === "" && url.password === "" &&
-            url.origin === raw && host !== "localhost" && !host.endsWith(".localhost") &&
-            !host.startsWith("[") && !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
-    }
-    catch {
-        return false;
-    }
+        return url.protocol === "https:" && !url.username && !url.password && url.origin === raw &&
+            host !== "localhost" && !host.endsWith(".localhost") && !host.startsWith("[") &&
+            !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(host);
+    } catch { return false; }
 }
-
+function structural(segment) {
+    if (VERSION.test(segment)) return `=${segment.toLowerCase()}`;
+    if (DATE.test(segment)) return "{date}";
+    if (DECIMAL.test(segment)) return "{decimal}";
+    return candidateKind(segment) === null ? "{text}" : "{candidate}";
+}
+function display(segment, tokens) {
+    if (VERSION.test(segment)) return segment.toLowerCase();
+    if (DATE.test(segment)) return "{date}";
+    if (DECIMAL.test(segment)) return "{decimal}";
+    return `{s${tokens.get(segment)}}`;
+}
+function supportedKeys(value) {
+    if (!Array.isArray(value) || value.length > 64) return [];
+    return [...new Set(value.filter((key) => typeof key === "string" &&
+        SUPPORTED_QUERY_KEYS.has(key.toLowerCase())).map((key) => key.toLowerCase()))].sort(compareText);
+}
+function grouped(values, keyFor) {
+    const out = new Map();
+    for (const value of values) {
+        const key = keyFor(value);
+        const group = out.get(key) ?? [];
+        group.push(value);
+        out.set(key, group);
+    }
+    return out;
+}
 export function inferUrlTemplates(observations, options) {
-    const minDistinct = Number.isInteger(options?.minDistinct) && options.minDistinct >= 2
-        ? options.minDistinct
-        : 3;
-    const maxObservations = Number.isInteger(options?.maxObservations) && options.maxObservations > 0
-        ? options.maxObservations
-        : 1000;
-    const maxSegments = Number.isInteger(options?.maxSegments) && options.maxSegments > 0
-        ? options.maxSegments
-        : 32;
+    if (!Array.isArray(observations)) {
+        return { clusters: [], excluded: [{ reason: "invalid_observations", count: 1 }] };
+    }
+    if (observations.length > HARD.maxObservations) {
+        return { clusters: [], excluded: [{ reason: "observation_limit", count: observations.length }] };
+    }
+    if (observations.reduce((n, item) => n + (typeof item?.path === "string" ? item.path.length : 0), 0) >
+        MAX_PATH_CHARS) return { clusters: [], excluded: [{ reason: "path_byte_limit", count: observations.length }] };
+    const minDistinct = option(options, "minDistinct", 3, 2);
+    const maxObservations = option(options, "maxObservations", 1000);
+    const maxSegments = option(options, "maxSegments", 32);
     const rejected = new Map();
     const rows = [];
-    const input = Array.isArray(observations) ? observations : [];
-    if (!Array.isArray(observations)) rejected.set("invalid_observations", 1);
-    if (input.length > maxObservations) rejected.set("observation_limit", input.length - maxObservations);
-    for (const observation of input.slice(0, maxObservations)) {
+    for (const observation of observations) {
         const segments = splitPath(observation?.path, maxSegments);
-        if (typeof observation?.origin !== "string" || !isSafeOrigin(observation.origin) ||
+        if (typeof observation?.origin !== "string" || !safeOrigin(observation.origin) ||
             !["GET", "HEAD"].includes(observation?.method) || segments === null) {
             rejected.set("invalid_observation", (rejected.get("invalid_observation") ?? 0) + 1);
-            continue;
-        }
-        const kinds = segments.map(candidateKind);
-        const skeleton = segments.map((segment, index) => kinds[index] ?? `=${segment}`);
-        rows.push({
-            origin: observation.origin,
-            method: observation.method,
-            queryKeys: observation.queryKeys,
-            segments,
-            kinds,
-            skeleton: JSON.stringify(skeleton),
-        });
+        } else rows.push({ origin: observation.origin, method: observation.method, segments,
+            queryKeys: supportedKeys(observation.queryKeys) });
     }
-
-    const coarse = groupBy(rows, (row) => `${row.origin}\n${row.method}\n${row.skeleton}`);
+    rows.sort((a, b) => compareText(JSON.stringify(a), JSON.stringify(b)));
+    if (rows.length > maxObservations) {
+        rejected.set("observation_limit", rows.length - maxObservations);
+        rows.length = maxObservations;
+    }
+    const rawTokens = [...new Set(rows.flatMap((row) => row.segments).filter((segment) =>
+        !VERSION.test(segment) && !DATE.test(segment) && !DECIMAL.test(segment)))].sort(compareText);
+    const tokens = new Map(rawTokens.map((value, index) => [value, index + 1]));
+    const coarse = grouped(rows, (row) => JSON.stringify([row.origin, row.method, row.segments.map(structural)]));
     const clusters = [];
     for (const group of coarse.values()) {
-        const candidateIndexes = group[0].kinds.flatMap((kind, index) => kind === null ? [] : [index]);
-        const dynamic = new Set(candidateIndexes.filter((index) =>
-            new Set(group.map((row) => row.segments[index])).size >= minDistinct));
-        const partitions = groupBy(group, (row) => JSON.stringify(
-            candidateIndexes.filter((index) => !dynamic.has(index)).map((index) => row.segments[index]),
-        ));
+        const dynamic = new Set(group[0].segments.flatMap((_segment, index) => {
+            const values = [...new Set(group.map((row) => row.segments[index]))];
+            return values.length >= minDistinct && values.every((value) => candidateKind(value)) ? [index] : [];
+        }));
+        const partitions = grouped(group, (row) =>
+            JSON.stringify(row.segments.filter((_segment, index) => !dynamic.has(index))));
         for (const partition of partitions.values()) {
-            const queryKeys = [...new Set(partition.flatMap((row) => supportedQueryKeys(row.queryKeys)))].sort();
-            clusters.push({
-                origin: partition[0].origin,
-                method: partition[0].method,
-                template: templateFrom(partition[0].segments, dynamic),
-                queryKeys,
+            const dynamicSegments = dynamic.size;
+            const cluster = {
+                origin: partition[0].origin, method: partition[0].method,
+                pathPattern: "/" + partition[0].segments.map((segment, index) =>
+                    dynamic.has(index) ? ":id" : display(segment, tokens)).join("/"),
+                dynamicSegments, replayCompatible: dynamicSegments <= 1,
+                queryKeys: [...new Set(partition.flatMap((row) => row.queryKeys))].sort(compareText),
                 observations: partition.length,
-            });
+            };
+            if (!cluster.replayCompatible) cluster.reason = "multiple_dynamic_segments";
+            clusters.push(cluster);
         }
     }
-    clusters.sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
-    return {
-        clusters,
-        excluded: [...rejected].sort(([a], [b]) => a.localeCompare(b))
-            .map(([reason, count]) => ({ reason, count })),
-    };
+    clusters.sort((a, b) => compareText(JSON.stringify(a), JSON.stringify(b)));
+    return { clusters, excluded: [...rejected].sort(([a], [b]) => compareText(a, b))
+        .map(([reason, count]) => ({ reason, count })) };
 }
-
-export { candidateKind, SUPPORTED_QUERY_KEYS };
+export { candidateKind, SUPPORTED_QUERY_KEYS, HARD as URL_HARD_LIMITS };

@@ -70,11 +70,11 @@ describe("normalizeCaptureSnapshot — accepted structural evidence", () => {
         expect(Object.keys(result.observations[0].body.object)).toEqual(["a", "z"]);
     });
 
-    it("normalizes invalid status and timestamp metadata to null", () => {
-        const result = normalizeCaptureSnapshot([entry({
-            statusCode: 999,
-            capturedAt: "x".repeat(65),
-        })]);
+    it("preserves null only for genuinely absent status and timestamp metadata", () => {
+        const value = entry();
+        delete value.statusCode;
+        delete value.capturedAt;
+        const result = normalizeCaptureSnapshot([value]);
         expect(result.observations[0].status).toBeNull();
         expect(result.observations[0].capturedAt).toBeNull();
     });
@@ -118,6 +118,11 @@ describe("normalizeCaptureSnapshot — fail-closed entry validation", () => {
         ["raw cookie", { requestHeaders: { Cookie: "sid=real-secret" } }, "unredacted_sensitive_header"],
         ["raw body token", { responseBody: "{\"token\":\"real-secret\"}" }, "unredacted_sensitive_field"],
         ["raw nested password", { responseBody: "{\"profile\":{\"password\":\"real-secret\"}}" }, "unredacted_sensitive_field"],
+        ["malformed status", { statusCode: null }, "invalid_status"],
+        ["out-of-range status", { statusCode: 600 }, "invalid_status"],
+        ["non-integer status", { statusCode: 200.5 }, "invalid_status"],
+        ["invalid timestamp", { capturedAt: "not-a-date" }, "invalid_timestamp"],
+        ["non-canonical timestamp", { capturedAt: "2026-09-09T20:00:00Z" }, "invalid_timestamp"],
         ["invalid header value", { requestHeaders: { Accept: "ok\r\nInjected: yes" } }, "invalid_header"],
     ])("excludes %s with an explicit reason", (_label, overrides, reason) => {
         const result = normalizeCaptureSnapshot([entry(overrides)]);
@@ -171,6 +176,42 @@ describe("normalizeCaptureSnapshot — fail-closed entry validation", () => {
         expect(JSON.stringify(result)).not.toContain(secret);
     });
 
+    it.each([
+        "accessToken", "refreshToken", "auth_token", "client_secret", "sessionId",
+        "session_token", "jwt", "x-api-key", "private_key", "password_hash", "credit_card",
+    ])("rejects raw credential alias %s", (key) => {
+        const result = normalizeCaptureSnapshot([entry({
+            responseBody: JSON.stringify({ [key]: "raw-secret" }),
+        })]);
+        expect(result).toEqual({
+            observations: [],
+            excluded: [{ reason: "unredacted_sensitive_field", count: 1 }],
+        });
+        expect(JSON.stringify(result)).not.toContain("raw-secret");
+    });
+
+    it.each(["Bearer RAW-BEARER-SECRET", "eyJhbGciOiJIUzI1NiJ9.cGF5bG9hZA.signature"])(
+        "rejects credential-form value nested under an innocuous key",
+        (message) => {
+            const result = normalizeCaptureSnapshot([entry({
+                responseBody: JSON.stringify({ message }),
+            })]);
+            expect(reasons(result)).toEqual({ unredacted_sensitive_value: 1 });
+            expect(JSON.stringify(result)).not.toContain(message);
+        },
+    );
+
+    it.each(["token_count", "secret_santa_notes", "session_count"])(
+        "does not over-classify near-miss field %s",
+        (key) => {
+            const result = normalizeCaptureSnapshot([entry({
+                responseBody: JSON.stringify({ [key]: "ordinary-data" }),
+            })]);
+            expect(result.excluded).toEqual([]);
+            expect(result.observations[0].body[key]).toBe("ordinary-data");
+        },
+    );
+
     it("reports a non-array snapshot explicitly", () => {
         expect(normalizeCaptureSnapshot({ entries: [] })).toEqual({
             observations: [],
@@ -187,6 +228,95 @@ describe("normalizeCaptureSnapshot — bounded work", () => {
         );
         expect(result.observations).toHaveLength(1);
         expect(reasons(result)).toEqual({ entry_limit: 1 });
+    });
+
+    it("selects entries canonically at the cap, independent of permutation", () => {
+        const values = [3, 1, 2].map((id) => entry({ url: `https://coach.example/${id}` }));
+        const forward = normalizeCaptureSnapshot(values, { maxEntries: 2 });
+        const reverse = normalizeCaptureSnapshot([...values].reverse(), { maxEntries: 2 });
+        expect(forward).toEqual(reverse);
+        expect(forward.observations.map(({ path }) => path)).toEqual(["/1", "/2"]);
+    });
+
+    it.each([
+        [1, 1, 0], [2, 2, 0], [3, 2, 1],
+    ])("enforces maxEntries at limit-1/limit/limit+1 (%i)", (count, kept, omitted) => {
+        const values = Array.from({ length: count }, (_, i) =>
+            entry({ url: `https://coach.example/${i}` }));
+        const result = normalizeCaptureSnapshot(values, { maxEntries: 2 });
+        expect(result.observations).toHaveLength(kept);
+        expect(reasons(result)).toEqual(omitted ? { entry_limit: omitted } : {});
+    });
+
+    it.each([
+        [5, true], [6, false], [7, false],
+    ])("enforces maxTotalBytes at exact UTF-8 boundary %i", (bytes, excluded) => {
+        const result = normalizeCaptureSnapshot(
+            [entry({ responseBody: JSON.stringify("éé") })],
+            { maxTotalBytes: bytes },
+        );
+        expect(reasons(result)).toEqual(excluded ? { snapshot_byte_limit: 1 } : {});
+    });
+
+    it.each([
+        [5, true], [6, false], [7, false],
+    ])("enforces maxBodyBytes at exact UTF-8 byte boundary %i", (bytes, excluded) => {
+        const result = normalizeCaptureSnapshot(
+            [entry({ responseBody: JSON.stringify("éé") })],
+            { maxBodyBytes: bytes },
+        );
+        expect(reasons(result)).toEqual(excluded ? { body_byte_limit: 1 } : {});
+    });
+
+    it.each([
+        [1, false], [2, false], [3, true],
+    ])("enforces maxArrayLength at limit-1/limit/limit+1 (%i)", (length, excluded) => {
+        const result = normalizeCaptureSnapshot(
+            [entry({ responseBody: JSON.stringify(Array.from({ length }, () => 1)) })],
+            { maxArrayLength: 2 },
+        );
+        expect(reasons(result)).toEqual(excluded ? { body_collection_limit: 1 } : {});
+    });
+
+    it.each([
+        [1, false], [2, false], [3, true],
+    ])("enforces maxObjectKeys at limit-1/limit/limit+1 (%i)", (length, excluded) => {
+        const body = Object.fromEntries(Array.from({ length }, (_, i) => [`k${i}`, i]));
+        const result = normalizeCaptureSnapshot([entry({ responseBody: JSON.stringify(body) })], {
+            maxObjectKeys: 2,
+        });
+        expect(reasons(result)).toEqual(excluded ? { body_collection_limit: 1 } : {});
+    });
+
+    it.each([
+        [1, false], [2, false], [3, true],
+    ])("enforces maxHeaders at limit-1/limit/limit+1 (%i)", (length, excluded) => {
+        const requestHeaders = Object.fromEntries(Array.from({ length }, (_, i) => [`X-${i}`, "v"]));
+        const result = normalizeCaptureSnapshot([entry({ requestHeaders })], { maxHeaders: 2 });
+        expect(reasons(result)).toEqual(excluded ? { header_limit: 1 } : {});
+    });
+
+    it.each([
+        [1, false], [2, false], [3, true],
+    ])("enforces maxStringLength at limit-1/limit/limit+1 (%i)", (length, excluded) => {
+        const result = normalizeCaptureSnapshot(
+            [entry({ responseBody: JSON.stringify({ value: "x".repeat(length) }) })],
+            { maxStringLength: 2 },
+        );
+        expect(reasons(result)).toEqual(excluded ? { body_string_limit: 1 } : {});
+    });
+
+    it("clamps extreme caller options to absolute ceilings", () => {
+        const deep = {};
+        let cursor = deep;
+        for (let i = 0; i < 18; i += 1) {
+            cursor.next = {};
+            cursor = cursor.next;
+        }
+        const result = normalizeCaptureSnapshot([entry({
+            responseBody: JSON.stringify(deep),
+        })], { maxDepth: Number.MAX_SAFE_INTEGER });
+        expect(reasons(result)).toEqual({ body_depth_limit: 1 });
     });
 
     it("rejects a body beyond the byte budget before parsing", () => {
@@ -227,6 +357,50 @@ describe("normalizeCaptureSnapshot — bounded work", () => {
             { maxNodes: 3 },
         );
         expect(reasons(result)).toEqual({ body_node_limit: 1 });
+    });
+
+    it.each([
+        [1, true], [2, false], [3, false],
+    ])("enforces maxNodes at below/equal/above required work (%i)", (nodes, excluded) => {
+        const result = normalizeCaptureSnapshot(
+            [entry({ responseBody: JSON.stringify({ value: 1 }) })],
+            { maxNodes: nodes },
+        );
+        expect(reasons(result)).toEqual(excluded ? { body_node_limit: 1 } : {});
+    });
+
+    it.each([
+        [1, true], [2, false], [3, false],
+    ])("enforces maxDepth at below/equal/above required depth (%i)", (depth, excluded) => {
+        const result = normalizeCaptureSnapshot(
+            [entry({ responseBody: JSON.stringify({ a: { b: 1 } }) })],
+            { maxDepth: depth },
+        );
+        expect(reasons(result)).toEqual(excluded ? { body_depth_limit: 1 } : {});
+    });
+
+    it.each([
+        [99, true], [100, false], [599, false], [600, true],
+    ])("accepts only exact HTTP status range boundary %i", (statusCode, excluded) => {
+        const result = normalizeCaptureSnapshot([entry({ statusCode })]);
+        expect(reasons(result)).toEqual(excluded ? { invalid_status: 1 } : {});
+    });
+
+    it("does not consult host locale while ordering normalized evidence", () => {
+        const original = String.prototype.localeCompare;
+        String.prototype.localeCompare = () => {
+            throw new Error("host locale must not be consulted");
+        };
+        try {
+            const result = normalizeCaptureSnapshot([
+                entry({ responseBody: JSON.stringify("ä") }),
+                entry({ responseBody: JSON.stringify("z") }),
+            ]);
+            expect(result.observations.map(({ body }) => body)).toEqual(["z", "ä"]);
+        }
+        finally {
+            String.prototype.localeCompare = original;
+        }
     });
 
     it("rejects strings beyond the string budget", () => {

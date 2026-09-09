@@ -4,6 +4,8 @@ import {
     inferUrlTemplates,
     SUPPORTED_QUERY_KEYS,
 } from "../shared/blueprint/url-templates.js";
+import { normalizeBlueprint } from "../shared/replay/blueprint.js";
+import { runReplay } from "../shared/replay/engine.js";
 
 function observation(path, overrides = {}) {
     return {
@@ -20,8 +22,10 @@ describe("candidateKind", () => {
         ["550e8400-e29b-41d4-a716-446655440000", "uuid"],
         ["123", "integer"],
         ["0", "integer"],
-        ["AB12CD", "short"],
-        ["9Z8Y7X6W", "short"],
+        ["AB12CD", "opaque"],
+        ["9Z8Y7X6W", "opaque"],
+        ["abc123", "opaque"],
+        ["cuid_123456", "opaque"],
     ])("recognizes supported %s identifiers", (value, expected) => {
         expect(candidateKind(value)).toBe(expected);
     });
@@ -35,9 +39,31 @@ describe("candidateKind", () => {
         "ABCDEF",
         "-4",
         "01",
-        "abc123",
         "550e8400-e29b-01d4-a716-446655440000",
     ])("does not classify false identifier %s", (value) => {
+        expect(candidateKind(value)).toBeNull();
+    });
+
+    it.each([
+        "550e8400-e29b-11d4-a716-446655440000",
+        "550e8400-e29b-21d4-a716-446655440000",
+        "550e8400-e29b-31d4-a716-446655440000",
+        "550e8400-e29b-41d4-a716-446655440000",
+        "550e8400-e29b-51d4-a716-446655440000",
+        "1ef08b2a-ac27-6c6e-8f12-123456789abc",
+        "018f08b2-aac2-7c6e-8f12-123456789abc",
+        "018f08b2-aac2-8c6e-8f12-123456789abc",
+        "018F08B2-AAC2-7C6E-8F12-123456789ABC",
+    ])("recognizes RFC 9562 UUID version/uppercase case %s", (value) => {
+        expect(candidateKind(value)).toBe("uuid");
+    });
+
+    it.each([
+        "00000000-0000-0000-0000-000000000000",
+        "ffffffff-ffff-ffff-ffff-ffffffffffff",
+        "018f08b2-aac2-9c6e-8f12-123456789abc",
+        "018f08b2-aac2-7c6e-7f12-123456789abc",
+    ])("rejects nil/max/invalid UUID policy case %s", (value) => {
         expect(candidateKind(value)).toBeNull();
     });
 });
@@ -53,7 +79,9 @@ describe("inferUrlTemplates — safe deterministic clustering", () => {
             clusters: [{
                 origin: "https://coach.example",
                 method: "GET",
-                template: "/api/v2/clients/:id",
+                pathPattern: "/{s4}/v2/{s5}/:id",
+                dynamicSegments: 1,
+                replayCompatible: true,
                 queryKeys: [],
                 observations: 3,
             }],
@@ -67,8 +95,8 @@ describe("inferUrlTemplates — safe deterministic clustering", () => {
             observation("/api/v2/clients/102"),
             observation("/api/v2/clients/103"),
         ]).clusters;
-        expect(cluster.template).toBe("/api/v2/clients/:id");
-        expect(cluster.template).not.toBe("/api/:id/clients/:id");
+        expect(cluster.pathPattern).toBe("/{s4}/v2/{s5}/:id");
+        expect(cluster.pathPattern).not.toContain("101");
     });
 
     it("collapses UUID detail routes", () => {
@@ -78,7 +106,7 @@ describe("inferUrlTemplates — safe deterministic clustering", () => {
             "550e8400-e29b-41d4-a716-446655440002",
         ];
         const result = inferUrlTemplates(ids.map((id) => observation(`/records/${id}`)));
-        expect(result.clusters.map((item) => item.template)).toEqual(["/records/:id"]);
+        expect(result.clusters.map((item) => item.pathPattern)).toEqual(["/{s4}/:id"]);
     });
 
     it("collapses uppercase short identifiers", () => {
@@ -87,7 +115,24 @@ describe("inferUrlTemplates — safe deterministic clustering", () => {
             observation("/records/EF34GH"),
             observation("/records/IJ56KL"),
         ]);
-        expect(result.clusters[0].template).toBe("/records/:id");
+        expect(result.clusters[0].pathPattern).toBe("/{s4}/:id");
+    });
+
+    it.each([
+        ["lowercase", ["abc123", "xyz789", "def456"]],
+        ["mixed", ["Abc123", "Xyz789", "Def456"]],
+        ["ULID-like", ["01ARZ3NDEKTSV4RRFFQ69G5FAV", "01ARZ3NDEKTSV4RRFFQ69G5FB", "01ARZ3NDEKTSV4RRFFQ69G5FC"]],
+        ["cuid-like", ["cuid_123456", "cuid_234567", "cuid_345678"]],
+        ["nanoid-like", ["a1_b2-c3", "d4_e5-f6", "g7_h8-i9"]],
+    ])("uses repeated evidence for %s opaque identifiers", (_label, ids) => {
+        const result = inferUrlTemplates(ids.map((id) => observation(`/records/${id}`)));
+        expect(result.clusters).toHaveLength(1);
+        expect(result.clusters[0]).toMatchObject({
+            pathPattern: expect.stringMatching(/^\/\{s\d+\}\/:id$/),
+            dynamicSegments: 1,
+            replayCompatible: true,
+            observations: 3,
+        });
     });
 
     it("does not collapse one-off numerics", () => {
@@ -95,7 +140,9 @@ describe("inferUrlTemplates — safe deterministic clustering", () => {
         expect(result.clusters).toEqual([{
             origin: "https://coach.example",
             method: "GET",
-            template: "/reports/2025",
+            pathPattern: "/{s2}/{s1}",
+            dynamicSegments: 0,
+            replayCompatible: true,
             queryKeys: [],
             observations: 1,
         }]);
@@ -106,9 +153,9 @@ describe("inferUrlTemplates — safe deterministic clustering", () => {
             observation("/clients/1"),
             observation("/clients/2"),
         ]);
-        expect(result.clusters.map((item) => item.template)).toEqual([
-            "/clients/1",
-            "/clients/2",
+        expect(result.clusters.map((item) => item.pathPattern)).toEqual([
+            "/{s3}/{s1}",
+            "/{s3}/{s2}",
         ]);
     });
 
@@ -117,7 +164,7 @@ describe("inferUrlTemplates — safe deterministic clustering", () => {
             observation("/clients/1"),
             observation("/clients/2"),
         ], { minDistinct: 2 });
-        expect(result.clusters[0].template).toBe("/clients/:id");
+        expect(result.clusters[0].pathPattern).toBe("/{s3}/:id");
     });
 
     it("does not mistake dates or decimals for IDs", () => {
@@ -126,10 +173,10 @@ describe("inferUrlTemplates — safe deterministic clustering", () => {
             observation("/reports/2026-09-10/rate/2.50"),
             observation("/reports/2026-09-11/rate/3.75"),
         ]);
-        expect(result.clusters.map((item) => item.template)).toEqual([
-            "/reports/2026-09-09/rate/1.25",
-            "/reports/2026-09-10/rate/2.50",
-            "/reports/2026-09-11/rate/3.75",
+        expect(result.clusters.map((item) => item.pathPattern)).toEqual([
+            "/{s2}/{date}/{s1}/{decimal}",
+            "/{s2}/{date}/{s1}/{decimal}",
+            "/{s2}/{date}/{s1}/{decimal}",
         ]);
     });
 
@@ -143,14 +190,18 @@ describe("inferUrlTemplates — safe deterministic clustering", () => {
             {
                 origin: "https://one.example",
                 method: "GET",
-                template: "/clients/:id",
+                pathPattern: "/{s4}/:id",
+                dynamicSegments: 1,
+                replayCompatible: true,
                 queryKeys: [],
                 observations: 2,
             },
             {
                 origin: "https://two.example",
                 method: "GET",
-                template: "/clients/3",
+                pathPattern: "/{s4}/{s3}",
+                dynamicSegments: 0,
+                replayCompatible: true,
                 queryKeys: [],
                 observations: 1,
             },
@@ -164,9 +215,9 @@ describe("inferUrlTemplates — safe deterministic clustering", () => {
             observation("/clients/3"),
             observation("/clients/4", { method: "HEAD" }),
         ]);
-        expect(result.clusters.map(({ method, template }) => ({ method, template }))).toEqual([
-            { method: "GET", template: "/clients/:id" },
-            { method: "HEAD", template: "/clients/4" },
+        expect(result.clusters.map(({ method, pathPattern }) => ({ method, pathPattern }))).toEqual([
+            { method: "GET", pathPattern: "/{s5}/:id" },
+            { method: "HEAD", pathPattern: "/{s5}/{s4}" },
         ]);
     });
 
@@ -175,19 +226,55 @@ describe("inferUrlTemplates — safe deterministic clustering", () => {
             ...[1, 2, 3].map((id) => observation(`/clients/${id}`)),
             ...[1, 2, 3].map((id) => observation(`/programs/${id}`)),
         ]);
-        expect(result.clusters.map((item) => item.template)).toEqual([
-            "/clients/:id",
-            "/programs/:id",
+        expect(result.clusters.map((item) => item.pathPattern)).toEqual([
+            "/{s4}/:id",
+            "/{s5}/:id",
         ]);
     });
 
-    it("can collapse multiple well-supported identifier positions", () => {
+    it("marks multiple dynamic positions fail-closed for the single-value replay contract", () => {
         const result = inferUrlTemplates([
             observation("/clients/1/workouts/100"),
             observation("/clients/2/workouts/101"),
             observation("/clients/3/workouts/102"),
         ]);
-        expect(result.clusters[0].template).toBe("/clients/:id/workouts/:id");
+        expect(result.clusters[0]).toMatchObject({
+            pathPattern: "/{s7}/:id/{s8}/:id",
+            dynamicSegments: 2,
+            replayCompatible: false,
+            reason: "multiple_dynamic_segments",
+        });
+        expect(result.clusters[0]).not.toHaveProperty("template");
+    });
+
+    it("fails closed through normalizeBlueprint and runReplay for independent parent/child IDs", async () => {
+        const cluster = inferUrlTemplates([
+            observation("/clients/1/workouts/100"),
+            observation("/clients/2/workouts/101"),
+            observation("/clients/3/workouts/102"),
+        ]).clusters[0];
+        const blueprint = {
+            platform: "auto:test",
+            apiBase: "https://coach.example",
+            steps: [{
+                id: "independent",
+                entityType: "record",
+                template: cluster.template,
+                forEach: "parentIds",
+            }],
+        };
+        expect(cluster.replayCompatible).toBe(false);
+        expect(() => normalizeBlueprint(blueprint, {
+            allowedOrigins: ["https://coach.example"],
+        })).toThrow("template is required");
+        let fetches = 0;
+        await expect(runReplay({
+            blueprint,
+            allowedOrigins: ["https://coach.example"],
+            fetchJson: async () => { fetches += 1; return []; },
+            emit: async () => {},
+        })).rejects.toThrow("template is required");
+        expect(fetches).toBe(0);
     });
 
     it("partitions a weak candidate position while collapsing a strong one", () => {
@@ -199,9 +286,9 @@ describe("inferUrlTemplates — safe deterministic clustering", () => {
             observation("/teams/2/clients/201"),
             observation("/teams/2/clients/202"),
         ]);
-        expect(result.clusters.map((item) => item.template)).toEqual([
-            "/teams/1/clients/:id",
-            "/teams/2/clients/:id",
+        expect(result.clusters.map((item) => item.pathPattern)).toEqual([
+            "/{s10}/{s1}/{s9}/:id",
+            "/{s10}/{s5}/{s9}/:id",
         ]);
     });
 
@@ -213,6 +300,46 @@ describe("inferUrlTemplates — safe deterministic clustering", () => {
         ];
         expect(JSON.stringify(inferUrlTemplates(rows)))
             .toBe(JSON.stringify(inferUrlTemplates([...rows].reverse())));
+    });
+
+    it("selects the same bounded observations for every permutation", () => {
+        const rows = [
+            observation("/clients/3"),
+            observation("/clients/1"),
+            observation("/clients/2"),
+        ];
+        const forward = inferUrlTemplates(rows, { maxObservations: 2 });
+        const reverse = inferUrlTemplates([...rows].reverse(), { maxObservations: 2 });
+        expect(forward).toEqual(reverse);
+        expect(forward.excluded).toEqual([{ reason: "observation_limit", count: 1 }]);
+    });
+
+    it.each([
+        [1, 1, 0], [2, 2, 0], [3, 2, 1],
+    ])("enforces maxObservations at limit-1/limit/limit+1 (%i)", (count, kept, omitted) => {
+        const rows = Array.from({ length: count }, (_, i) => observation(`/items/${i + 1}`));
+        const result = inferUrlTemplates(rows, { maxObservations: 2 });
+        expect(result.clusters.reduce((sum, row) => sum + row.observations, 0)).toBe(kept);
+        expect(result.excluded).toEqual(omitted
+            ? [{ reason: "observation_limit", count: omitted }]
+            : []);
+    });
+
+    it("does not depend on localeCompare for contractual ordering", () => {
+        const original = String.prototype.localeCompare;
+        String.prototype.localeCompare = () => {
+            throw new Error("host locale must not be consulted");
+        };
+        try {
+            const result = inferUrlTemplates([
+                observation("/ä/abc123"),
+                observation("/z/xyz789"),
+            ]);
+            expect(result.clusters).toHaveLength(2);
+        }
+        finally {
+            String.prototype.localeCompare = original;
+        }
     });
 
     it("retains only supported query-key names, sorted, without values", () => {
@@ -257,6 +384,23 @@ describe("inferUrlTemplates — hostile and bounded input", () => {
         expect(result.excluded).toEqual([{ reason, count: 1 }]);
     });
 
+    it.each([
+        "/clients/550e8400-e29b-41d4-a716-446655440000",
+        "/reset/abcdefghijklmnopqrstuvwxyz0123456789",
+        "/users/DanaCoach",
+        "/users/danacoach",
+        "/invite/opaqueTokenABC123",
+        "/phone/%2B15558675309",
+        "/users/%EF%BC%A4%EF%BD%81%EF%BD%8E%EF%BD%81",
+    ])("content-minimizes one-off path value %s", (path) => {
+        const result = inferUrlTemplates([observation(path)]);
+        const serialized = JSON.stringify(result);
+        const raw = decodeURIComponent(path).split("/").at(-1);
+        expect(result.clusters).toHaveLength(1);
+        expect(serialized).not.toContain(raw);
+        expect(result.clusters[0].pathPattern).toMatch(/\{s\d+\}$/);
+    });
+
     it("bounds observation work and reports the omitted count", () => {
         const result = inferUrlTemplates([
             observation("/clients/1"),
@@ -264,9 +408,9 @@ describe("inferUrlTemplates — hostile and bounded input", () => {
             observation("/clients/3"),
         ], { maxObservations: 2 });
         expect(result.excluded).toEqual([{ reason: "observation_limit", count: 1 }]);
-        expect(result.clusters.map((item) => item.template)).toEqual([
-            "/clients/1",
-            "/clients/2",
+        expect(result.clusters.map((item) => item.pathPattern)).toEqual([
+            "/{s3}/{s1}",
+            "/{s3}/{s2}",
         ]);
     });
 
@@ -274,6 +418,31 @@ describe("inferUrlTemplates — hostile and bounded input", () => {
         const result = inferUrlTemplates([observation("/a/b/c")], { maxSegments: 2 });
         expect(result.clusters).toEqual([]);
         expect(result.excluded).toEqual([{ reason: "invalid_observation", count: 1 }]);
+    });
+
+    it.each([
+        [1, false], [2, false], [3, true],
+    ])("enforces maxSegments at limit-1/limit/limit+1 (%i)", (count, excluded) => {
+        const result = inferUrlTemplates([
+            observation("/" + Array.from({ length: count }, (_, i) => `part${i}`).join("/")),
+        ], { maxSegments: 2 });
+        expect(result.clusters.length === 0).toBe(excluded);
+        expect(result.excluded).toEqual(excluded
+            ? [{ reason: "invalid_observation", count: 1 }]
+            : []);
+    });
+
+    it("clamps extreme caller options to absolute URL ceilings", () => {
+        const path = "/" + Array.from({ length: 33 }, (_, i) => `part${i}`).join("/");
+        const result = inferUrlTemplates([observation(path)], {
+            maxSegments: Number.MAX_SAFE_INTEGER,
+            maxObservations: Number.MAX_SAFE_INTEGER,
+            minDistinct: Number.MAX_SAFE_INTEGER,
+        });
+        expect(result).toEqual({
+            clusters: [],
+            excluded: [{ reason: "invalid_observation", count: 1 }],
+        });
     });
 
     it("does not inspect an oversized query-key collection", () => {
@@ -290,7 +459,7 @@ describe("inferUrlTemplates — hostile and bounded input", () => {
             observation("/clients/2", { body: { name: secret } }),
             observation("/clients/3", { body: { name: secret } }),
         ]);
-        expect(result.clusters[0].template).toBe("/clients/:id");
+        expect(result.clusters[0].pathPattern).toBe("/{s4}/:id");
         expect(JSON.stringify(result)).not.toContain(secret);
     });
 });

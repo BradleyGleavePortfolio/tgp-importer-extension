@@ -9,9 +9,11 @@
     "check:banned": "node scripts/check-banned.mjs",
     "check:loc": "node scripts/check-prod-loc.mjs",
     "check:flags": "node scripts/check-flag-discipline.mjs",
-    "gates": "npm run check:banned && npm run check:loc && npm run check:flags && npm run check:ratio"
+    "check:fixtures": "node scripts/check-production-fixtures.mjs",
+    "test:deploy-readiness": "node scripts/check-deploy-readiness.mjs",
+    "gates": "npm run check:banned && npm run check:loc && npm run check:flags && npm run check:ratio && npm run check:fixtures && npm run test:deploy-readiness"
   },
   "devDependencies": {
-    "vitest": "^1.6.0"
+    "vitest": "^4.1.11"
   }
 }

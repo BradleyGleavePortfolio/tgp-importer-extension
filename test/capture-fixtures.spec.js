@@ -3,6 +3,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { makeChromeMock, installChrome } from "./helpers/chrome-mock.js";
 import { attachDebugger, stopCapture } from "../shared/capture.js";
+import { normalizeCaptureSnapshot } from "../shared/blueprint/input.js";
+import { inferUrlTemplates } from "../shared/blueprint/url-templates.js";
+import { clusterResponseShapes } from "../shared/blueprint/shapes.js";
 
 // Replay a recorded CDP trace against the real capture pipeline. Each fixture
 // carries the exact Network.* events Chrome emits plus the Network.getResponseBody
@@ -57,6 +60,34 @@ describe("capture replays real CDP traces", () => {
         expect(entry.requestHeaders.Accept).toBe("application/json, text/plain, */*");
         expect(entry.url).toContain("access_token=<redacted>");
         expect(entry.url).not.toContain("eyJraWQ");
+    });
+
+    it("drives the provenance-stamped TrueCoach trace through the real C1 to C2a seam", async () => {
+        const trace = loadTrace("truecoach-clients.json");
+        await attachDebugger(trace.tabId);
+        replay(mock, trace);
+        const captured = await stopCapture(trace.tabId);
+        const normalized = normalizeCaptureSnapshot(captured);
+        expect(normalized.excluded).toEqual([]);
+        expect(normalized.observations).toHaveLength(1);
+        expect(inferUrlTemplates(normalized.observations)).toEqual({
+            clusters: [{
+                origin: "https://app.truecoach.co",
+                method: "GET",
+                pathPattern: "/{s3}/{s1}/{s2}",
+                dynamicSegments: 0,
+                replayCompatible: true,
+                queryKeys: ["page"],
+                observations: 1,
+            }],
+            excluded: [],
+        });
+        expect(clusterResponseShapes(normalized.observations, { maxDepth: 3 })).toEqual([{
+            origin: "https://app.truecoach.co",
+            method: "GET",
+            signature: "object{array[object{number*1,string*2}]*1,number*2}",
+            observations: 1,
+        }]);
     });
 
     it("drops a recorded text/html document trace at the header stage", async () => {
