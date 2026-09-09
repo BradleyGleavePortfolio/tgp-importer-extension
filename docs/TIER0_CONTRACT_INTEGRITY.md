@@ -142,10 +142,34 @@ walk is reported as `partial` with an `error_summary`, because calling it
 `cancelled` is deliberately not settled, and the reason is narrower than "the
 coach stopped it". **There is no coach-facing cancel affordance** — nothing in
 `popup/` sends a stop message, and the only `controller.abort()` call site is the
-TGP auth-loss callback inside `makeSender`. So `cancelled` is reachable today by
-exactly one route: TGP auth loss. That route has already cleared the access and
-refresh tokens, so a complete posted from it could only 401. The abstention is
-forced by the missing credential, not by enum politeness.
+TGP auth-loss callback inside `makeSender`.
+
+That callback does **not**, in fact, produce an engine-level `cancelled` result
+today. `onAuthLost()` calls `controller.abort()` and then `sendEntities` throws
+`TgpAuthLostError` (name `"TgpAuthLostError"`), not an `AbortError`. The
+engine's own abort check (`isAborted`, `shared/replay/engine.js`) only matches
+`err.name === "AbortError"`, so this throw fails that check and is re-thrown
+out of `runReplay` instead of becoming `{ status: "cancelled" }` — it never
+reaches the `background.js` branch this table's `cancelled` row describes.
+That branch, and the `OUTCOME[result.status] === undefined` check in
+`handleStartImport`, are real, correctly-written, and safe to keep (a future
+caller that genuinely returns `cancelled` from the engine is handled
+correctly), but at the current integration level they are unreached: the one
+live route that aborts a run is caught earlier, by `isTgpAuthLost(err)`, as a
+plain throw. This is not a data-loss or security defect — routing a TGP
+auth-loss straight to a friendly re-pair prompt is arguably more honest than a
+settled-but-uncredentialed `cancelled` state would be — it is a correction to
+this document, which previously (incorrectly) described TGP auth loss as the
+route that reaches the `cancelled` branch. It doesn't: TGP auth loss reaches
+the `isTgpAuthLost` branch directly, without ever producing a `cancelled`
+engine result. No live route produces `cancelled` today; the branch exists for
+an abort path the engine supports but nothing currently triggers.
+
+Separately, and unaffected by the correction above: a complete posted after a
+genuine TGP auth loss could only 401 anyway, since that route has already
+cleared the access and refresh tokens. So even if some future change made the
+`cancelled` branch reachable via TGP auth loss specifically, settling it would
+still require a credential that route has deliberately already discarded.
 
 The enum gap is real too — nothing in `success|partial|failed` describes a
 deliberate stop — and it becomes the operative reason the moment a cancel button
