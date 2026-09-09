@@ -50,8 +50,7 @@ import {
 const STORAGE_KEYS = {
     snapshot: "tgp_status_snapshot",
     schemaVersion: "tgp_schema_version",
-    // Non-secret per-install id the progress DTO requires. Random, never derived
-    // from any coach/machine attribute, so it is not a fingerprint.
+    // Non-secret per-install id the progress DTO requires (random, not a fingerprint).
     deviceId: "tgp_device_id",
 };
 
@@ -146,10 +145,8 @@ function makeSender(intent, onAuthLost, tally) {
     };
 }
 
-// Engine word -> backend ScoutCompleteDto member -> popup state. NOT
-// interchangeable: the backend has no "complete" and no word for "empty", so a
-// clean-but-zero walk settles "partial", never a "success" that would assert the
-// coach has no data. Absent key = cancelled. Why: docs/TIER0_CONTRACT_INTEGRITY.md.
+// Engine word -> ScoutCompleteDto member -> popup state (no backend "complete"/
+// "empty", so clean-but-zero settles "partial"). Absent key = cancelled (docs/TIER0_CONTRACT_INTEGRITY.md).
 const OUTCOME = {
     complete: { terminal: "success", state: "ingest_succeeded" },
     partial: { terminal: "partial", state: "ingest_partial" },
@@ -157,30 +154,16 @@ const OUTCOME = {
     failed: { terminal: "failed", state: "ingest_failed" },
 };
 
-// POST the terminal settlement. `terminal_status` is REQUIRED by ScoutCompleteDto,
-// and forbidNonWhitelisted makes any undeclared field (`platform` used to be sent)
-// a 400 — which left every run "running" forever. So: only DTO fields, and no
-// default status, since a success-shaped default is how a run gets misreported.
-//
-// On a 401, refresh the access token once and retry — the same treatment
-// sendEntities() already gives every ingest-batch POST. Without this, a run
-// that fully succeeded (every entity already landed via sendEntities) could
-// still be reported ingest_failed purely because the access token happened to
-// expire in the gap between the last entity send and this call, even though a
-// refresh would have succeeded. This refresh-and-retry runs entirely inside
-// this function, strictly before the caller's settlement-then-broadcast
-// ordering point, and never calls onAuthLost/clearTokens itself: an
-// unrefreshable token here still surfaces as "complete 401" to the caller,
-// exactly as before, so settlementSent / at-most-once-per-intent is unaffected.
+// POST the terminal settlement (only DTO fields; forbidNonWhitelisted 400s any
+// undeclared field). Refreshes the token once on a 401 and retries, same as
+// sendEntities(), so a token merely expired since the last entity send can't
+// false-report ingest_failed. Never calls onAuthLost/clearTokens — an
+// unrefreshable token still surfaces as "complete 401" to the caller.
 async function completeIngest(intent, outcome) {
     const body = { intent_id: intent.intentId, terminal_status: outcome.terminalStatus };
-    if (outcome.finalCounts !== undefined && outcome.finalCounts !== null) {
-        body.final_counts = outcome.finalCounts;
-    }
+    if (outcome.finalCounts !== undefined && outcome.finalCounts !== null) body.final_counts = outcome.finalCounts;
     // Counts and status categories only — never a response body, URL, or PII.
-    if (typeof outcome.errorSummary === "string" && outcome.errorSummary.length > 0) {
-        body.error_summary = outcome.errorSummary.slice(0, 2000);
-    }
+    if (typeof outcome.errorSummary === "string" && outcome.errorSummary.length > 0) body.error_summary = outcome.errorSummary.slice(0, 2000);
     const attempt = async (token) => {
         try {
             return await fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/ingest/complete`, {
@@ -190,11 +173,8 @@ async function completeIngest(intent, outcome) {
             });
         }
         catch (err) {
-            // Bounded: a hung complete must not pin the MV3 worker. Fail closed.
-            if (isTimeout(err)) {
-                throw new Error("complete_timeout");
-            }
-            throw err;
+            // Bounded: a hung complete must not pin the MV3 worker.
+            throw isTimeout(err) ? new Error("complete_timeout") : err;
         }
     };
     let token = await getAccessToken();
@@ -202,8 +182,7 @@ async function completeIngest(intent, outcome) {
     if (res.status === 401) {
         const refreshed = await refreshAccessToken();
         if (refreshed !== null) {
-            token = refreshed;
-            res = await attempt(token);
+            res = await attempt(refreshed);
         }
     }
     // No ack, no claim: a non-2xx complete means the run did NOT finalise.
@@ -212,38 +191,28 @@ async function completeIngest(intent, outcome) {
     }
 }
 
-// Best-effort settlement for a run that THREW: an unsettled intent sits "running"
-// forever. `finalCounts` is optional and is only ever what the caller already
-// knows landed — on the primary replay path no tally exists at this point, so
-// it stays omitted rather than guessed; on the legacy start_ingest path
-// makeSender's own tally is passed so entities the backend already ACKed before
-// the failure are not silently dropped from the terminal report. This never
-// throws — the failure the coach needs to see must not be masked by a
-// settlement fault.
+// Best-effort settlement for a run that THREW, so the intent doesn't sit
+// "running" forever. `finalCounts` (only what's already known to have landed,
+// e.g. makeSender's tally) is omitted, not guessed, when absent. Never throws
+// — a failed settlement POST is logged (PII-free), not silently swallowed.
 function settleFailed(intent, errorSummary, finalCounts) {
     const outcome = { terminalStatus: OUTCOME.failed.terminal, errorSummary };
     if (finalCounts !== undefined && Object.keys(finalCounts).length > 0) {
         outcome.finalCounts = finalCounts;
     }
-    // Best-effort really means best-effort: if the settlement POST itself fails,
-    // the intent is left running server-side one level deeper, with no way for
-    // the coach to see it. That must not be TOTAL silence — log a PII-free signal
-    // so the failure is at least observable, without turning this into a throw.
     return completeIngest(intent, outcome)
         .catch(() => logNetworkEvent("settlement_network_error"));
 }
 
 // ---- progress transport -----------------------------------------------------
 
-// Read (or mint once) the device id. "" if storage is unavailable: progress is
-// advisory, so a storage fault silences reporting, never the import.
+// Read (or mint once) the device id. "" on a storage fault (progress is
+// advisory — a fault silences reporting, never the import).
 async function getDeviceId() {
     try {
         const stored = await chrome.storage.local.get(STORAGE_KEYS.deviceId);
         const existing = readString(stored, STORAGE_KEYS.deviceId);
-        if (existing !== null && existing.length > 0) {
-            return existing;
-        }
+        if (existing !== null && existing.length > 0) return existing;
         const minted = `ext-${crypto.randomUUID()}`;
         await chrome.storage.local.set({ [STORAGE_KEYS.deviceId]: minted });
         return minted;
@@ -253,19 +222,18 @@ async function getDeviceId() {
     }
 }
 
-// Bearer POST to /api/scout/progress. Rejects on a non-2xx so the reporter counts
-// it as a failed report; the reporter swallows it (progress must never fail a run).
-function postProgress(body) {
-    return getAccessToken().then(async (token) => {
-        const res = await fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/progress`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify(body),
-        });
-        if (!res.ok) {
-            throw new Error(`progress ${res.status}`);
-        }
+// Bearer POST to /api/scout/progress. Rejects on non-2xx; the reporter
+// swallows it (progress must never fail a run).
+async function postProgress(body) {
+    const token = await getAccessToken();
+    const res = await fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/progress`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(body),
     });
+    if (!res.ok) {
+        throw new Error(`progress ${res.status}`);
+    }
 }
 
 // ---- install / wake ---------------------------------------------------------
@@ -305,12 +273,9 @@ function broadcastAuthRequired(message) {
 
 // The OS notification is often the ONLY surface a coach sees, so it must not say
 // "complete" for an outcome the popup is about to flag.
+const NOTIFY_SUFFIX = { empty: "found no records — check the popup.", partial: "finished incomplete — check the popup." };
 function notifyOutcome(platform, engineStatus) {
-    const message = engineStatus === "empty"
-        ? `Import from ${platform} found no records — check the popup.`
-        : (engineStatus === "partial"
-            ? `Import from ${platform} finished incomplete — check the popup.`
-            : `Import from ${platform} complete.`);
+    const message = `Import from ${platform} ${NOTIFY_SUFFIX[engineStatus] ?? "complete."}`;
     chrome.notifications.create({
         type: "basic",
         iconUrl: "popup/icon-128.png",
@@ -380,8 +345,8 @@ async function handleStartIngest(message) {
     let settlementSent = false;
     try {
         await extractor.run({ token: sourceToken, signal: controller.signal });
-        // An extractor that emitted nothing is "empty", as on the replay path. This
-        // used to assert "success", so a drifted adapter reported 0 records as done.
+        // Empty (not "success", as before) if the extractor emitted nothing — a
+        // drifted adapter must not report 0 records as done, same as the replay path.
         const result = { status: tally.size === 0 ? "empty" : "complete", counts: Object.fromEntries(tally) };
         const outcome = OUTCOME[result.status];
         const detail = terminalDetail(result);
@@ -396,12 +361,8 @@ async function handleStartIngest(message) {
             return;
         }
         const detail = err instanceof Error ? err.message : "import failed";
-        // Same unsettled-intent defect as the replay path, reached by this door.
-        // This path has no progress-channel fallback (deliberately — see
-        // docs/TIER0_CONTRACT_INTEGRITY.md), so the tally already ACKed by the
-        // backend before the throw is the only record of what landed. Carry it
-        // into the failure settlement rather than letting a later failure make
-        // those already-committed entities fully invisible in the terminal report.
+        // Same unsettled-intent defect as the replay path; no progress-channel
+        // fallback here, so carry the already-ACKed tally into the settlement.
         if (!settlementSent) {
             await settleFailed(intent, detail, Object.fromEntries(tally));
         }
@@ -461,13 +422,10 @@ function makeSourceFetch(sourceToken) {
             const err = new Error(`source ${res.status}`);
             err.name = "HttpError";
             err.status = res.status;
-            // Honour the source's own pacing hint (bounded at parse time). 503 is
-            // the other status that commonly carries it. Absent/unparseable leaves
-            // it undefined and the engine falls back to exponential backoff.
+            // Honour the source's pacing hint (bounded at parse time); unparseable
+            // leaves it undefined and the engine falls back to exponential backoff.
             const hinted = parseRetryAfterMs(readHeader(res, "Retry-After"));
-            if (hinted !== null) {
-                err.retryAfterMs = hinted;
-            }
+            if (hinted !== null) err.retryAfterMs = hinted;
             throw err;
         }
         try {
@@ -561,8 +519,7 @@ async function handleStartImport(message) {
         deviceId: await getDeviceId(),
     });
 
-    // A throw AFTER a settlement is a rejected complete, not an unsettled run;
-    // re-settling it as "failed" would record a failure for a run that did not fail.
+    // A throw AFTER a settlement is a rejected complete, not an unsettled run.
     let settlementSent = false;
     try {
         const result = await runReplay({
@@ -578,42 +535,33 @@ async function handleStartImport(message) {
         });
         const outcome = OUTCOME[result.status];
         if (outcome === undefined) {
-            // cancelled. Nothing aborts this run but the TGP auth-loss callback
-            // below, whose own path already cleared the tokens a complete needs —
-            // so there is no credential left to settle with. See the doc.
+            // cancelled: only the TGP auth-loss callback below aborts this run, and
+            // it already cleared the tokens a complete needs (see the doc).
             broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: "ingest_failed" }, lastError: failDetail(result) });
             return;
         }
         const detail = terminalDetail(result);
-        // finalCounts is a per-entity tally keyed by the entity types the progress
-        // stream reports. The old { pages, entities } shape read as a count of two
-        // entity types no coach has: "pages" is not an entity, and "entities" is a
-        // run total wearing an entity's name.
+        // Per-entity tally keyed by the progress stream's types, not the old
+        // { pages, entities } shape (neither of which is an entity a coach has).
         const settlement = { terminalStatus: outcome.terminal, finalCounts: result.counts, errorSummary: detail ?? undefined };
-        // Close the progress series before the intent goes terminal: a settled
-        // intent whose newest progress row is mid-crawl reads as truncated.
+        // Close the progress series before the intent goes terminal, or the
+        // newest row reads as mid-crawl.
         await reporter.flush(null, detail ?? undefined);
         settlementSent = true;
         if (result.status === "failed") {
-            // Settle best-effort so the intent does not sit "running" forever,
-            // but never let a failed settlement mask the source failure the coach
-            // actually needs to see. A failure of this POST itself must still be
-            // observable, not total silence, even though it stays non-throwing.
+            // Best-effort, so this POST failing stays observable, not silent.
             await completeIngest(intent, settlement).catch(() => logNetworkEvent("settlement_network_error"));
             broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: outcome.state }, lastError: detail });
             return;
         }
-        // A non-failed outcome still requires a backend ack before we report it:
-        // a throw here surfaces as ingest_failed rather than a dishonest success.
+        // Still requires a backend ack: a throw here is ingest_failed, not success.
         await completeIngest(intent, settlement);
         broadcastStatus({ ...currentSnapshot, intent: { ...intent, status: outcome.state }, lastError: detail });
         notifyOutcome(platform, result.status);
     }
     catch (err) {
-        // TGP auth loss already broadcast the friendly "session expired" state; keep
-        // it. The intent stays unsettled because the tokens it would be settled with
-        // are exactly the ones that were just cleared — an unauthenticated complete
-        // would only 401. Settling it needs a re-pair, not another POST here.
+        // TGP auth loss already broadcast "session expired"; a complete now would
+        // only 401, so it stays unsettled until a re-pair.
         if (isTgpAuthLost(err)) {
             return;
         }
@@ -621,8 +569,7 @@ async function handleStartImport(message) {
         const detail = isAuthLost(err)
             ? "source sign-in required — open your source platform and try again"
             : (err instanceof Error ? err.message : "import failed");
-        // The TGP session is still good on this path, so the started intent CAN be
-        // settled — and must be, before the coach is told the run is over.
+        // TGP session is still good, so the intent must be settled first.
         if (!settlementSent) {
             await reporter.flush(null, detail);
             await settleFailed(intent, detail);
@@ -631,15 +578,14 @@ async function handleStartImport(message) {
     }
 }
 
-// One human/diagnostic line per outcome, or null when the run was wholly clean.
-// Counts and status categories only — never a response body or PII.
+// One human/diagnostic line per outcome (counts/status only, never a response
+// body or PII), or null when the run was wholly clean.
 function terminalDetail(result) {
     if (result.status === "complete") {
         return null;
     }
     if (result.status === "empty") {
-        return "no records found — the source returned 0 records with no errors, "
-            + "which usually means the import adapter is out of date. Nothing was changed.";
+        return "no records found — 0 records with no errors, usually means the adapter is out of date. Nothing was changed.";
     }
     if (result.status === "partial") {
         return partialDetail(result);
