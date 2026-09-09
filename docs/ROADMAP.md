@@ -4,6 +4,10 @@ Companion to `DESIGN.md`, `AUTO_DISCOVERY.md`, and
 `DECISION_V03_AUTONOMOUS_CRAWL.md`. This document holds (a) the platform
 coverage matrix and (b) the version cutlines.
 
+> **Execution baton:** [`REAL_GOAL_EXECUTION_PLAN.md`](./REAL_GOAL_EXECUTION_PLAN.md)
+> is the binding implementation sequence, PR split, proof-gate, and operator
+> handoff contract for this north star.
+
 ---
 
 ## North star (superseded 2026-09-09 — operator course correction)

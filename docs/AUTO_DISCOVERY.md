@@ -1,6 +1,13 @@
 # Auto-Discovery — Site-Agnostic Extraction Design
 
-> **Status:** design spec, pre-implementation. This document is the single source of truth for the **PR-C track** (C1 → C4). It sits alongside `DESIGN.md` (v0.3 — mobile-app-initiated pairing flow + dispatcher; see `DESIGN.md` §2–§4 and §13 for the pairing auth model that supersedes the v0.2 inline login) and `ROADMAP.md` (per-platform matrix + version cutlines). Approved by operator on 2026-06-30 21:36 PDT; realigned to DESIGN v0.3 on 2026-07-06.
+> **Status:** architecture design, partially implemented. C1, the generic
+> replay contract/engine, and live TrueCoach verification wiring are merged;
+> blueprint inference and Learn/Confirm remain unbuilt. The older C1→C4
+> breakdown below is historical design context. The binding current PR split,
+> dependencies, gates, and baton protocol are in
+> [`REAL_GOAL_EXECUTION_PLAN.md`](./REAL_GOAL_EXECUTION_PLAN.md). It sits
+> alongside `DESIGN.md` and `ROADMAP.md`. Approved by operator on 2026-06-30;
+> course-corrected to the site-agnostic north star on 2026-09-09.
 
 ---
 
