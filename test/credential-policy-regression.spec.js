@@ -344,6 +344,11 @@ describe("credential-name grammar", () => {
     }
   });
 
+  it("detects credential components despite attacker-controlled casing", () => {
+    expect(isCredentialKey("X-VENDOR-CreDential-V7")).toBe(true);
+    expect(isCredentialValue("X-VENDOR-CreDential-V7", "RAW")).toBe(true);
+  });
+
   it("accepts algorithm and version qualifiers after a credential component", () => {
     for (const key of VERSIONED_OR_ALGORITHMIC) {
       expect(isCredentialKey(key), key).toBe(true);

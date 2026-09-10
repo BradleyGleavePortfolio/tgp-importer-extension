@@ -248,20 +248,28 @@ function recordRequest(params, inflight, expectedOrigin, exclude) {
   const url = readNestedString(params, "request", "url");
   const method = readNestedString(params, "request", "method");
   if (requestId === null || url === null) {
+    if (requestId !== null) inflight.delete(requestId);
     exclude("malformed");
     return;
   }
-  let origin;
+  let parsed;
   try {
-    origin = new URL(url).origin;
+    parsed = new URL(url);
   } catch {
+    inflight.delete(requestId);
     exclude("malformed");
     return;
   }
   // This check deliberately precedes reading headers: foreign request data
   // must never enter inflight state, the buffer, or body retrieval.
-  if (origin !== expectedOrigin) {
+  if (parsed.origin !== expectedOrigin) {
+    inflight.delete(requestId);
     exclude("origin_rejected");
+    return;
+  }
+  if (parsed.username !== "" || parsed.password !== "") {
+    inflight.delete(requestId);
+    exclude("userinfo_rejected");
     return;
   }
   const requestHeaders =
@@ -272,7 +280,14 @@ function recordRequest(params, inflight, expectedOrigin, exclude) {
     inflight.delete(inflight.keys().next().value);
     exclude("inflight_evicted");
   }
-  inflight.set(requestId, { url, method: method ?? "", requestHeaders });
+  inflight.set(
+    requestId,
+    Object.freeze({
+      url: redactUrl(url),
+      method: method ?? "",
+      requestHeaders: Object.freeze(redactHeaders(requestHeaders)),
+    }),
+  );
 }
 
 function recordResponse(params, inflight) {
@@ -294,8 +309,7 @@ function recordResponse(params, inflight) {
     isRecord(params.response) && typeof params.response.status === "number"
       ? params.response.status
       : null;
-  pending.statusCode = status;
-  inflight.set(requestId, pending);
+  inflight.set(requestId, Object.freeze({ ...pending, statusCode: status }));
 }
 
 async function finalizeEntry(target, params, inflight, buffer, exclude) {
@@ -342,10 +356,10 @@ async function finalizeEntry(target, params, inflight, buffer, exclude) {
 
   const outcome = buffer.push({
     requestId,
-    url: redactUrl(pending.url),
+    url: pending.url,
     method: pending.method,
     statusCode: pending.statusCode ?? null,
-    requestHeaders: redactHeaders(pending.requestHeaders),
+    requestHeaders: pending.requestHeaders,
     // Auth/secret fields inside the body are redacted before storage; the
     // non-secret payload (client names, emails, workouts) is preserved.
     responseBody: redactResponseBody(responseBody),
@@ -457,6 +471,7 @@ export {
   sourcePlatformFor,
   redactHeaders,
   redactUrl,
+  recordRequest,
   attachDebugger,
   stopCapture,
   normalizeCapturedSnapshot,

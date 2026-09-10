@@ -49,6 +49,16 @@ function canonicalCredentialKey(key) {
     .replace(/^_+|_+$/g, "");
 }
 
+function caseInvariantCredentialKey(key) {
+  if (typeof key !== "string") return "";
+
+  return key
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
 function credentialTokens(key) {
   const canonical = canonicalCredentialKey(key);
   return canonical ? canonical.split("_") : [];
@@ -71,11 +81,12 @@ function isCredentialKey(key) {
   const canonical = canonicalCredentialKey(key);
   if (!canonical) return false;
 
-  const compact = canonical.replaceAll("_", "");
-  return (
-    CREDENTIAL_KEYS.has(canonical) ||
-    COMPACT_CREDENTIAL_KEYS.has(compact) ||
-    hasCredentialComponent(canonical.split("_"))
+  const invariant = caseInvariantCredentialKey(key);
+  return [canonical, invariant].some(
+    (candidate) =>
+      CREDENTIAL_KEYS.has(candidate) ||
+      COMPACT_CREDENTIAL_KEYS.has(candidate.replaceAll("_", "")) ||
+      hasCredentialComponent(candidate.split("_")),
   );
 }
 

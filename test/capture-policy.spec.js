@@ -453,6 +453,7 @@ describe("capture pipeline stores redacted bodies", () => {
     "X-Signature-Ed25519",
     "X-Signature-SHA256",
     "Vendor-Credential-v2",
+    "X-VENDOR-CreDential-V7",
     "Stripe-Signature-v1",
     "X-Signature-512",
     "X-Signature-v3",

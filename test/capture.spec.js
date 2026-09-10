@@ -5,6 +5,7 @@ import {
   normalizeCapturedSnapshot,
   redactHeaders,
   redactUrl,
+  recordRequest,
   stopCapture,
 } from "../shared/capture.js";
 
@@ -242,6 +243,49 @@ describe("attachDebugger / stopCapture", () => {
     expect(entry.sourcePlatform).toBe("auto:app.truecoach.co");
   });
 
+  it("never stores raw request metadata in inflight state", () => {
+    const secret = "RAW-CREDENTIAL-MUST-NEVER-ENTER-INFLIGHT";
+    const headers = { "X.Vendor-CREDENTIAL__v7": secret };
+    const inflight = new Map();
+    recordRequest(
+      {
+        requestId: "pending-secret",
+        request: {
+          url: `https://app.truecoach.co/api?access_token=${secret}`,
+          method: "GET",
+          headers,
+        },
+      },
+      inflight,
+      "https://app.truecoach.co",
+      () => {},
+    );
+    const stored = inflight.get("pending-secret");
+    expect(JSON.stringify(stored)).not.toContain(secret);
+    expect(stored.requestHeaders).not.toBe(headers);
+    expect(stored.requestHeaders["X.Vendor-CREDENTIAL__v7"]).toBe("<redacted>");
+    expect(Object.isFrozen(stored)).toBe(true);
+    expect(Object.isFrozen(stored.requestHeaders)).toBe(true);
+  });
+
+  it("rejects URL userinfo before it can enter the capture buffer", async () => {
+    const secret = "raw-user:raw-password";
+    await attachDebugger(TAB);
+    emitJsonRequest(mock, TAB, {
+      requestId: "userinfo",
+      url: `https://${secret}@app.truecoach.co/api`,
+      method: "GET",
+      mimeType: "application/json",
+      status: 200,
+    });
+    const snapshot = await stopCapture(TAB);
+    expect(snapshot.entries).toEqual([]);
+    expect(JSON.stringify(snapshot)).not.toContain(secret);
+    expect(snapshot.excluded).toEqual([
+      { reason: "userinfo_rejected", count: 1 },
+    ]);
+  });
+
   it("awaits an in-flight finalizer before returning the stop snapshot", async () => {
     let resolveBody;
     mock.onCommand(
@@ -419,6 +463,50 @@ describe("authorized origin is enforced before recording request data", () => {
       degraded: true,
       excluded: [{ reason: "origin_rejected", count: 1 }],
     });
+  });
+
+  it("quarantines a first-party requestId reused by a foreign redirect", async () => {
+    const foreign = "FOREIGN-BODY-MUST-NEVER-ENTER-STORAGE";
+    mock.onCommand("Network.getResponseBody", () => ({
+      body: `{"harmless_name":"${foreign}"}`,
+      base64Encoded: false,
+    }));
+    await attachDebugger(TAB);
+    mock.emit({ tabId: TAB }, "Network.requestWillBeSent", {
+      requestId: "redirected",
+      request: {
+        url: "https://app.truecoach.co/api/start",
+        method: "GET",
+        headers: {},
+      },
+    });
+    mock.emit({ tabId: TAB }, "Network.requestWillBeSent", {
+      requestId: "redirected",
+      request: {
+        url: "https://evil.invalid/private",
+        method: "GET",
+        headers: {},
+      },
+    });
+    mock.emit({ tabId: TAB }, "Network.responseReceived", {
+      requestId: "redirected",
+      response: { mimeType: "application/json", status: 200 },
+    });
+    mock.emit({ tabId: TAB }, "Network.loadingFinished", {
+      requestId: "redirected",
+    });
+
+    const snapshot = await stopCapture(TAB);
+    expect(snapshot.entries).toEqual([]);
+    expect(JSON.stringify(snapshot)).not.toContain(foreign);
+    expect(
+      mock.calls.sendCommand.filter(
+        ({ method }) => method === "Network.getResponseBody",
+      ),
+    ).toEqual([]);
+    expect(snapshot.excluded).toEqual([
+      { reason: "origin_rejected", count: 1 },
+    ]);
   });
 
   it("keeps first-party traffic and excludes third-party traffic in one session", async () => {
