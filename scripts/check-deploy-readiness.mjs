@@ -1,6 +1,6 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join, relative, resolve, sep } from "node:path";
-import { constantString, parseSource, ts, visit } from "./lib/js-ast.mjs";
+import { constantString, parseSource, visit } from "./lib/js-ast.mjs";
 
 const root = resolve(process.argv[2] ?? ".");
 const excluded = new Set([".git", ".github", "docs", "node_modules", "scripts", "test"]);
