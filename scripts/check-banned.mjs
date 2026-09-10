@@ -134,6 +134,10 @@ for (const { oldPath, newPath } of files) {
       uniqueScope =
         finding.scopeInstances === 1 &&
         entries.every((entry) => entry.scopeInstances === 1),
+      // Accepted, deliberately scoped limitation: normal net-new cases are
+      // detected, but deliberately swapping entire contents among 2+ structurally
+      // identical same-depth anonymous callbacks can fool duplicate-path matching;
+      // that duplicate-boilerplate construction is not a realistic accidental path.
       match = uniqueScope
         ? entries.findIndex(() => true)
         : entries.findIndex(
