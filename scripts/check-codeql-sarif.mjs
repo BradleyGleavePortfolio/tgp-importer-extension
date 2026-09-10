@@ -25,7 +25,11 @@ try {
             }
             for (const result of run.results ?? []) {
                 findings += 1;
-                details.push(`${result?.ruleId ?? "<no-rule>"} level=${result?.level ?? "default"}`);
+                const physical = result?.locations?.[0]?.physicalLocation;
+                const location = physical?.artifactLocation?.uri ?? "<no-file>";
+                const line = physical?.region?.startLine ?? "?";
+                const message = result?.message?.text ?? "<no-message>";
+                details.push(`${result?.ruleId ?? "<no-rule>"} level=${result?.level ?? "default"} ${location}:${line} ${message}`);
             }
         }
     }
