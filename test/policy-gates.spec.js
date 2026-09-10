@@ -466,6 +466,22 @@ describe("banned-token gate source coverage", () => {
     expect(output.stdout).toContain("added");
   });
 
+  it("does not cancel identical findings between named functions", () => {
+    const before = [
+      "declare const value: unknown;",
+      "function first() { return value as any; }",
+      "function second() { return 1; }",
+    ].join("\n");
+    const after = [
+      "declare const value: unknown;",
+      "function first() { return 1; }",
+      "function second() { return value as any; }",
+    ].join("\n");
+    const output = mutation("src/functions.ts", after, before);
+    expect(output.status).toBe(1);
+    expect(output.stdout).toContain("fn:second");
+  });
+
   it("does not cancel identical findings between assigned arrow functions", () => {
     const before = [
       "declare const value: unknown;",
@@ -498,7 +514,7 @@ describe("banned-token gate source coverage", () => {
     expect(output.stdout).toContain("callback:");
   });
 
-  it("preserves a callback finding when a clean same-shaped sibling is inserted", () => {
+  it("preserves a callback finding across sibling insertions at every position", () => {
     const clean = [
       "values.forEach((value) => {",
       "  console.log(value);",
@@ -509,14 +525,85 @@ describe("banned-token gate source coverage", () => {
       "  console.log(value as any);",
       "});",
     ];
-    const before = ["const values = [1, 2];", ...clean, ...banned].join("\n");
+    const before = [
+      "const values = [1, 2];",
+      ...clean,
+      ...banned,
+      ...clean,
+    ].join("\n");
     const after = [
       "const values = [1, 2];",
       ...clean,
       ...clean,
+      ...clean,
       ...banned,
+      ...clean,
+      ...clean,
     ].join("\n");
     expect(mutation("src/callback-insertion.ts", after, before).status).toBe(0);
+  });
+
+  it("does not cancel nested findings under different outer callbacks", () => {
+    const before = [
+      "declare const groups: unknown[];",
+      "declare const items: unknown[];",
+      "declare const value: unknown;",
+      "groups.forEach(() => { items.map(() => value as any); });",
+      "groups.forEach(() => { items.map(() => value); });",
+    ].join("\n");
+    const after = [
+      "declare const groups: unknown[];",
+      "declare const items: unknown[];",
+      "declare const value: unknown;",
+      "groups.forEach(() => { items.map(() => value); });",
+      "groups.forEach(() => { items.map(() => value as any); });",
+    ].join("\n");
+    const output = mutation("src/nested-callbacks.ts", after, before);
+    expect(output.status).toBe(1);
+    expect(output.stdout).toContain(
+      "callback:groups.forEach[0;_]/fn:callback:items.map[0;_]",
+    );
+  });
+
+  it("preserves a finding across harmless edits elsewhere in its callback", () => {
+    const before = [
+      "declare const values: unknown[];",
+      "values.some((value) => {",
+      "  console.log(value as any);",
+      "  return true;",
+      "});",
+    ].join("\n");
+    const after = [
+      "declare const values: unknown[];",
+      "values.some((value) => {",
+      "  const before = Boolean(value);",
+      "  void before;",
+      "  console.log(value as any);",
+      "  console.log('after');",
+      "  return true;",
+      "});",
+    ].join("\n");
+    expect(mutation("src/callback-edit.ts", after, before).status).toBe(0);
+  });
+
+  it("preserves a finding when surrounding callback statements are deleted", () => {
+    const before = [
+      "declare const values: unknown[];",
+      "values.some((value) => {",
+      "  console.log('before');",
+      "  console.log(value as any);",
+      "  console.log('after');",
+      "  return true;",
+      "});",
+    ].join("\n");
+    const after = [
+      "declare const values: unknown[];",
+      "values.some((value) => {",
+      "  console.log(value as any);",
+      "  return true;",
+      "});",
+    ].join("\n");
+    expect(mutation("src/callback-deletion.ts", after, before).status).toBe(0);
   });
 
   it("tracks callbacks with different bodies at the same call site independently", () => {
@@ -534,7 +621,7 @@ describe("banned-token gate source coverage", () => {
     ].join("\n");
     const output = mutation("src/callback-bodies.ts", after, before);
     expect(output.status).toBe(1);
-    expect(output.stdout).toContain("callback:values.forEach[0]@");
+    expect(output.stdout).toContain("callback:values.forEach[0;_]");
   });
 
   it("does not collide duplicate and nested function names", () => {
@@ -550,7 +637,7 @@ describe("banned-token gate source coverage", () => {
     ].join("\n");
     const output = mutation("src/duplicates.ts", after, before);
     expect(output.status).toBe(1);
-    expect(output.stdout).toContain("fn:duplicate#2/fn:nested#1");
+    expect(output.stdout).toContain("fn:duplicate/fn:nested");
   });
 
   it("preserves grandfathered findings across a pure rename", () => {

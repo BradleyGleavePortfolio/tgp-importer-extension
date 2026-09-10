@@ -67,18 +67,64 @@ function content(ref, path) {
     return "";
   }
 }
+function changedHunks(oldPath, newPath) {
+  const diff = execFileSync(
+    "git",
+    ["diff", "--unified=0", ...range, "--", oldPath, newPath],
+    { encoding: "utf8" },
+  );
+  return [
+    ...diff.matchAll(/^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/gm),
+  ].map((match) => ({
+    oldStart: Number(match[1]),
+    oldCount: match[2] === undefined ? 1 : Number(match[2]),
+    newStart: Number(match[3]),
+    newCount: match[4] === undefined ? 1 : Number(match[4]),
+  }));
+}
+function oldLineFor(newLine, hunks) {
+  let delta = 0;
+  for (const hunk of hunks) {
+    if (
+      hunk.newCount > 0 &&
+      newLine >= hunk.newStart &&
+      newLine < hunk.newStart + hunk.newCount
+    )
+      return null;
+    if (
+      newLine < hunk.newStart ||
+      (hunk.newCount === 0 && newLine <= hunk.newStart)
+    )
+      break;
+    delta += hunk.newCount - hunk.oldCount;
+  }
+  return newLine - delta;
+}
 for (const { oldPath, newPath } of files) {
   const before = bannedNodes(content(cached ? "HEAD" : from, oldPath), oldPath);
   const after = bannedNodes(content(cached ? "" : "HEAD", newPath), newPath);
-  const available = new Map();
+  const available = new Map(),
+    hunks = changedHunks(oldPath, newPath);
   for (const finding of before) {
     const key = `${finding.label}\0${finding.scope}\0${finding.text}`;
-    available.set(key, (available.get(key) ?? 0) + 1);
+    const entries = available.get(key) ?? [];
+    entries.push(finding);
+    available.set(key, entries);
   }
   for (const finding of after) {
+    // Scope path + the finding's own normalized source is its semantic ID.
+    // Diff correspondence disambiguates duplicate structural paths without
+    // making mutable sibling ordinals or callback bodies part of that ID.
     const key = `${finding.label}\0${finding.scope}\0${finding.text}`;
-    const count = available.get(key) ?? 0;
-    if (count) available.set(key, count - 1);
+    const entries = available.get(key) ?? [],
+      oldLine = oldLineFor(finding.line, hunks),
+      uniqueScope =
+        finding.scopeInstances === 1 &&
+        entries.every((entry) => entry.scopeInstances === 1),
+      match = uniqueScope
+        ? entries.findIndex(() => true)
+        : entries.findIndex((entry) => entry.line === oldLine);
+    if (match >= 0) entries.splice(match, 1);
     else
       failures.push(
         `R75 net-new banned token: ${finding.label} (${newPath}, ${finding.scope})`,

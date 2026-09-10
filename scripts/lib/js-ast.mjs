@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import ts from "typescript";
 
 export function parseSource(source, path) {
@@ -251,8 +250,15 @@ function functionLabel(node) {
   )
     return parent.left.getText();
   if (ts.isCallExpression(parent)) {
-    const argument = parent.arguments.indexOf(node);
-    return `callback:${parent.expression.getText()}[${argument}]`;
+    const argument = parent.arguments.indexOf(node),
+      fixedArguments = parent.arguments
+        .map((value, index) =>
+          index === argument || isFunction(value)
+            ? "_"
+            : value.getText().replace(/\s+/g, " "),
+        )
+        .join(",");
+    return `callback:${parent.expression.getText()}[${argument};${fixedArguments}]`;
   }
   return "anonymous";
 }
@@ -267,47 +273,23 @@ function isFunction(node) {
     ts.isConstructorDeclaration(node)
   );
 }
-const identityPrinter = ts.createPrinter({ removeComments: true });
-function callbackIdentity(node) {
-  if (!ts.isCallExpression(node.parent)) return null;
-  const source = identityPrinter.printNode(
-    ts.EmitHint.Unspecified,
-    node,
-    node.getSourceFile(),
-  );
-  return createHash("sha256").update(source).digest("hex");
-}
 function scopeIds(file) {
   const ids = new WeakMap(),
-    counters = new WeakMap(),
-    parents = new WeakMap(),
-    callbacks = new WeakSet();
+    counts = new Map();
   ids.set(file, "<module>");
+  counts.set("<module>", 1);
   function assign(node, parentScope, label) {
-    let counts = counters.get(parentScope);
-    if (!counts) counters.set(parentScope, (counts = new Map()));
-    const ordinal = (counts.get(label) ?? 0) + 1;
-    counts.set(label, ordinal);
-    ids.set(node, `${ids.get(parentScope)}/${label}#${ordinal}`);
-    parents.set(node, parentScope);
-  }
-  function namedParent(scope) {
-    while (!ts.isSourceFile(scope) && !isFunction(scope))
-      scope = parents.get(scope);
-    while (callbacks.has(scope)) scope = namedParent(parents.get(scope));
-    return scope;
+    const id = `${ids.get(parentScope)}/${label}`;
+    ids.set(node, id);
+    counts.set(id, (counts.get(id) ?? 0) + 1);
   }
   function walk(node, parentScope) {
     let scope = parentScope;
     if (isFunction(node)) {
-      const label = `fn:${functionLabel(node)}`,
-        identity = callbackIdentity(node);
-      if (identity) {
-        const parent = namedParent(parentScope);
-        ids.set(node, `${ids.get(parent)}/${label}@${identity}`);
-        parents.set(node, parentScope);
-        callbacks.add(node);
-      } else assign(node, parentScope, label);
+      const label = `fn:${functionLabel(node)}`;
+      // Callback identity is its complete lexical call path. Sibling callbacks
+      // are absent from that path, so insertions cannot renumber descendants.
+      assign(node, parentScope, label);
       scope = node;
     } else if (ts.isBlock(node) && !(node.parent && isFunction(node.parent))) {
       assign(node, parentScope, `block:${ts.SyntaxKind[node.parent.kind]}`);
@@ -316,7 +298,7 @@ function scopeIds(file) {
     ts.forEachChild(node, (child) => walk(child, scope));
   }
   ts.forEachChild(file, (child) => walk(child, file));
-  return ids;
+  return { ids, counts };
 }
 function scopeName(node, ids) {
   for (let current = node; current; current = current.parent)
@@ -325,14 +307,18 @@ function scopeName(node, ids) {
 }
 export function bannedNodes(source, path = "diff.ts") {
   const file = parseSource(source, path),
-    ids = scopeIds(file),
+    { ids, counts } = scopeIds(file),
     findings = [];
-  const add = (label, node, text = node.getText(file)) =>
+  const add = (label, node, text = node.getText(file)) => {
+    const scope = scopeName(node, ids);
     findings.push({
       label,
-      scope: scopeName(node, ids),
+      scope,
+      scopeInstances: counts.get(scope) ?? 1,
       text: text.replace(/\s+/g, " ").trim(),
+      line: file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1,
     });
+  };
   for (const directive of /** @type {any} */ (file).commentDirectives ?? [])
     if (
       source
