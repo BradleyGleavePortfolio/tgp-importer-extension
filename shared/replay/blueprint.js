@@ -200,6 +200,14 @@ function normalizeHeaders(h, label) {
   return out;
 }
 
+// An ABSENT pagination field means "the producer had nothing to say" and keeps the
+// documented default. A PRESENT but malformed field means the producer emitted
+// something this contract cannot execute; since descriptors are inferred from
+// UNTRUSTED capture (PR-C2), coercing it (unknown style ⇒ `page`, empty param ⇒
+// "page", fractional start ⇒ 1) would manufacture runnable traversal nobody proved.
+// So: absent defaults; present-but-invalid throws before replay ever sees the step.
+const isAbsent = (v) => v === undefined || v === null;
+
 function normalizePagination(p, stepId) {
   if (p === undefined || p === null) {
     return null;
@@ -209,21 +217,41 @@ function normalizePagination(p, stepId) {
       `blueprint step "${stepId}": pagination must be an object or null`,
     );
   }
+  if (!isAbsent(p.style) && p.style !== "page" && p.style !== "cursor") {
+    throw new Error(
+      `blueprint step "${stepId}": pagination style must be "page" or "cursor"`,
+    );
+  }
   const style = p.style === "cursor" ? "cursor" : "page";
+  if (!isAbsent(p.param) && !isNonEmptyString(p.param)) {
+    throw new Error(
+      `blueprint step "${stepId}": pagination param must be a non-empty string`,
+    );
+  }
   if (style === "page") {
-    const param = isNonEmptyString(p.param) ? p.param : "page";
-    const start = Number.isInteger(p.start) ? p.start : 1;
+    const param = isAbsent(p.param) ? "page" : p.param;
+    if (!isAbsent(p.start) && !Number.isInteger(p.start)) {
+      throw new Error(
+        `blueprint step "${stepId}": page pagination start must be an integer`,
+      );
+    }
+    const start = isAbsent(p.start) ? 1 : p.start;
     return { style, param, start };
   }
   // cursor: `param` carries the next cursor on the query string; `nextPath`
-  // locates the next-cursor token in the response body. Absent nextPath ⇒ the
-  // engine cannot advance, which is caught here rather than looping forever.
-  if (!Array.isArray(p.nextPath) || !p.nextPath.every(isNonEmptyString)) {
+  // locates the next-cursor token in the response body. An absent, empty, or
+  // malformed nextPath ⇒ the engine cannot advance (an empty path reads the whole
+  // body, never a token) — caught here rather than looping forever.
+  if (
+    !Array.isArray(p.nextPath) ||
+    p.nextPath.length === 0 ||
+    !p.nextPath.every(isNonEmptyString)
+  ) {
     throw new Error(
-      `blueprint step "${stepId}": cursor pagination requires a nextPath string[]`,
+      `blueprint step "${stepId}": cursor pagination requires a non-empty nextPath string[]`,
     );
   }
-  const param = isNonEmptyString(p.param) ? p.param : "cursor";
+  const param = isAbsent(p.param) ? "cursor" : p.param;
   return { style, param, nextPath: [...p.nextPath] };
 }
 

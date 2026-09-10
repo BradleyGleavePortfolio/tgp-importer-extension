@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   normalizeBlueprint as normalizeBlueprintStrict,
   readPath,
@@ -6,6 +6,7 @@ import {
   DEFAULT_BUDGETS,
   HARD_BUDGETS,
 } from "../shared/replay/blueprint.js";
+import { runReplay } from "../shared/replay/engine.js";
 
 // normalizeBlueprint is the fail-closed gate: a structurally invalid descriptor
 // throws BEFORE any network call, so a bad blueprint can never launch a crawl.
@@ -1234,5 +1235,176 @@ describe("normalizeBlueprint — return-shape guarantees", () => {
     const snapshot = JSON.stringify(input);
     normalizeBlueprint(input);
     expect(JSON.stringify(input)).toBe(snapshot);
+  });
+});
+
+// C2b-0A — the absent-vs-explicitly-malformed boundary. Pagination descriptors are
+// auto-inferred from UNTRUSTED capture, so an ABSENT field must keep today's exact
+// default while a PRESENT but invalid field must fail closed at normalization
+// instead of being coerced into runnable page traversal.
+function paginated(pagination) {
+  return base({
+    steps: [{ id: "s", entityType: "t", template: "/t", pagination }],
+  });
+}
+
+describe("normalizeBlueprint — pagination: absent fields keep defaults", () => {
+  it("treats an omitted pagination as no pagination", () => {
+    expect(
+      normalizeBlueprint(paginated(undefined)).steps[0].pagination,
+    ).toBeNull();
+    expect(normalizeBlueprint(paginated(null)).steps[0].pagination).toBeNull();
+  });
+  it("defaults an empty descriptor to the documented page descriptor", () => {
+    expect(normalizeBlueprint(paginated({})).steps[0].pagination).toEqual({
+      style: "page",
+      param: "page",
+      start: 1,
+    });
+  });
+  it("treats explicit null/undefined page fields as absent", () => {
+    for (const p of [
+      { style: null, param: null, start: null },
+      { style: undefined, param: undefined, start: undefined },
+    ]) {
+      expect(normalizeBlueprint(paginated(p)).steps[0].pagination).toEqual({
+        style: "page",
+        param: "page",
+        start: 1,
+      });
+    }
+  });
+  it("defaults only the absent field of a partly specified descriptor", () => {
+    expect(
+      normalizeBlueprint(paginated({ param: "offset" })).steps[0].pagination,
+    ).toEqual({ style: "page", param: "offset", start: 1 });
+    expect(
+      normalizeBlueprint(paginated({ style: "page", start: 7 })).steps[0]
+        .pagination,
+    ).toEqual({ style: "page", param: "page", start: 7 });
+  });
+});
+
+describe("normalizeBlueprint — pagination: explicit malformed fails closed", () => {
+  it("rejects an explicitly unknown style instead of coercing it to page", () => {
+    for (const style of [
+      "offset",
+      "Page",
+      "PAGE",
+      "cursor ",
+      "",
+      1,
+      true,
+      ["page"],
+      { style: "page" },
+    ]) {
+      expect(() => normalizeBlueprint(paginated({ style }))).toThrow(
+        /pagination style must be "page" or "cursor"/,
+      );
+    }
+  });
+  it("rejects an explicitly empty or non-string param for either style", () => {
+    for (const param of ["", 0, 5, true, [], {}]) {
+      expect(() =>
+        normalizeBlueprint(paginated({ style: "page", param })),
+      ).toThrow(/pagination param must be a non-empty string/);
+      expect(() =>
+        normalizeBlueprint(
+          paginated({ style: "cursor", param, nextPath: ["next"] }),
+        ),
+      ).toThrow(/pagination param must be a non-empty string/);
+    }
+  });
+  it("rejects an explicitly non-integer page start", () => {
+    for (const start of [
+      1.5,
+      -0.5,
+      "2",
+      "",
+      true,
+      NaN,
+      Infinity,
+      -Infinity,
+      1e400,
+      [1],
+      {},
+    ]) {
+      expect(() =>
+        normalizeBlueprint(paginated({ style: "page", start })),
+      ).toThrow(/page pagination start must be an integer/);
+    }
+  });
+  it("rejects an empty or malformed cursor nextPath", () => {
+    for (const nextPath of [
+      [],
+      [""],
+      ["meta", ""],
+      ["meta", 1],
+      ["meta", null],
+      [["meta"]],
+      "meta",
+      {},
+      7,
+    ]) {
+      expect(() =>
+        normalizeBlueprint(paginated({ style: "cursor", nextPath })),
+      ).toThrow(/cursor pagination requires a non-empty nextPath string\[\]/);
+    }
+  });
+  it("rejects a malformed field inherited from a prototype (no silent default)", () => {
+    const proto = { style: "offset" };
+    expect(() => normalizeBlueprint(paginated(Object.create(proto)))).toThrow(
+      /pagination style must be "page" or "cursor"/,
+    );
+    const startProto = Object.create({ start: 1.5 });
+    startProto.style = "page";
+    expect(() => normalizeBlueprint(paginated(startProto))).toThrow(
+      /page pagination start must be an integer/,
+    );
+  });
+});
+
+describe("normalizeBlueprint — pagination: valid descriptors preserved", () => {
+  it("keeps every currently valid page descriptor byte-exact", () => {
+    for (const start of [0, 1, 2, -3, 1000000]) {
+      expect(
+        normalizeBlueprint(paginated({ style: "page", param: "p", start }))
+          .steps[0].pagination,
+      ).toEqual({ style: "page", param: "p", start });
+    }
+  });
+  it("keeps a valid cursor descriptor byte-exact and still copies nextPath", () => {
+    const nextPath = ["meta", "paging", "next"];
+    const pag = normalizeBlueprint(
+      paginated({ style: "cursor", param: "after", nextPath }),
+    ).steps[0].pagination;
+    expect(pag).toEqual({ style: "cursor", param: "after", nextPath });
+    expect(pag.nextPath).not.toBe(nextPath);
+    expect(Object.keys(pag).sort()).toEqual(["nextPath", "param", "style"]);
+  });
+  it("accepts a prototype-less descriptor record", () => {
+    const p = Object.create(null);
+    p.style = "cursor";
+    p.nextPath = ["next"];
+    expect(normalizeBlueprint(paginated(p)).steps[0].pagination).toEqual({
+      style: "cursor",
+      param: "cursor",
+      nextPath: ["next"],
+    });
+  });
+});
+
+describe("runReplay — malformed pagination fails before any request", () => {
+  it("throws at normalization, so the fetcher is never called", async () => {
+    const fetchJson = vi.fn();
+    await expect(
+      runReplay({
+        blueprint: paginated({ style: "offset" }),
+        allowedOrigins: ["https://api.test"],
+        fetchJson,
+        emit: async () => {},
+      }),
+    ).rejects.toThrow(/pagination style must be "page" or "cursor"/);
+    expect(fetchJson).not.toHaveBeenCalled();
   });
 });
