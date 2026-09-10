@@ -9,9 +9,26 @@
     "check:banned": "node scripts/check-banned.mjs",
     "check:loc": "node scripts/check-prod-loc.mjs",
     "check:flags": "node scripts/check-flag-discipline.mjs",
-    "gates": "npm run check:banned && npm run check:loc && npm run check:flags && npm run check:ratio"
+    "check:fixtures": "node scripts/check-production-fixtures.mjs",
+    "check:production-preflight": "node scripts/check-deploy-readiness.mjs",
+    "check:hooks": "node scripts/check-hook-config.mjs",
+    "lint": "eslint --max-warnings=0 --config scripts/eslint.config.mjs .",
+    "format:check": "node scripts/check-format.mjs",
+    "type-check": "tsc -p jsconfig.json && tsc -p jsconfig.scripts.json",
+    "prepare": "lefthook install",
+    "gates": "npm run check:banned && npm run check:loc && npm run check:flags && npm run check:ratio && npm run check:fixtures && npm run check:production-preflight && npm run check:hooks && npm run lint && npm run type-check && npm run format:check"
   },
   "devDependencies": {
-    "vitest": "^1.6.0"
+    "@types/chrome": "0.2.9",
+    "@types/node": "24.3.1",
+    "eslint": "10.10.0",
+    "lefthook": "2.1.12",
+    "prettier": "3.9.6",
+    "typescript": "5.9.2",
+    "vitest": "4.1.11",
+    "yaml": "2.9.0"
+  },
+  "dependencyPolicyExceptions": {
+    "@types/chrome": "DefinitelyTyped publishes @types/chrome only on the 0.x line; 0.2.9 is exact and lockfile-integrity pinned."
   }
 }

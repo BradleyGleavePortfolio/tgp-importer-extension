@@ -1,0 +1,14 @@
+min_version: 2.1.12
+pre-commit:
+  parallel: true
+  commands:
+    banned:
+      run: BANNED_DIFF_CACHED=1 npm run check:banned
+    deploy-readiness:
+      run: npm run check:production-preflight
+    lint:
+      run: npm run lint
+    type-check:
+      run: npm run type-check
+    format:
+      run: npm run format:check

@@ -9,28 +9,28 @@
 
 // Suffix -> platform id. A hostname matches when it equals the suffix or ends
 // with "." + suffix (so both "truecoach.co" and "brand.truecoach.co" match).
+/** @type {{suffix: string, platform: "truecoach"}[]} */
 const HOST_SUFFIXES = [
-    { suffix: "truecoach.co", platform: "truecoach" },
-    // Additional platforms are stubbed below (return null) until their
-    // extractors land in v0.3+. Host patterns are documented in
-    // docs/ROADMAP.md but are NOT wired here so detectPlatform never claims a
-    // platform we cannot actually extract.
+  { suffix: "truecoach.co", platform: "truecoach" },
+  // Additional platforms are stubbed below (return null) until their
+  // extractors land in v0.3+. Host patterns are documented in
+  // docs/ROADMAP.md but are NOT wired here so detectPlatform never claims a
+  // platform we cannot actually extract.
 ];
 
 function hostnameOf(url) {
-    if (typeof url !== "string" || url.length === 0) {
-        return null;
-    }
-    try {
-        return new URL(url).hostname.toLowerCase();
-    }
-    catch {
-        return null;
-    }
+  if (typeof url !== "string" || url.length === 0) {
+    return null;
+  }
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
 }
 
 function matchesSuffix(hostname, suffix) {
-    return hostname === suffix || hostname.endsWith(`.${suffix}`);
+  return hostname === suffix || hostname.endsWith(`.${suffix}`);
 }
 
 /**
@@ -39,17 +39,17 @@ function matchesSuffix(hostname, suffix) {
  * @returns {"truecoach"|null} platform id.
  */
 export function detectPlatform(url) {
-    const hostname = hostnameOf(url);
-    if (hostname === null) {
-        return null;
-    }
-    for (const entry of HOST_SUFFIXES) {
-        if (matchesSuffix(hostname, entry.suffix)) {
-            return entry.platform;
-        }
-    }
-    // v0.3: coachrx | mypthub | trainerize | ptdistinction | fitsw |
-    //       trainheroic | everfit | teambuildr | kabata — each returns null
-    //       until its extractor + verified API base exist (docs/ROADMAP.md).
+  const hostname = hostnameOf(url);
+  if (hostname === null) {
     return null;
+  }
+  for (const entry of HOST_SUFFIXES) {
+    if (matchesSuffix(hostname, entry.suffix)) {
+      return entry.platform;
+    }
+  }
+  // v0.3: coachrx | mypthub | trainerize | ptdistinction | fitsw |
+  //       trainheroic | everfit | teambuildr | kabata — each returns null
+  //       until its extractor + verified API base exist (docs/ROADMAP.md).
+  return null;
 }

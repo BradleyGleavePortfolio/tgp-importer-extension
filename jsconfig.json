@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "baseUrl": ".",
+    "checkJs": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "skipLibCheck": true,
+    "target": "ES2022",
+    "paths": {
+      "punycode": ["types/punycode.d.ts"]
+    }
+  },
+  "include": [
+    "*.js",
+    "*.d.ts",
+    "content/**/*.js",
+    "extractors/**/*.js",
+    "popup/**/*.js",
+    "shared/**/*.js",
+    "scripts/**/*.mjs",
+    "test/**/*.js"
+  ],
+  "exclude": ["node_modules"]
+}

@@ -16,25 +16,27 @@ import { resolveBase, diffLineStats } from "./lib/git-diff.mjs";
 const FLOOR = 2.0;
 
 const base = resolveBase();
-const { prod, test } = diffLineStats(base);
+const { prod, test } = await diffLineStats(base);
 const prodAdded = prod.added;
 const testAdded = test.added;
 const ratio = prodAdded === 0 ? Infinity : testAdded / prodAdded;
 
 process.stdout.write(
-    `test:src diff density (base=${base}) — prod_added=${prodAdded} test_added=${testAdded} ` +
+  `test:src diff density (base=${base}) — prod_added=${prodAdded} test_added=${testAdded} ` +
     `ratio=${prodAdded === 0 ? "n/a" : ratio.toFixed(3)} floor=${FLOOR}\n`,
 );
 
 if (prodAdded === 0) {
-    process.stdout.write("OK: no production JS added in this diff (nothing to gate)\n");
-    process.exit(0);
+  process.stdout.write(
+    "OK: no production JS added in this diff (nothing to gate)\n",
+  );
+  process.exit(0);
 }
 if (ratio < FLOOR) {
-    process.stdout.write(
-        `FAIL: PR diff test:src ${ratio.toFixed(3)} is below the R74 floor of ${FLOOR} ` +
-        `(need >= ${Math.ceil(prodAdded * FLOOR)} added test lines for ${prodAdded} added prod lines)\n`,
-    );
-    process.exit(1);
+  process.stdout.write(
+    `FAIL: PR diff test:src ${ratio.toFixed(3)} is below the R74 floor of ${FLOOR} ` +
+      `(need >= ${Math.ceil(prodAdded * FLOOR)} added test lines for ${prodAdded} added prod lines)\n`,
+  );
+  process.exit(1);
 }
 process.stdout.write("OK: PR diff test:src density meets the R74 floor\n");
