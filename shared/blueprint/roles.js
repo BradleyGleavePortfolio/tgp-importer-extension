@@ -242,8 +242,6 @@ function candidateFor(cluster, voting, limits) {
   if (pagination.evidence) reasons.push("pagination_descriptor_required");
   if (pagination.evidence && pagination.evidence.styles.length > 1)
     reasons.push("ambiguous_pagination_style");
-  if (cluster.replayCompatible !== true)
-    reasons.push("template_not_replayable");
   return {
     endpoint,
     roles: detail
@@ -323,6 +321,8 @@ export function inferEndpointRoles(observations, templateClusters, options) {
         reason: "ambiguous_template_membership",
         support,
       });
+    else if (cluster.replayCompatible !== true)
+      refused.push({ endpoint, reason: "template_not_replayable", support });
     else if (
       Number.isInteger(cluster.observations) &&
       cluster.observations !== support
