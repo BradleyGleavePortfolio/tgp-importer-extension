@@ -147,8 +147,7 @@ describe("normalizeCaptureSnapshot — fail-closed entry validation", () => {
     });
 
     it("rejects prototype-like header names", () => {
-        const headers = Object.create(null);
-        Object.defineProperty(headers, "__proto__", { value: "value", enumerable: true });
+        const headers = JSON.parse("{\"__proto__\":\"value\"}");
         const result = normalizeCaptureSnapshot([entry({ requestHeaders: headers })]);
         expect(reasons(result)).toEqual({ invalid_header: 1 });
     });
