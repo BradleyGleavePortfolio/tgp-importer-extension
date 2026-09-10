@@ -1,69 +1,124 @@
-// Bounded capture buffer for Layer 1 passive capture (see docs/AUTO_DISCOVERY.md
-// §2 Layer 1 + §6 PR-C1). Extracted from shared/capture.js so the buffer is an
-// independently testable unit with a minimal API, per the PR-C1 contract which
-// names shared/capture-buffer.js explicitly.
-//
-// The buffer is byte-accounted, NOT entry-counted: the spec caps capture at
-// 5 MB (LRU by capture time), because one large JSON response can dwarf 500
-// small ones. Each entry's serialized byte size is tracked; on overflow the
-// oldest entries are evicted until the running total is back under the cap.
-//
-// R75: zero banned type-assertions — every narrowing is a real guard.
-
+// Entries are stored as serialized immutable snapshots. This makes byte
+// accounting exact and prevents later mutation through either the input object
+// or an earlier snapshot. Overflow evicts the oldest entries first.
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
+const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
+const MAX_DEPTH = 32;
+const MAX_NODES = 20_000;
+const MAX_COLLECTION = 10_000;
+const encoder = new TextEncoder();
 
-// Serialized UTF-8 byte size of an entry. TextEncoder is available in both the
-// MV3 service worker and the vitest (Node) test runner. Unserializable values
-// contribute 0 bytes rather than throwing.
+function copyJson(value, state, depth = 0) {
+  if (++state.nodes > MAX_NODES || depth > MAX_DEPTH)
+    throw new Error("capture_snapshot_limit");
+  if (
+    value === null ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  )
+    return value;
+  if (typeof value === "string") {
+    if (
+      value.length > MAX_CAPTURE_BYTES ||
+      encoder.encode(value).length > MAX_CAPTURE_BYTES
+    )
+      throw new Error("capture_snapshot_limit");
+    return value;
+  }
+  if (typeof value !== "object") throw new Error("capture_non_json_value");
+  if (state.active.has(value)) throw new Error("capture_cycle");
+  state.active.add(value);
+  try {
+    if (Array.isArray(value)) {
+      if (value.length > MAX_COLLECTION)
+        throw new Error("capture_snapshot_limit");
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      return Array.from({ length: value.length }, (_, index) => {
+        const descriptor = descriptors[index];
+        if (!descriptor) return null;
+        if (!Object.hasOwn(descriptor, "value"))
+          throw new Error("capture_accessor");
+        return copyJson(descriptor.value, state, depth + 1);
+      });
+    }
+    const prototype = Object.getPrototypeOf(value);
+    if (prototype !== Object.prototype && prototype !== null)
+      throw new Error("capture_non_json_value");
+    const descriptors = Object.getOwnPropertyDescriptors(value);
+    const keys = Object.keys(descriptors).filter(
+      (key) => descriptors[key].enumerable,
+    );
+    if (keys.length > MAX_COLLECTION) throw new Error("capture_snapshot_limit");
+    const result = Object.create(null);
+    for (const key of keys) {
+      const descriptor = descriptors[key];
+      if (!Object.hasOwn(descriptor, "value"))
+        throw new Error("capture_accessor");
+      result[key] = copyJson(descriptor.value, state, depth + 1);
+    }
+    return result;
+  } finally {
+    state.active.delete(value);
+  }
+}
+
+function encodedSnapshot(entry) {
+  try {
+    const json = JSON.stringify(
+      copyJson(entry, { active: new WeakSet(), nodes: 0 }),
+    );
+    if (typeof json !== "string") return null;
+    const size = encoder.encode(json).length;
+    return size <= MAX_CAPTURE_BYTES ? { json, size } : null;
+  } catch {
+    return null;
+  }
+}
+
 function byteSizeOf(entry) {
-    let json;
-    try {
-        json = JSON.stringify(entry);
-    }
-    catch {
-        return 0;
-    }
-    if (typeof json !== "string") {
-        return 0;
-    }
-    return new TextEncoder().encode(json).length;
+  return encodedSnapshot(entry)?.size ?? 0;
 }
 
-// Byte-bounded LRU buffer. push() appends and then evicts oldest-first until the
-// cumulative byte total is within maxBytes. snapshot() returns entries
-// oldest-first. A single entry larger than the whole cap is dropped (the memory
-// bound is a hard invariant).
 class CaptureBuffer {
-    constructor(maxBytes = DEFAULT_MAX_BYTES) {
-        const valid = typeof maxBytes === "number" && Number.isFinite(maxBytes) && maxBytes > 0;
-        this.maxBytes = valid ? maxBytes : DEFAULT_MAX_BYTES;
-        this.entries = [];
-        this.totalBytes = 0;
-    }
+  constructor(maxBytes = DEFAULT_MAX_BYTES) {
+    const valid =
+      typeof maxBytes === "number" && Number.isFinite(maxBytes) && maxBytes > 0;
+    this.maxBytes = valid
+      ? Math.min(maxBytes, MAX_CAPTURE_BYTES)
+      : DEFAULT_MAX_BYTES;
+    this.entries = [];
+    this.totalBytes = 0;
+  }
 
-    push(entry) {
-        const size = byteSizeOf(entry);
-        this.entries.push({ entry, size });
-        this.totalBytes += size;
-        while (this.totalBytes > this.maxBytes && this.entries.length > 0) {
-            const oldest = this.entries.shift();
-            this.totalBytes -= oldest.size;
-        }
+  push(entry) {
+    const held = encodedSnapshot(entry);
+    if (!held || held.size > this.maxBytes) return;
+    this.entries.push(held);
+    this.totalBytes += held.size;
+    while (this.totalBytes > this.maxBytes) {
+      const oldest = this.entries.shift();
+      this.totalBytes -= oldest.size;
     }
+  }
 
-    snapshot() {
-        return this.entries.map((held) => held.entry);
-    }
+  snapshot() {
+    return this.entries.map(({ json }) => JSON.parse(json));
+  }
 
-    clear() {
-        this.entries = [];
-        this.totalBytes = 0;
-    }
+  clear() {
+    this.entries = [];
+    this.totalBytes = 0;
+  }
 }
 
-// Factory kept as a named export because the C1 contract lists it explicitly.
 function createCaptureBuffer(maxBytes = DEFAULT_MAX_BYTES) {
-    return new CaptureBuffer(maxBytes);
+  return new CaptureBuffer(maxBytes);
 }
 
-export { CaptureBuffer, createCaptureBuffer, byteSizeOf, DEFAULT_MAX_BYTES };
+export {
+  CaptureBuffer,
+  createCaptureBuffer,
+  byteSizeOf,
+  DEFAULT_MAX_BYTES,
+  MAX_CAPTURE_BYTES,
+};
