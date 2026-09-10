@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import ts from "typescript";
 
 export function parseSource(source, path) {
@@ -266,9 +267,21 @@ function isFunction(node) {
     ts.isConstructorDeclaration(node)
   );
 }
+const identityPrinter = ts.createPrinter({ removeComments: true });
+function callbackIdentity(node) {
+  if (!ts.isCallExpression(node.parent)) return null;
+  const source = identityPrinter.printNode(
+    ts.EmitHint.Unspecified,
+    node,
+    node.getSourceFile(),
+  );
+  return createHash("sha256").update(source).digest("hex");
+}
 function scopeIds(file) {
   const ids = new WeakMap(),
-    counters = new WeakMap();
+    counters = new WeakMap(),
+    parents = new WeakMap(),
+    callbacks = new WeakSet();
   ids.set(file, "<module>");
   function assign(node, parentScope, label) {
     let counts = counters.get(parentScope);
@@ -276,11 +289,25 @@ function scopeIds(file) {
     const ordinal = (counts.get(label) ?? 0) + 1;
     counts.set(label, ordinal);
     ids.set(node, `${ids.get(parentScope)}/${label}#${ordinal}`);
+    parents.set(node, parentScope);
+  }
+  function namedParent(scope) {
+    while (!ts.isSourceFile(scope) && !isFunction(scope))
+      scope = parents.get(scope);
+    while (callbacks.has(scope)) scope = namedParent(parents.get(scope));
+    return scope;
   }
   function walk(node, parentScope) {
     let scope = parentScope;
     if (isFunction(node)) {
-      assign(node, parentScope, `fn:${functionLabel(node)}`);
+      const label = `fn:${functionLabel(node)}`,
+        identity = callbackIdentity(node);
+      if (identity) {
+        const parent = namedParent(parentScope);
+        ids.set(node, `${ids.get(parent)}/${label}@${identity}`);
+        parents.set(node, parentScope);
+        callbacks.add(node);
+      } else assign(node, parentScope, label);
       scope = node;
     } else if (ts.isBlock(node) && !(node.parent && isFunction(node.parent))) {
       assign(node, parentScope, `block:${ts.SyntaxKind[node.parent.kind]}`);
