@@ -6,6 +6,200 @@
 > **Companions:** `ROADMAP.md`, `AUTO_DISCOVERY.md`,
 > `DECISION_V03_AUTONOMOUS_CRAWL.md`, `TIER0_CONTRACT_INTEGRITY.md`.
 
+## Binding amendment — zero-effort, five-minute goal state (2026-09-10)
+
+> **Operator clarification (verbatim, 2026-09-10):** "after minimum
+> authorization and starting import, the coach does nothing; no browsing,
+> uploads, exports, mapping, guidance, or repeated confirmations; TGP
+> autonomously imports all available data/history from any browser-accessible
+> coaching platform into native records within five minutes and never falsely
+> claims completion."
+
+This amendment is additive: the historical plan below remains intact as a
+record of how the work was previously framed. Under R5, nothing is deleted.
+Where the historical text conflicts with this amendment, **this amendment
+supersedes it**. Safety, source read-only behavior, bounded execution,
+fail-closed validation, idempotency, and truthful settlement remain binding;
+they are constraints on autonomous execution, not reasons to transfer work to
+the coach.
+
+### Binding product contract
+
+For the goal-state happy path, the coach's complete interaction budget is:
+
+1. complete the minimum authorization needed to let TGP read the source and
+   write the destination (including normal source login, TGP pairing, and
+   required browser permission); and
+2. invoke **Start Import** once.
+
+After Start Import is accepted, required coach actions are **zero**. The coach
+must not have to browse or keep browsing the source site, visit representative
+pages, upload a file, obtain or trigger an export, map fields, identify entity
+families, teach the importer, follow discovery guidance, review a blueprint,
+or provide another confirmation. The system may display progress, evidence,
+and diagnostics, but those displays must not become required steps. A
+user-initiated cancel or a new authorization after an actual authorization
+loss is recovery from a non-success outcome, not part of the successful
+acceptance path.
+
+The five-minute clock:
+
+- **starts** when TGP accepts the single Start Import action after minimum
+  authorization;
+- **stops successfully** only when all source data/history available to that
+  authorized browser identity has been discovered, imported into native TGP
+  records, and reconciled against source-visible evidence; and
+- has a hard goal-state SLO of **no more than five elapsed minutes**.
+
+"Available" means readable through the authorized browser experience using
+the bounded, read-only acquisition mechanisms permitted by this plan. "All"
+includes every discoverable entity family, relationship, pagination window,
+and historical record, not merely clients or the pages that happened to be
+open at Start Import. "Native TGP records" excludes treating
+`ScoutReconstructedEntity`, a downloaded export, or any other staging/audit
+artifact as the finished migration.
+
+The only successful terminal outcome is a verified, reconciled complete
+import within that five-minute window. If completeness cannot be established,
+native reconstruction is unavailable for any discovered family, the source
+cannot be explored safely, authorization is lost, reconciliation disagrees,
+or the deadline expires, the importer must settle as a truthful non-success
+state such as blocked, partial, failed, cancelled, or timed out. It must
+identify the unresolved scope and must never label that outcome complete.
+Continuing safely in the background may be a future recovery behavior, but it
+does not retroactively satisfy the five-minute acceptance criterion.
+
+### Explicit supersession of conflicting historical language
+
+The following interpretations are binding wherever older sections use the
+listed terms:
+
+- **"Learn" is an autonomous internal runtime state, not a coach task.** The
+  C3a "precise next instruction" is superseded as a happy-path requirement.
+  It may exist only as optional diagnostics or as recovery guidance after a
+  truthful non-success settlement; V1 cannot depend on the coach following it.
+- **"Confirm" means deterministic system validation, not human approval.**
+  C3b's "confirmed inferred blueprint" means a blueprint that has passed
+  confidence, origin, safety, normalization, and completeness gates. The
+  "explicit coach confirmation before the first autonomous source request" is
+  superseded and removed from the acceptance path. A human-readable summary
+  may be displayed without blocking execution.
+- The historical `Learn → Confirm → Replay → Ingest → Settle` gate is
+  superseded by
+  `Authorize → Start once → Autonomous discover/validate/replay/ingest →`
+  `Reconcile → Truthful settle`, with no intervening coach action.
+- Any historical suggestion that manual browsing, a representative open page,
+  coach-provided mapping, uploads, or exports supply required evidence is
+  superseded. Passive evidence already available at Start Import may be used,
+  but autonomous discovery must close missing-family and missing-history gaps.
+- A platform's official export may be consumed only as an optional,
+  autonomously acquired, read-only evidence source when it is available and
+  safe. Export availability, coach-triggered export, and coach upload are not
+  dependencies of acceptance. In A2, "trigger an official export" is therefore
+  optional acquisition capability, never required coach work or a V1
+  prerequisite.
+- "Install-to-first-import" and "a coach can complete a real migration" do not
+  satisfy this contract unless they meet the exact zero-action, complete
+  native-record, reconciled, and no-more-than-five-minute conditions above.
+
+### Superseding critical-path order and proof gate
+
+The ordered autonomous critical path is:
+
+```
+C2a → C2b → C2c → C3a → A1 → A2 → A3 → A4 → C3b → V1
+```
+
+C2a is the completed foundation. C3a must expose autonomous learning without
+requiring guided browsing. A1–A4 then provide observation, bounded safe
+actions, planning, and the closed observe/action loop needed to discover
+evidence the coach did not manually expose. Only after A1–A4 may C3b bind that
+autonomous discovery result to replay, ingest, reconciliation, and truthful
+settlement. Therefore the historical placement of **C3b and V1 before A1–A4
+is superseded**; the `NEXT`/`LATER` labels below are historical wherever they
+conflict with this order.
+
+Native reconstruction work may be partitioned into separate family slices,
+but every native destination handler required by the V1 source is a hard
+prerequisite to V1 acceptance. V1 cannot pass by leaving a discovered family
+only in staging. D1 is likewise a prerequisite whenever the selected proof
+platform requires generic DOM/table/SSR evidence to establish completeness;
+choosing a JSON-driven platform for V1 does not weaken the eventual
+any-browser-accessible-platform contract.
+
+The first real unknown-platform V1 proof must record:
+
+- exactly one Start Import action after minimum authorization and **zero**
+  subsequent required coach actions;
+- start, terminal-settlement, and reconciliation timestamps proving elapsed
+  time is **≤5:00**;
+- the source-visible inventory by entity family and history range, the
+  independently derived completeness basis, emitted/native counts, and final
+  TGP state;
+- evidence that at least one required family or history path was found by the
+  A1–A4 autonomous loop without manual pre-navigation;
+- zero production target adapters, endpoint/host maps, selector packs, or
+  platform-specific branches; and
+- a forced incomplete or unreconciled case that settles non-successfully and
+  demonstrates a **zero false-completion** result.
+
+V1 passes only if every item above passes on the same pinned extension,
+backend, and mobile SHAs. A partial import, a fast first record, a staged
+record, or an import completed after five minutes is useful diagnostic
+evidence but is not goal-state proof.
+
+### R138 Decision Record — bind the clarified goal and reorder V1
+
+**Decision:** Preserve the historical plan and add this explicit superseding
+contract; reorder the binding dependency chain so A1–A4 precede C3b and the
+first V1 proof. Do not modify product code in this lane.
+
+1. **How can I improve my choices with Elon Musk's five key first
+   principles?** Questioned the inherited Learn/Confirm/manual-evidence
+   requirements against the named 2026-09-10 operator clarification; deleted
+   mandatory post-start coach work; simplified the interaction to authorize
+   once and start once; accelerated feedback with one measurable V1 gate; and
+   left automation after bounded safety contracts rather than automating an
+   undefined workflow. This follows the ordered [Musk
+   Algorithm](https://www.inc.com/jeff-haden/elon-musks-algorithm-a-5-step-process-to-dramatically-improve-nearly-everything-is-both-simple-brilliant.html)
+   required by R138.
+2. **What would hyperscalers do?** Make the SLO and terminal-state semantics
+   explicit, put deterministic safety gates around automation, preserve
+   observability, and prove the exact dependency chain before declaring
+   success. This applies blast-radius containment and automated validation
+   rather than relying on repeated human approval, consistent with the
+   [AWS Builders' Library continuous-delivery
+   model](https://aws.amazon.com/builders-library/going-faster-with-continuous-delivery/)
+   and [Google Cloud's approach to safe
+   change](https://docs.cloud.google.com/docs/cloud-approach-to-change).
+3. **How can I get the GOOD without the BAD?** Keep the GOOD—zero-effort,
+   site-agnostic, five-minute migration—while excluding the BAD by retaining
+   read-only actions, origin confinement, budgets, normalization,
+   idempotency, reconciliation, and fail-closed non-success states. Autonomy
+   never authorizes unsafe exploration or a false completion.
+4. **Am I attacking the root cause / issue / idea?** Yes. The root cause is a
+   binding-plan mismatch: its required human steps and ordering allowed a V1
+   demonstration that could bypass autonomous discovery. Explicit
+   supersession plus dependency ordering prevents that false proof instead of
+   papering over it with UI wording.
+
+**Options considered:** (1) leave the plan unchanged and rely on oral
+interpretation—rejected because acceptance would remain ambiguous; (2)
+rewrite/delete historical sections—rejected because R5 requires preservation;
+(3) add a single authoritative superseding amendment—selected as the smallest
+reversible change that binds the real goal.
+
+**Evidence required:** a documentation-only diff; zero changes to
+`shared/blueprint/*.js`, tests, or any product-code lane; and the V1 evidence
+listed above before any product-complete claim.
+
+**Rollback / blast radius:** This amendment changes sequencing and acceptance
+governance only; it does not change runtime behavior, source data, credentials,
+or production state. Revert this documentation commit to roll it back. Stop
+V1 and record a new explicit decision if any required autonomous action cannot
+be proven read-only or if complete native reconciliation cannot be
+established.
+
 ## Mission
 
 Build the simplest safe system that can truthfully say:
