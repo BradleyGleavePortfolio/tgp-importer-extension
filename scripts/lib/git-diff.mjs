@@ -3,10 +3,10 @@
 // defeated by adding a new source file it forgot to list. A diff walk counts
 // every changed line of every changed file, so a new source can never be
 // silently omitted from the measurement.
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
-function sh(cmd) {
-  return execSync(cmd, { encoding: "utf8" }).trim();
+function git(args) {
+  return execFileSync("git", args, { encoding: "utf8" }).trim();
 }
 
 // Resolve the base ref this branch forked from. Honours an explicit override,
@@ -22,7 +22,7 @@ export function resolveBase() {
   ].filter(Boolean);
   for (const ref of candidates) {
     try {
-      sh(`git rev-parse --verify --quiet ${ref}^{commit}`);
+      git(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`]);
       return ref;
     } catch {
       // try the next candidate
@@ -34,7 +34,7 @@ export function resolveBase() {
 }
 
 export function mergeBase(base) {
-  return sh(`git merge-base ${base} HEAD`);
+  return git(["merge-base", base, "HEAD"]);
 }
 
 // Category of a repo-relative path for gate accounting.
@@ -53,7 +53,7 @@ export function classify(path) {
 // Added/removed line counts per category for `base...HEAD`.
 export function diffLineStats(base) {
   const from = mergeBase(base);
-  const raw = sh(`git diff --numstat ${from} HEAD`);
+  const raw = git(["diff", "--numstat", from, "HEAD"]);
   const stats = {
     prod: { added: 0, removed: 0 },
     test: { added: 0, removed: 0 },
