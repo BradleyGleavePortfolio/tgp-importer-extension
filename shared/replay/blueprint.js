@@ -201,14 +201,12 @@ function normalizeHeaders(h, label) {
 }
 
 // An ABSENT pagination field means "the producer had nothing to say" and keeps the
-// documented default. A field that is PRESENT but malformed means the producer
-// emitted something this contract cannot execute; since descriptors are inferred
-// from UNTRUSTED capture (PR-C2), coercing it (unknown style ⇒ `page`, empty param
-// ⇒ "page", fractional start ⇒ 1) would manufacture runnable traversal nobody
-// proved. So: absent defaults, present-but-invalid throws before replay sees it.
-function isAbsent(v) {
-  return v === undefined || v === null;
-}
+// documented default. A PRESENT but malformed field means the producer emitted
+// something this contract cannot execute; since descriptors are inferred from
+// UNTRUSTED capture (PR-C2), coercing it (unknown style ⇒ `page`, empty param ⇒
+// "page", fractional start ⇒ 1) would manufacture runnable traversal nobody proved.
+// So: absent defaults; present-but-invalid throws before replay ever sees the step.
+const isAbsent = (v) => v === undefined || v === null;
 
 function normalizePagination(p, stepId) {
   if (p === undefined || p === null) {
