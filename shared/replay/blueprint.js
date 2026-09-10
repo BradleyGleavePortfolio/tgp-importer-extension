@@ -200,14 +200,12 @@ function normalizeHeaders(h, label) {
   return out;
 }
 
-// A genuinely ABSENT field means "the producer had nothing to say" and takes the
+// An ABSENT pagination field means "the producer had nothing to say" and keeps the
 // documented default. A field that is PRESENT but malformed means the producer
-// emitted something this contract cannot execute — and because descriptors are
-// auto-inferred from UNTRUSTED capture (PR-C2), coercing that into a page
-// descriptor would silently manufacture runnable traversal (an unknown style
-// becoming `page`, an empty param becoming "page", a fractional start becoming 1)
-// and fire real requests nobody proved. Absent keeps the default; present-but-
-// invalid fails closed HERE, before the engine sees the step.
+// emitted something this contract cannot execute; since descriptors are inferred
+// from UNTRUSTED capture (PR-C2), coercing it (unknown style ⇒ `page`, empty param
+// ⇒ "page", fractional start ⇒ 1) would manufacture runnable traversal nobody
+// proved. So: absent defaults, present-but-invalid throws before replay sees it.
 function isAbsent(v) {
   return v === undefined || v === null;
 }
@@ -227,8 +225,7 @@ function normalizePagination(p, stepId) {
     );
   }
   const style = p.style === "cursor" ? "cursor" : "page";
-  // `param` is the query-string key the engine writes the page/cursor value to;
-  // an empty or non-string key cannot address anything.
+  // `param` is the query key the engine writes the page/cursor value to.
   if (!isAbsent(p.param) && !isNonEmptyString(p.param)) {
     throw new Error(
       `blueprint step "${stepId}": pagination param must be a non-empty string`,
@@ -247,7 +244,7 @@ function normalizePagination(p, stepId) {
   // cursor: `param` carries the next cursor on the query string; `nextPath`
   // locates the next-cursor token in the response body. An absent, empty, or
   // malformed nextPath ⇒ the engine cannot advance (an empty path reads the whole
-  // body, never a token), which is caught here rather than looping forever.
+  // body, never a token) — caught here rather than looping forever.
   if (
     !Array.isArray(p.nextPath) ||
     p.nextPath.length === 0 ||
