@@ -17,7 +17,7 @@
 
 import { CaptureBuffer, DEFAULT_MAX_BYTES } from "./capture-buffer.js";
 import { assertCaptureTabAllowed, redactResponseBody } from "./capture-policy.js";
-import { isCredentialKey, redactCredentialText } from "./credential-policy.js";
+import { isCredentialValue, redactCredentialText } from "./credential-policy.js";
 
 const DEBUGGER_PROTOCOL_VERSION = "1.3";
 const MAX_PENDING = 1000;
@@ -78,7 +78,7 @@ function redactHeaders(headers) {
     }
     const out = {};
     for (const [key, value] of Object.entries(headers)) {
-        out[key] = isCredentialKey(key) || redactCredentialText(value) !== value ? REDACTED : value;
+        out[key] = isCredentialValue(key, value) || redactCredentialText(value) !== value ? REDACTED : value;
     }
     return out;
 }
@@ -104,7 +104,7 @@ function redactUrl(url) {
     }
     let changed = false;
     const rebuilt = params.map(([key, value]) => {
-        if (isCredentialKey(key) || redactCredentialText(value) !== value) {
+        if (isCredentialValue(key, value) || redactCredentialText(value) !== value) {
             changed = true;
             return `${encodeURIComponent(key)}=${REDACTED}`;
         }

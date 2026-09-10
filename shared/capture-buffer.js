@@ -26,8 +26,13 @@ function fitsCheapBound(entry, limit) {
             const keys = array ? null : Object.keys(value);
             if (array) {
                 if (value.length > 20000) return false; bytes += 2 + Math.max(0, value.length - 1);
-                for (let index = 0; index < value.length; index++)
-                    if (Object.hasOwn(value, index)) pending.push(value[index]); else bytes += 4;
+                if (Reflect.ownKeys(value).some((key) => key !== "length" &&
+                    (typeof key !== "string" || !/^(?:0|[1-9]\d*)$/.test(key) || Number(key) >= value.length))) return false;
+                for (let index = 0; index < value.length; index++) {
+                    const descriptor = Object.getOwnPropertyDescriptor(value, String(index));
+                    if (descriptor && !("value" in descriptor)) return false;
+                    if (descriptor) pending.push(descriptor.value); else bytes += 4;
+                }
             } else {
                 bytes += 2 + Math.max(0, keys.length - 1);
                 for (const key of keys) { const descriptor = Object.getOwnPropertyDescriptor(value, key);

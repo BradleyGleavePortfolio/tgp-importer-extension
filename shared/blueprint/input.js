@@ -1,4 +1,4 @@
-import { isCredentialKey, redactCredentialText } from "../credential-policy.js";
+import { isCredentialValue, redactCredentialText } from "../credential-policy.js";
 import { compareText } from "./order.js";
 const DEFAULT_LIMITS = Object.freeze({ maxEntries: 1000, maxTotalBytes: 8 * 1024 * 1024, maxBodyBytes: 1024 * 1024,
     maxDepth: 8, maxNodes: 20000, maxArrayLength: 5000, maxObjectKeys: 500, maxStringLength: 100000, maxHeaders: 64 }),
@@ -39,7 +39,7 @@ function boundedClone(value, limits, state, depth = 0) {
     for (const key of keys) {
         if (PROTOTYPE_KEY.test(key)) reject("prototype_key");
         const child = value[key];
-        if (isCredentialKey(key)) {
+        if (isCredentialValue(key, child)) {
             if (typeof child !== "string" || !REDACTION.test(child)) reject("unredacted_sensitive_field");
             out[key] = "[REDACTED]";
         } else out[key] = boundedClone(child, limits, state, depth + 1);
@@ -56,7 +56,7 @@ function normalizeHeaders(raw, limits) {
             /[\x00-\x20\x7f()<>@,;:\\"/[\]?={}]/.test(name) || typeof value !== "string" ||
             value.length > 4096 || /[\r\n\x00]/.test(value)) reject("invalid_header");
         const normalized = name.toLowerCase(); if (Object.hasOwn(out, normalized)) reject("duplicate_header");
-        if ((isCredentialKey(name) && !REDACTION.test(value)) ||
+        if ((isCredentialValue(name, value) && !REDACTION.test(value)) ||
             redactCredentialText(value) !== value) reject("unredacted_sensitive_header");
         out[normalized] = "[REDACTED]";
     } return out;
@@ -101,17 +101,16 @@ export function normalizeCaptureSnapshot(snapshot, options) {
         for (const entry of snapshot) accountEntry(entry, limits, state);
     } catch (error) { if (!(error instanceof Error && error.message === "snapshot_byte_limit")) throw error;
         return { observations: [], excluded: [{ reason: "snapshot_byte_limit", count: snapshot.length }] }; }
-    const rejected = new Map(), observations = []; let trustedOrigin = null;
+    const rejected = new Map(), observations = [];
     for (const entry of snapshot) try {
-        const observation = normalizeEntry(entry, limits); trustedOrigin ??= observation.origin;
-        if (observation.origin !== trustedOrigin) reject("origin_mismatch");
-        observations.push(observation);
+        observations.push(normalizeEntry(entry, limits));
     }
     catch (error) {
         const reason = error instanceof Error ? error.message : "invalid_entry";
         rejected.set(reason, (rejected.get(reason) ?? 0) + 1);
     }
     observations.sort((a, b) => compareText(stableKey(a), stableKey(b)));
+    if (new Set(observations.map(({ origin }) => origin)).size > 1) rejected.set("origin_ambiguous", observations.length), observations.length = 0;
     if (observations.length > limits.maxEntries)
         rejected.set("entry_limit", observations.length - limits.maxEntries),
         observations.length = limits.maxEntries;

@@ -50,7 +50,7 @@ async function assertCaptureTabAllowed(tabId) {
 
 // ---- response-body secret redaction ------------------------------------------
 
-import { REDACTION as BODY_REDACTED, isCredentialKey, redactCredentialText } from "./credential-policy.js";
+import { REDACTION as BODY_REDACTED, isCredentialValue, redactCredentialText } from "./credential-policy.js";
 
 function isRecord(value) {
     return typeof value === "object" && value !== null;
@@ -74,7 +74,7 @@ function redactParsedValue(value) {
             pending.push(child);
         }
         else if (isRecord(current)) for (const [key, child] of Object.entries(current)) {
-            if (isCredentialKey(key)) {
+            if (isCredentialValue(key, child)) {
                 current[key] = BODY_REDACTED;
                 changed = true;
             }

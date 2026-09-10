@@ -14,6 +14,18 @@ function kilobyteEntry(tag) {
 }
 
 describe("CaptureBuffer byte accounting", () => {
+    it.each(["toJSON", "metadata"])("rejects arrays with own non-index property %s before serialization", (key) => {
+        const buffer = new CaptureBuffer(1024), hostile = [];
+        let calls = 0;
+        Object.defineProperty(hostile, key, {
+            enumerable: key !== "toJSON",
+            value: key === "toJSON" ? () => { calls += 1; return "x".repeat(1_000_000); } : "value",
+        });
+        buffer.push({ hostile });
+        expect(buffer.snapshot()).toEqual([]);
+        expect(calls).toBe(0);
+    });
+
     it("defaults to a 5 MB cap", () => {
         expect(new CaptureBuffer().maxBytes).toBe(5 * 1024 * 1024);
         expect(DEFAULT_MAX_BYTES).toBe(5 * 1024 * 1024);

@@ -4,6 +4,7 @@ import {
     readPath,
     extractItems,
     DEFAULT_BUDGETS,
+    HARD_BUDGETS,
 } from "../shared/replay/blueprint.js";
 
 // normalizeBlueprint is the fail-closed gate: a structurally invalid descriptor
@@ -422,6 +423,22 @@ describe("normalizeBlueprint — budgets + rate + apiBase detail", () => {
     it("accepts a fractional rateLimitMs and preserves it", () => {
         expect(normalizeBlueprint(base({ rateLimitMs: 12.5 })).rateLimitMs).toBe(12.5);
     });
+    it.each(["maxPages", "maxPagesPerStep", "maxEntities", "requestTimeoutMs"])(
+        "enforces the immutable hard ceiling for %s",
+        (key) => {
+            expect(normalizeBlueprint(base({ budgets: { [key]: HARD_BUDGETS[key] } })).budgets[key])
+                .toBe(HARD_BUDGETS[key]);
+            expect(normalizeBlueprint(base({ budgets: { [key]: HARD_BUDGETS[key] + 1 } })).budgets[key])
+                .toBe(DEFAULT_BUDGETS[key]);
+            expect(normalizeBlueprint(base({ budgets: { [key]: Number.MAX_SAFE_INTEGER } })).budgets[key])
+                .toBe(DEFAULT_BUDGETS[key]);
+        },
+    );
+    it("enforces an immutable hard ceiling for rateLimitMs", () => {
+        expect(normalizeBlueprint(base({ rateLimitMs: HARD_BUDGETS.rateLimitMs })).rateLimitMs)
+            .toBe(HARD_BUDGETS.rateLimitMs);
+        expect(normalizeBlueprint(base({ rateLimitMs: Number.MAX_VALUE })).rateLimitMs).toBe(0);
+    });
     it("preserves step order", () => {
         const bp = normalizeBlueprint(base({
             steps: [
@@ -667,6 +684,11 @@ describe("normalizeBlueprint — allowedOrigins is a required capability (name-b
 });
 
 describe("normalizeBlueprint — headers", () => {
+    it.each(["bad header", "bad:header", "bad(header)", "bad@header", "bad[header]"])(
+        "rejects RFC-forbidden header name %s",
+        (name) => expect(() => normalizeBlueprint(base({ headers: { [name]: "v" } })))
+            .toThrow(/HTTP token/),
+    );
     it("absent blueprint AND step headers normalize to {}", () => {
         const bp = normalizeBlueprint(base());
         expect(bp.headers).toEqual({});

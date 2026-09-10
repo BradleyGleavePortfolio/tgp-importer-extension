@@ -55,6 +55,7 @@ const STORAGE_KEYS = {
 };
 
 // The one live snapshot the popup renders.
+/** @type {object} */
 let currentSnapshot = emptySnapshot();
 
 function emptySnapshot() {

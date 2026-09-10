@@ -8,14 +8,13 @@
     "skipLibCheck": true,
     "target": "ES2022"
   },
-  "files": [
-    "shared/credential-policy.js",
-    "shared/capture-buffer.js",
-    "shared/capture-policy.js",
-    "shared/capture.js",
-    "shared/blueprint/order.js",
-    "shared/blueprint/input.js",
-    "shared/blueprint/shapes.js",
-    "shared/blueprint/url-templates.js"
-  ]
+  "include": [
+    "*.js",
+    "*.d.ts",
+    "content/**/*.js",
+    "extractors/**/*.js",
+    "popup/**/*.js",
+    "shared/**/*.js"
+  ],
+  "exclude": ["test", "scripts", "node_modules"]
 }

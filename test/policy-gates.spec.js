@@ -23,7 +23,9 @@ function run(script, root) {
 }
 function sarif(runs) {
     return JSON.stringify({ version: "2.1.0", runs: runs.map((run) => ({
-        tool: { driver: { name: "CodeQL" } }, ...run,
+        tool: { driver: { name: "CodeQL" } },
+        invocations: [{ executionSuccessful: true }],
+        ...run,
     })) });
 }
 afterEach(() => made.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })));
@@ -75,6 +77,7 @@ describe("CodeQL SARIF zero-result gate", () => {
         JSON.stringify({ version: "2.1.0", runs: [42] }),
         JSON.stringify({ version: "2.1.0", runs: ["bad"] }),
         JSON.stringify({ version: "2.1.0", runs: [{ results: [] }] }),
+        sarif([{ invocations: [], results: [] }]),
         sarif([{ invocations: [{ executionSuccessful: false }], results: [] }]),
         sarif([{ invocations: [{}], results: [] }]),
         sarif([{ invocations: [{ executionSuccessful: "false" }], results: [] }]),
@@ -100,6 +103,8 @@ describe("production fixture import preflight", () => {
         'import value from "./fixtures/customer.json" with { type: "json" };',
         'import("./test/fixt\\u0075res/customer.js");',
         'import("./test/" + "fixtures/customer.js");',
+        'import(`./${"fixtures"}/customer.js`);',
+        'import(`./test/${"fixtures"}/customer.js`);',
     ])("rejects production reference: %s", (source) => {
         const root = temp();
         put(root, "background.js", source);
@@ -130,6 +135,10 @@ describe("production static preflight", () => {
         "fetch('http://127.0.0.1:8080/api');",
         'const state = "MO" + "CK";',
         'const host = "http://127.0.0." + "1:8080";',
+        "const state = ['M','O','C','K'].join('');",
+        'const state = `M${"O"}CK`;',
+        'const state = `MO${"CK"}`;',
+        'const state = "\\u004dOCK";',
     ])("rejects forbidden marker %s", (source) => {
         expect(run("check-deploy-readiness.mjs", project(source)).status).toBe(1);
     });
@@ -198,10 +207,18 @@ describe("banned-token gate source coverage", () => {
         ["src/comment.ts", "const value = thing as /" + "* comment */ any;"],
         ["src/catch.ts", "Promise.resolve().catch(\n () => " + "undefined,\n);"],
         ["src/catch-comment.ts", "Promise.resolve().catch(() => { /" + "* empty */ });"],
+        ["src/url.ts", 'declare const thing: unknown; const url = "https://safe.invalid"; const value = thing as any;'],
+        ["src/string-comment.ts", 'declare const thing: unknown; const marker = "//"; const value = thing as any;'],
+        ["src/string-block.ts", 'declare const thing: unknown; const open = "/*"; const value = thing as any; const close = "*/";'],
+        ["src/regex.ts", "declare const thing: unknown; const pattern = /https?:\\/\\/safe/; const value = thing as any;"],
     ])("rejects a banned addition in %s", (path, source) => {
         const output = mutation(path, source);
         expect(output.status).toBe(1);
         expect(output.stdout).toContain("R75 net-new banned token");
+    });
+
+    it("does not mistake banned-looking string contents for executable syntax", () => {
+        expect(mutation("src/safe.ts", 'export const documentation = "use as any only in prose";').status).toBe(0);
     });
 
     it("checks merge-commit author and committer identity", () => {

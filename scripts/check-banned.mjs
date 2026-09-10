@@ -10,6 +10,7 @@
 import { execSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolveBase, mergeBase } from "./lib/git-diff.mjs";
+import { bannedCounts } from "./lib/js-ast.mjs";
 
 const failures = [];
 
@@ -23,22 +24,12 @@ const patch = execSync(
     `':(exclude)scripts/check-banned.mjs'`,
     { encoding: "utf8" },
 );
-const patterns = [
-    ["@ts-ignore", /@ts-ignore/g], ["as any", /\bas\s+any\b/g],
-    ["as unknown as", /\bas\s+unknown\s+as\b/g], ["as never", /\bas\s+never\b/g],
-    ["silent catch null", /\.catch\(\s*\(\s*\)\s*=>\s*null\s*,?\s*\)/g],
-    ["silent catch undefined", /\.catch\(\s*\(\s*\)\s*=>\s*undefined\s*,?\s*\)/g],
-    ["silent catch block", /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*,?\s*\)/g],
-    ["empty catch", /catch\s*\{\s*\}/g], ["Coming soon", /Coming soon/gi],
-];
 const added = patch.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++"));
 const removed = patch.split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---"));
-const normalized = (lines) => lines.map((line) => line.slice(1)).join("\n")
-    .replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ").replace(/\s+/g, " ");
-for (const [label, pattern] of patterns) {
-    const count = (lines) => [...normalized(lines).matchAll(pattern)].length;
-    if (count(added) > count(removed)) failures.push(`R75 net-new banned token: ${label}`);
-}
+const counts = (lines) => bannedCounts(lines.map((line) => line.slice(1)).join("\n"));
+const addedCounts = counts(added), removedCounts = counts(removed);
+for (const [label, count] of addedCounts)
+    if (count > (removedCounts.get(label) ?? 0)) failures.push(`R75 net-new banned token: ${label}`);
 for (const line of added) {
     const marker = line.indexOf("@ts-expect-error");
     if (marker >= 0 && !/^\s+\S.{2,}$/.test(line.slice(marker + 16))) {
@@ -46,11 +37,17 @@ for (const line of added) {
     }
 }
 const manifest = JSON.parse(readFileSync("package.json", "utf8"));
-for (const [name, version] of Object.entries({ ...manifest.dependencies, ...manifest.devDependencies })) {
+const dependencies = { ...manifest.dependencies, ...manifest.devDependencies };
+for (const [name, version] of Object.entries(dependencies)) {
     if (typeof version !== "string" || /[~^*]|\s|\|\|/.test(version)) {
         failures.push(`R114 dependency ${name} is not pinned exactly: ${version}`);
     }
+    if (/^0\./.test(version) && !(typeof manifest.dependencyPolicyExceptions?.[name] === "string" &&
+        manifest.dependencyPolicyExceptions[name].length >= 20))
+        failures.push(`R33 dependency ${name} uses 0.x without a documented exception`);
 }
+for (const name of Object.keys(manifest.dependencyPolicyExceptions ?? {}))
+    if (!Object.hasOwn(dependencies, name)) failures.push(`R33 stale dependency exception: ${name}`);
 
 // ---- 2. commit identity (R3) ------------------------------------------------
 

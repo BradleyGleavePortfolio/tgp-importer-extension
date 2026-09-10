@@ -48,6 +48,7 @@ let refreshInFlight = null;
 // they apply atomically relative to each other; a rejected transition never
 // breaks the chain for the next.
 let stateLock = Promise.resolve();
+/** @template T @param {() => Promise<T>} work @returns {Promise<T>} */
 function withStateLock(work) {
     const run = stateLock.then(work, work);
     stateLock = run.then(() => undefined, () => undefined);

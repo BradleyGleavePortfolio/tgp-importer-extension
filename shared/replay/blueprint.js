@@ -58,7 +58,7 @@ const IPV4_LITERAL = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
 // (the CR/LF/NUL request-splitting vector); names reject the same PLUS backslash
 // (not a valid RFC 7230 field-name token char).
 const HEADER_VALUE_FORBIDDEN = /[\x00-\x1F\x7F]/;
-const HEADER_NAME_FORBIDDEN = /[\x00-\x1F\x7F\\]/;
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
 
 function isForbiddenHost(hostname) {
     // Lower-case and strip ALL trailing dots: "localhost.", "localhost..", and
@@ -130,6 +130,9 @@ export const DEFAULT_BUDGETS = Object.freeze({
     maxEntities: 200000,
     requestTimeoutMs: 15000,
 });
+export const HARD_BUDGETS = Object.freeze({
+    maxPages: 5000, maxPagesPerStep: 2000, maxEntities: 500000, requestTimeoutMs: 60000, rateLimitMs: 60000,
+});
 
 function isRecord(v) {
     return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -168,8 +171,8 @@ function normalizeHeaders(h, label) {
         if (!isNonEmptyString(k)) {
             throw new Error(`${label} header name must be a non-empty string`);
         }
-        if (HEADER_NAME_FORBIDDEN.test(k)) {
-            throw new Error(`${label} header name "${k}" must not contain control characters or backslashes`);
+        if (!HEADER_NAME.test(k)) {
+            throw new Error(`${label} header name "${k}" must not contain control characters or backslashes; must use HTTP token characters`);
         }
         if (!isNonEmptyString(v)) {
             throw new Error(`${label} header "${k}" value must be a non-empty string`);
@@ -295,7 +298,8 @@ function normalizeBudgets(b) {
     if (!isRecord(b)) {
         throw new Error("blueprint budgets must be an object");
     }
-    const pick = (key) => (Number.isInteger(b[key]) && b[key] > 0 ? b[key] : DEFAULT_BUDGETS[key]);
+    const pick = (key) => (Number.isInteger(b[key]) && b[key] > 0 && b[key] <= HARD_BUDGETS[key]
+        ? b[key] : DEFAULT_BUDGETS[key]);
     return {
         maxPages: pick("maxPages"),
         maxPagesPerStep: pick("maxPagesPerStep"),
@@ -334,7 +338,8 @@ export function normalizeBlueprint(bp, opts) {
             produced.add(step.collectAs);
         }
     }
-    const rateLimitMs = Number.isFinite(bp.rateLimitMs) && bp.rateLimitMs >= 0 ? bp.rateLimitMs : 0;
+    const rateLimitMs = Number.isFinite(bp.rateLimitMs) && bp.rateLimitMs >= 0 &&
+        bp.rateLimitMs <= HARD_BUDGETS.rateLimitMs ? bp.rateLimitMs : 0;
     return {
         platform: bp.platform,
         apiBase: bp.apiBase.replace(/\/+$/, ""),

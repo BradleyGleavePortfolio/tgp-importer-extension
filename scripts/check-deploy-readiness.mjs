@@ -22,10 +22,8 @@ for (const file of files) {
         if (marker.test(line)) hits.push(`${relative(root, file)}:${index + 1}`);
     });
     if (/\.[cm]?[jt]sx?$/.test(file)) visit(parseSource(source, file), (node) => {
-        if (ts.isBinaryExpression(node)) {
-            const text = constantString(node);
-            if (text && marker.test(text)) hits.push(`${relative(root, file)}:composed`);
-        }
+        const text = constantString(node);
+        if (text && marker.test(text)) hits.push(`${relative(root, file)}:composed`);
     });
 }
 let manifest = {};

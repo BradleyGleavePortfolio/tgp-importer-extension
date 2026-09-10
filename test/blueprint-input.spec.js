@@ -95,11 +95,12 @@ describe("normalizeCaptureSnapshot — accepted structural evidence", () => {
         ["subdomain", "https://api.coach.example/api/items"],
         ["cross-origin redirect target", "https://login.example/redirected/items"],
         ["third-party JSON response", "https://telemetry.vendor.example/api/items"],
-    ])("excludes a %s outside the first trusted capture origin", (_label, url) => {
-        const result = normalizeCaptureSnapshot([entry(), entry({ url })]);
-        expect(result.observations).toHaveLength(1);
-        expect(result.observations[0].origin).toBe("https://coach.example");
-        expect(result.excluded).toEqual([{ reason: "origin_mismatch", count: 1 }]);
+    ])("rejects a %s as origin-ambiguous independent of arrival order", (_label, url) => {
+        const values = [entry(), entry({ url })];
+        const result = normalizeCaptureSnapshot(values);
+        expect(result.observations).toEqual([]);
+        expect(result.excluded).toEqual([{ reason: "origin_ambiguous", count: 2 }]);
+        expect(JSON.stringify(result)).toBe(JSON.stringify(normalizeCaptureSnapshot(values.reverse())));
     });
 
     it("accepts multiple paths on exactly the same origin", () => {

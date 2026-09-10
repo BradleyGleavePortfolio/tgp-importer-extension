@@ -64,8 +64,8 @@ const ENTITY_TYPES = [
 export class TrueCoachExtractor {
     /**
      * @param {object} deps
-     * @param {(entityType: string, entities: object[]) => Promise<void>} deps.sendEntities
-     * @param {(snapshot: object) => void} deps.broadcastStatus
+     * @param {(entityType: string, entities: object[]) => Promise<void>} [deps.sendEntities]
+     * @param {(snapshot: object) => void} [deps.broadcastStatus]
      * @param {() => Date} [deps.now] injectable clock (defaults to Date.now).
      * @param {typeof import("./net.js")} [deps.net] injectable networking module.
      */
@@ -250,9 +250,9 @@ export class TrueCoachExtractor {
     /**
      * Orchestrate the full run. Context (source platform bearer token + abort
      * signal) is passed in per-run so the class holds no live credential.
-     * @param {{ token: string, signal: AbortSignal }} [ctx]
+     * @param {{ token: string, signal: AbortSignal }} ctx
      */
-    async run(ctx = {}) {
+    async run(ctx) {
         const runCtx = {
             token: ctx.token,
             signal: ctx.signal ?? new AbortController().signal,

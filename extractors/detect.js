@@ -9,6 +9,7 @@
 
 // Suffix -> platform id. A hostname matches when it equals the suffix or ends
 // with "." + suffix (so both "truecoach.co" and "brand.truecoach.co" match).
+/** @type {{suffix: string, platform: "truecoach"}[]} */
 const HOST_SUFFIXES = [
     { suffix: "truecoach.co", platform: "truecoach" },
     // Additional platforms are stubbed below (return null) until their

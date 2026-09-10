@@ -27,9 +27,9 @@ try {
                 !Array.isArray(run.results)) {
                 throw new Error(`${file}: run ${runIndex} must identify CodeQL and contain results`);
             }
-            if (run.invocations !== undefined && (!Array.isArray(run.invocations) ||
+            if (!Array.isArray(run.invocations) || run.invocations.length === 0 ||
                 run.invocations.some((item) => !item || typeof item !== "object" ||
-                    item.executionSuccessful !== true))) {
+                    item.executionSuccessful !== true)) {
                 throw new Error(`${file}: run ${runIndex} has an invalid or failed invocation`);
             }
             for (const result of run.results) {
