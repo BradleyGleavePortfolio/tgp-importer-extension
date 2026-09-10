@@ -59,6 +59,7 @@ function withSourceTab() {
   return { url: TAB_URL, sendMessage: realSourceTab(EXT_ID, stores) };
 }
 
+// @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
 async function load({ session, tab } = {}) {
   vi.resetModules();
   const mock = makeBgMock({ session, tab });
@@ -112,6 +113,7 @@ describe("replay TrueCoach e2e — generic engine reproduces the verified contra
     const ingestBodies = [];
     let completeCalls = 0;
 
+    // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch.mockImplementation(async (url, init) => {
       if (url === REFRESH_URL) {
         return {
@@ -230,6 +232,7 @@ describe("makeSourceFetch — the source bearer is applied LAST (spoof resistanc
     vi.resetModules();
     installChrome(makeBgMock());
     const calls = [];
+    // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch = vi.fn(async (url, init) => {
       calls.push(init);
       return { ok: true, status: 200, json: async () => ({}) };
@@ -259,6 +262,7 @@ describe("makeSourceFetch — the source bearer is applied LAST (spoof resistanc
     vi.resetModules();
     installChrome(makeBgMock());
     const calls = [];
+    // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch = vi.fn(async (url, init) => {
       calls.push(init);
       return { ok: true, status: 200, json: async () => ({}) };

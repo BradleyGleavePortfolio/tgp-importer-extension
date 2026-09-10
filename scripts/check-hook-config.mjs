@@ -55,14 +55,25 @@ function walk(dir) {
 walk(root);
 let listed = [];
 try {
+  const tsc = "node_modules/typescript/bin/tsc";
+  const effective = JSON.parse(
+    execFileSync(
+      process.execPath,
+      [tsc, "-p", "jsconfig.json", "--showConfig"],
+      {
+        encoding: "utf8",
+      },
+    ),
+  );
+  if (
+    effective.compilerOptions?.allowJs !== true ||
+    effective.compilerOptions?.checkJs !== true ||
+    effective.compilerOptions?.noEmit !== true
+  )
+    missing.push("semantic JavaScript compiler options");
   listed = execFileSync(
     process.execPath,
-    [
-      "node_modules/typescript/bin/tsc",
-      "-p",
-      "jsconfig.json",
-      "--listFilesOnly",
-    ],
+    [tsc, "-p", "jsconfig.json", "--listFilesOnly"],
     { encoding: "utf8" },
   )
     .trim()
@@ -71,8 +82,15 @@ try {
     .filter(
       (path) => !path.startsWith("node_modules/") && /\.(?:js|mjs)$/.test(path),
     );
+  execFileSync(
+    process.execPath,
+    [tsc, "-p", "jsconfig.json", "--pretty", "false"],
+    {
+      encoding: "utf8",
+    },
+  );
 } catch {
-  missing.push("type-check execution");
+  missing.push("semantic type-check execution");
 }
 for (const path of expected)
   if (!listed.includes(path)) missing.push(`type-check scope ${path}`);
@@ -83,5 +101,5 @@ if (missing.length) {
   process.exit(1);
 }
 process.stdout.write(
-  `OK: pinned pre-commit hook covers the effective ${expected.length}-file production/test/scripts type-check set and formatting\n`,
+  `OK: pinned pre-commit hook semantically checks the effective ${expected.length}-file production/test/scripts set and formatting\n`,
 );

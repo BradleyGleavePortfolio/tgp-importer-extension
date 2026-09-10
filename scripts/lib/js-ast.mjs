@@ -234,27 +234,76 @@ function noOpBody(body, allowNull = true) {
         undefinedExpression(statement.expression, allowNull)))
   );
 }
-function scopeName(node) {
-  const names = [];
-  for (let current = node.parent; current; current = current.parent) {
-    if (
-      (ts.isFunctionDeclaration(current) ||
-        ts.isFunctionExpression(current) ||
-        ts.isMethodDeclaration(current) ||
-        ts.isClassDeclaration(current)) &&
-      current.name
-    )
-      names.push(current.name.getText());
+function functionLabel(node) {
+  if (node.name) return node.name.getText();
+  const parent = node.parent;
+  if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name))
+    return parent.name.text;
+  if (
+    (ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent)) &&
+    parent.name
+  )
+    return parent.name.getText();
+  if (
+    ts.isBinaryExpression(parent) &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  )
+    return parent.left.getText();
+  if (ts.isCallExpression(parent)) {
+    const argument = parent.arguments.indexOf(node);
+    return `callback:${parent.expression.getText()}[${argument}]`;
   }
-  return names.reverse().join("/") || "<module>";
+  return "anonymous";
+}
+function isFunction(node) {
+  return (
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isArrowFunction(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    ts.isConstructorDeclaration(node)
+  );
+}
+function scopeIds(file) {
+  const ids = new WeakMap(),
+    counters = new WeakMap();
+  ids.set(file, "<module>");
+  function assign(node, parentScope, label) {
+    let counts = counters.get(parentScope);
+    if (!counts) counters.set(parentScope, (counts = new Map()));
+    const ordinal = (counts.get(label) ?? 0) + 1;
+    counts.set(label, ordinal);
+    ids.set(node, `${ids.get(parentScope)}/${label}#${ordinal}`);
+  }
+  function walk(node, parentScope) {
+    let scope = parentScope;
+    if (isFunction(node)) {
+      assign(node, parentScope, `fn:${functionLabel(node)}`);
+      scope = node;
+    } else if (ts.isBlock(node) && !(node.parent && isFunction(node.parent))) {
+      assign(node, parentScope, `block:${ts.SyntaxKind[node.parent.kind]}`);
+      scope = node;
+    }
+    ts.forEachChild(node, (child) => walk(child, scope));
+  }
+  ts.forEachChild(file, (child) => walk(child, file));
+  return ids;
+}
+function scopeName(node, ids) {
+  for (let current = node; current; current = current.parent)
+    if (ids.has(current)) return ids.get(current);
+  return "<module>";
 }
 export function bannedNodes(source, path = "diff.ts") {
   const file = parseSource(source, path),
+    ids = scopeIds(file),
     findings = [];
   const add = (label, node, text = node.getText(file)) =>
     findings.push({
       label,
-      scope: scopeName(node),
+      scope: scopeName(node, ids),
       text: text.replace(/\s+/g, " ").trim(),
     });
   for (const directive of /** @type {any} */ (file).commentDirectives ?? [])

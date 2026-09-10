@@ -33,6 +33,7 @@ function withSourceTab() {
   return { url: TAB_URL, sendMessage: realSourceTab(EXT_ID, stores) };
 }
 
+// @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
 async function load({ session, tab } = {}) {
   vi.resetModules();
   const mock = makeBgMock({ session, tab });
@@ -71,6 +72,7 @@ describe("start_import — the source bearer never leaks to any surface", () => 
   it("keeps the token out of broadcasts, storage, notifications, and ingest payloads", async () => {
     const { mock } = await load({ session: seeded(), tab: withSourceTab() });
     const ingestBodies = [];
+    // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch.mockImplementation(async (url, init) => {
       if (url === REFRESH_URL)
         return {
@@ -128,6 +130,7 @@ describe("start_import — the source bearer never leaks to any surface", () => 
 describe("start_import — completeIngest must be acknowledged (non-2xx != success)", () => {
   it("reports ingest_failed and never broadcasts success when complete returns 500", async () => {
     const { mock } = await load({ session: seeded(), tab: withSourceTab() });
+    // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch.mockImplementation(async (url) => {
       if (url === REFRESH_URL)
         return {
@@ -172,6 +175,7 @@ describe("start_import — a degraded walk surfaces a DISTINCT partial state", (
   it("finalises but reports ingest_partial (not success) when a page is skipped", async () => {
     const { mock } = await load({ session: seeded(), tab: withSourceTab() });
     let completeCalls = 0;
+    // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch.mockImplementation(async (url) => {
       if (url === REFRESH_URL)
         return {
@@ -218,6 +222,7 @@ describe("start_import — one friendly terminal state on TGP auth loss", () => 
   it("keeps the 'session expired' state and does not overwrite it with a raw error", async () => {
     const { mock } = await load({ session: seeded(), tab: withSourceTab() });
     let refreshCalls = 0;
+    // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch.mockImplementation(async (url) => {
       if (url === REFRESH_URL) {
         refreshCalls += 1;
@@ -270,6 +275,7 @@ describe("start_import — one friendly terminal state on TGP auth loss", () => 
 describe("single-flight guard is SHARED across start_import and start_ingest", () => {
   it("rejects a start_ingest while a start_import is in flight", async () => {
     const { mock } = await load({ session: seeded() });
+    // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch.mockImplementation(() => new Promise(() => {})); // hang the first run
     const a = await mock.dispatch({
       kind: "start_import",
@@ -283,6 +289,7 @@ describe("single-flight guard is SHARED across start_import and start_ingest", (
 
   it("rejects a start_import while a start_ingest is in flight", async () => {
     const { mock } = await load({ session: seeded() });
+    // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch.mockImplementation(() => new Promise(() => {}));
     const a = await mock.dispatch({ kind: "start_ingest", url: TAB_URL });
     const b = await mock.dispatch({
@@ -296,6 +303,7 @@ describe("single-flight guard is SHARED across start_import and start_ingest", (
 
   it("rejects a second start_ingest while the first is in flight", async () => {
     const { mock } = await load({ session: seeded() });
+    // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch.mockImplementation(() => new Promise(() => {}));
     const a = await mock.dispatch({ kind: "start_ingest", url: TAB_URL });
     const b = await mock.dispatch({ kind: "start_ingest", url: TAB_URL });

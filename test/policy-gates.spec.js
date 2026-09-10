@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   mkdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -276,9 +277,80 @@ describe("canonical diff classification", () => {
     ["src/__tests__/unit.ts", "test"],
     ["src/unit.spec.jsx", "test"],
     ["src/unit.test.tsx", "test"],
+    ["scripts/gate.mjs", "script"],
   ])("classifies %s as %s", (path, category) =>
     expect(classify(path)).toBe(category),
   );
+
+  it.each([
+    ["test/moved.js", "shared/moved.js"],
+    ["scripts/moved.mjs", "shared/moved.mjs"],
+  ])("charges the complete blob when %s moves to %s", (oldPath, newPath) => {
+    const root = temp(),
+      env = {
+        ...process.env,
+        GIT_AUTHOR_NAME: "Bradley Gleave",
+        GIT_AUTHOR_EMAIL: "bradley@bradleytgpcoaching.com",
+        GIT_COMMITTER_NAME: "Bradley Gleave",
+        GIT_COMMITTER_EMAIL: "bradley@bradleytgpcoaching.com",
+      };
+    put(root, oldPath, "export function moved() {\n  return 1;\n}\n");
+    for (const args of [["init"], ["add", "."], ["commit", "-m", "base"]])
+      expect(spawnSync("git", args, { cwd: root, env }).status).toBe(0);
+    mkdirSync(dirname(join(root, newPath)), { recursive: true });
+    expect(
+      spawnSync("git", ["mv", oldPath, newPath], { cwd: root, env }).status,
+    ).toBe(0);
+    expect(
+      spawnSync("git", ["commit", "-m", "move"], { cwd: root, env }).status,
+    ).toBe(0);
+    const output = spawnSync(
+      process.execPath,
+      [join(repo, "scripts/check-prod-loc.mjs")],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...env, RATIO_BASE: "HEAD~1" },
+      },
+    );
+    expect(output.status).toBe(0);
+    expect(output.stdout).toContain("prod_added=3");
+  });
+
+  it("charges both sides of a production-to-test category transition", () => {
+    const root = temp(),
+      env = {
+        ...process.env,
+        GIT_AUTHOR_NAME: "Bradley Gleave",
+        GIT_AUTHOR_EMAIL: "bradley@bradleytgpcoaching.com",
+        GIT_COMMITTER_NAME: "Bradley Gleave",
+        GIT_COMMITTER_EMAIL: "bradley@bradleytgpcoaching.com",
+      };
+    put(root, "shared/moved.js", "export const moved = 1;\n");
+    for (const args of [["init"], ["add", "."], ["commit", "-m", "base"]])
+      expect(spawnSync("git", args, { cwd: root, env }).status).toBe(0);
+    mkdirSync(join(root, "test"), { recursive: true });
+    expect(
+      spawnSync("git", ["mv", "shared/moved.js", "test/moved.js"], {
+        cwd: root,
+        env,
+      }).status,
+    ).toBe(0);
+    expect(
+      spawnSync("git", ["commit", "-m", "move"], { cwd: root, env }).status,
+    ).toBe(0);
+    const output = spawnSync(
+      process.execPath,
+      [join(repo, "scripts/check-test-ratio.mjs")],
+      {
+        cwd: root,
+        encoding: "utf8",
+        env: { ...env, RATIO_BASE: "HEAD~1" },
+      },
+    );
+    expect(output.status).toBe(0);
+    expect(output.stdout).toContain("prod_added=0 test_added=1");
+  });
 });
 
 describe("banned-token gate source coverage", () => {
@@ -392,6 +464,54 @@ describe("banned-token gate source coverage", () => {
     const output = mutation("src/swap.ts", after, before);
     expect(output.status).toBe(1);
     expect(output.stdout).toContain("added");
+  });
+
+  it("does not cancel identical findings between assigned arrow functions", () => {
+    const before = [
+      "declare const value: unknown;",
+      "const first = () => value as any;",
+      "const second = () => 1;",
+    ].join("\n");
+    const after = [
+      "declare const value: unknown;",
+      "const first = () => 1;",
+      "const second = () => value as any;",
+    ].join("\n");
+    const output = mutation("src/arrows.ts", after, before);
+    expect(output.status).toBe(1);
+    expect(output.stdout).toContain("fn:second");
+  });
+
+  it("does not cancel identical findings between anonymous callbacks", () => {
+    const before = [
+      "declare const value: unknown;",
+      "[1].map(() => value as any);",
+      "[2].map(() => 1);",
+    ].join("\n");
+    const after = [
+      "declare const value: unknown;",
+      "[1].map(() => 1);",
+      "[2].map(() => value as any);",
+    ].join("\n");
+    const output = mutation("src/callbacks.ts", after, before);
+    expect(output.status).toBe(1);
+    expect(output.stdout).toContain("callback:");
+  });
+
+  it("does not collide duplicate and nested function names", () => {
+    const before = [
+      "declare const value: unknown;",
+      "function duplicate() { function nested() { return value as any; } return nested(); }",
+      "function duplicate() { function nested() { return 1; } return nested(); }",
+    ].join("\n");
+    const after = [
+      "declare const value: unknown;",
+      "function duplicate() { function nested() { return 1; } return nested(); }",
+      "function duplicate() { function nested() { return value as any; } return nested(); }",
+    ].join("\n");
+    const output = mutation("src/duplicates.ts", after, before);
+    expect(output.status).toBe(1);
+    expect(output.stdout).toContain("fn:duplicate#2/fn:nested#1");
   });
 
   it("preserves grandfathered findings across a pure rename", () => {
@@ -550,5 +670,87 @@ describe("pre-commit hook semantic validation", () => {
     );
     expect(output.status).toBe(1);
     expect(output.stdout).toContain("banned");
+  });
+
+  it("rejects a semantic error in test JavaScript through both entrypoints", () => {
+    const root = temp();
+    symlinkSync(join(repo, "node_modules"), join(root, "node_modules"), "dir");
+    put(
+      root,
+      "package.json",
+      JSON.stringify({
+        private: true,
+        scripts: {
+          "format:check": "node scripts/check-format.mjs",
+          "type-check": "tsc -p jsconfig.json && tsc -p jsconfig.scripts.json",
+        },
+      }),
+    );
+    put(
+      root,
+      "jsconfig.json",
+      JSON.stringify({
+        compilerOptions: {
+          allowJs: true,
+          checkJs: true,
+          noEmit: true,
+          skipLibCheck: true,
+          target: "ES2022",
+        },
+        include: ["test/**/*.js", "scripts/**/*.mjs"],
+      }),
+    );
+    put(
+      root,
+      "jsconfig.scripts.json",
+      JSON.stringify({
+        compilerOptions: {
+          allowJs: true,
+          checkJs: true,
+          noEmit: true,
+          skipLibCheck: true,
+          target: "ES2022",
+        },
+        include: ["scripts/**/*.mjs"],
+      }),
+    );
+    put(root, "scripts/check-format.mjs", "process.exit(0);\n");
+    put(
+      root,
+      "test/semantic-error.js",
+      "const auditNumber = 1;\nauditNumber.toUpperCase();\n",
+    );
+    put(
+      root,
+      "lefthook.yml",
+      [
+        "min_version: 2.1.12",
+        "pre-commit:",
+        "  commands:",
+        "    banned:",
+        "      run: BANNED_DIFF_CACHED=1 npm run check:banned",
+        "    deploy-readiness:",
+        "      run: npm run check:production-preflight",
+        "    lint:",
+        "      run: npm run lint",
+        "    type-check:",
+        "      run: npm run type-check",
+        "    format:",
+        "      run: npm run format:check",
+      ].join("\n"),
+    );
+    const typeCheck = spawnSync("npm", ["run", "type-check"], {
+      cwd: root,
+      encoding: "utf8",
+    });
+    const hookCheck = spawnSync(
+      process.execPath,
+      [join(repo, "scripts/check-hook-config.mjs")],
+      { cwd: root, encoding: "utf8" },
+    );
+    expect(typeCheck.status).toBe(2);
+    expect(typeCheck.stdout).toContain("toUpperCase");
+    expect(hookCheck.status).toBe(1);
+    expect(hookCheck.stdout).toContain("semantic type-check execution");
   });
 });

@@ -1,12 +1,16 @@
 {
   "compilerOptions": {
     "allowJs": true,
-    "checkJs": false,
+    "baseUrl": ".",
+    "checkJs": true,
     "module": "NodeNext",
     "moduleResolution": "NodeNext",
     "noEmit": true,
     "skipLibCheck": true,
-    "target": "ES2022"
+    "target": "ES2022",
+    "paths": {
+      "punycode": ["types/punycode.d.ts"]
+    }
   },
   "include": [
     "*.js",

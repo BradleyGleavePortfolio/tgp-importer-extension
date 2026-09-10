@@ -50,7 +50,7 @@ export function classify(path) {
     /\.(?:spec|test)\.[cm]?[jt]sx?$/.test(path)
   )
     return "test";
-  if (path.startsWith("scripts/")) return "ignore"; // gates + tooling are not shipped
+  if (path.startsWith("scripts/")) return "script"; // tooling is tracked as its own boundary
   return "prod";
 }
 
@@ -117,13 +117,20 @@ export async function diffLineStats(base) {
     test: { added: 0, removed: 0 },
   };
   for (const { oldPath, newPath } of changedFiles(from)) {
-    const cat = classify(newPath);
-    if (cat === "ignore") continue;
+    const oldCat = classify(oldPath),
+      newCat = classify(newPath);
+    if (!stats[oldCat] && !stats[newCat]) continue;
     const before = await canonical(content(from, oldPath), oldPath);
     const after = await canonical(content("HEAD", newPath), newPath);
-    const { added, removed } = numstat(before, after);
-    stats[cat].added += added;
-    stats[cat].removed += removed;
+    if (oldCat === newCat) {
+      if (!stats[newCat]) continue;
+      const { added, removed } = numstat(before, after);
+      stats[newCat].added += added;
+      stats[newCat].removed += removed;
+      continue;
+    }
+    if (stats[oldCat]) stats[oldCat].removed += numstat(before, "").removed;
+    if (stats[newCat]) stats[newCat].added += numstat("", after).added;
   }
   return stats;
 }
