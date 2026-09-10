@@ -42,11 +42,6 @@ async function load({ session, tab } = {}) {
     return { mock, bg };
 }
 
-function flush(n = 6) {
-    let p = Promise.resolve();
-    for (let i = 0; i < n; i += 1) p = p.then(() => new Promise((r) => setTimeout(r, 0)));
-    return p;
-}
 function snapshots(mock) {
     return mock.sent.filter((m) => m && m.kind === "status_snapshot");
 }

@@ -107,7 +107,7 @@ describe("replay TrueCoach e2e — generic engine reproduces the verified contra
             if (url === REFRESH_URL) {
                 return { ok: true, status: 200, json: async () => ({ access_token: "TGP-ACCESS" }) };
             }
-            if (url.startsWith(SOURCE_ORIGIN)) {
+            if (new URL(url).origin === SOURCE_ORIGIN) {
                 sourceReqs.push({ url, headers: init.headers });
             }
             if (url.startsWith(CLIENTS_PREFIX) && url.includes("page=1")) {

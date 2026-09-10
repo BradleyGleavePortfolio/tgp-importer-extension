@@ -7,8 +7,7 @@ const UUID_SHAPE = /^[a-f0-9]{8}-[a-f0-9]{4}-([0-9a-f])[a-f0-9]{3}-([0-9a-f])[a-
 const INTEGER = /^(?:0|[1-9]\d*)$/;
 const OPAQUE = /^(?=.{6,64}$)(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_-]+$/;
 const VERSION = /^v\d{1,3}$/i;
-const DATE = /^\d{4}-\d{2}-\d{2}$/;
-const YEAR = /^\d{4}$/;
+const DATE = /^\d{4}-\d{2}-\d{2}$/, YEAR = /^\d{4}$/;
 const YEAR_MONTH = /^(?:19|20)\d{2}-(?:0[1-9]|1[0-2])$/;
 const DECIMAL = /^(?:0|[1-9]\d*)\.\d+$/;
 const HARD = Object.freeze({ minDistinct: 32, maxObservations: 1000, maxSegments: 32 });
