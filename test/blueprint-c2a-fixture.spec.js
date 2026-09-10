@@ -30,7 +30,7 @@ describe("synthetic C2a fixture evidence (not a captured oracle)", () => {
             clusters: [{
                 origin: "https://app.truecoach.co",
                 method: "GET",
-                pathPattern: "/{s6}/{s4}/v2/{s5}/:id",
+                pathPattern: "/proxy/api/v2/clients/:id",
                 dynamicSegments: 1,
                 replayCompatible: true,
                 queryKeys: ["page"],

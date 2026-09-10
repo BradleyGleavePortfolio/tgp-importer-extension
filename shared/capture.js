@@ -17,6 +17,7 @@
 
 import { CaptureBuffer, DEFAULT_MAX_BYTES } from "./capture-buffer.js";
 import { assertCaptureTabAllowed, redactResponseBody } from "./capture-policy.js";
+import { isCredentialKey, redactCredentialText } from "./credential-policy.js";
 
 const DEBUGGER_PROTOCOL_VERSION = "1.3";
 
@@ -67,8 +68,6 @@ function isJsonMimeType(mimeType) {
 // ---- redaction --------------------------------------------------------------
 
 const REDACTED = "<redacted>";
-const SENSITIVE_HEADERS = new Set(["authorization", "cookie", "set-cookie"]);
-const SENSITIVE_QUERY_KEY = /^(token|access_token|id_token|api[-_]?key|auth|session)$/i;
 
 // Replace sensitive header values with the redaction marker. Header names are
 // matched case-insensitively; every other header passes through untouched.
@@ -78,7 +77,7 @@ function redactHeaders(headers) {
     }
     const out = {};
     for (const [key, value] of Object.entries(headers)) {
-        out[key] = SENSITIVE_HEADERS.has(key.toLowerCase()) ? REDACTED : value;
+        out[key] = isCredentialKey(key) || redactCredentialText(value) !== value ? REDACTED : value;
     }
     return out;
 }
@@ -104,9 +103,9 @@ function redactUrl(url) {
     }
     let changed = false;
     const rebuilt = params.map(([key, value]) => {
-        if (SENSITIVE_QUERY_KEY.test(key)) {
+        if (isCredentialKey(key) || redactCredentialText(value) !== value) {
             changed = true;
-            return `${key}=${REDACTED}`;
+            return `${encodeURIComponent(key)}=${REDACTED}`;
         }
         return `${encodeURIComponent(key)}=${encodeURIComponent(value)}`;
     });

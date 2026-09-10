@@ -116,6 +116,9 @@ describe("normalizeCaptureSnapshot — fail-closed entry validation", () => {
         ["malformed JSON", { responseBody: "{\"broken\":" }, "malformed_json"],
         ["raw auth header", { requestHeaders: { Authorization: "Bearer real-secret" } }, "unredacted_sensitive_header"],
         ["raw cookie", { requestHeaders: { Cookie: "sid=real-secret" } }, "unredacted_sensitive_header"],
+        ["Basic value in custom header", {
+            requestHeaders: { "X-Note": "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" },
+        }, "unredacted_sensitive_header"],
         ["raw body token", { responseBody: "{\"token\":\"real-secret\"}" }, "unredacted_sensitive_field"],
         ["raw nested password", { responseBody: "{\"profile\":{\"password\":\"real-secret\"}}" }, "unredacted_sensitive_field"],
         ["malformed status", { statusCode: null }, "invalid_status"],
@@ -274,14 +277,23 @@ describe("normalizeCaptureSnapshot — bounded work", () => {
         expect(reasons(result)).toEqual(omitted ? { entry_limit: omitted } : {});
     });
 
-    it.each([
-        [5, true], [6, false], [7, false],
-    ])("enforces maxTotalBytes at exact UTF-8 boundary %i", (bytes, excluded) => {
-        const result = normalizeCaptureSnapshot(
-            [entry({ responseBody: JSON.stringify("éé") })],
-            { maxTotalBytes: bytes },
-        );
-        expect(reasons(result)).toEqual(excluded ? { snapshot_byte_limit: 1 } : {});
+    it("enforces maxTotalBytes across URL, method, headers, timestamp, and body", () => {
+        const value = entry({ responseBody: JSON.stringify("éé") });
+        const strings = [
+            value.url, value.method, value.capturedAt, value.responseBody,
+            ...Object.entries(value.requestHeaders).flat(),
+        ];
+        const bytes = strings.reduce((sum, text) => sum + new TextEncoder().encode(text).length, 0);
+        expect(reasons(normalizeCaptureSnapshot([value], { maxTotalBytes: bytes - 1 })))
+            .toEqual({ snapshot_byte_limit: 1 });
+        expect(reasons(normalizeCaptureSnapshot([value], { maxTotalBytes: bytes }))).toEqual({});
+        expect(reasons(normalizeCaptureSnapshot([value], { maxTotalBytes: bytes + 1 }))).toEqual({});
+    });
+
+    it("rejects an oversized body before UTF-8 encoding work", () => {
+        const huge = "\"" + "x".repeat(DEFAULT_LIMITS.maxBodyBytes + 1) + "\"";
+        expect(reasons(normalizeCaptureSnapshot([entry({ responseBody: huge })])))
+            .toEqual({ body_byte_limit: 1 });
     });
 
     it.each([

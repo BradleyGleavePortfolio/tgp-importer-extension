@@ -4,6 +4,7 @@ import {
     createCaptureBuffer,
     byteSizeOf,
     DEFAULT_MAX_BYTES,
+    MAX_CAPTURE_BYTES,
 } from "../shared/capture-buffer.js";
 import { sourcePlatformFor } from "../shared/capture.js";
 
@@ -16,6 +17,13 @@ describe("CaptureBuffer byte accounting", () => {
     it("defaults to a 5 MB cap", () => {
         expect(new CaptureBuffer().maxBytes).toBe(5 * 1024 * 1024);
         expect(DEFAULT_MAX_BYTES).toBe(5 * 1024 * 1024);
+    });
+
+    it("enforces an absolute non-overridable capacity ceiling", () => {
+        expect(new CaptureBuffer(MAX_CAPTURE_BYTES - 1).maxBytes).toBe(MAX_CAPTURE_BYTES - 1);
+        expect(new CaptureBuffer(MAX_CAPTURE_BYTES).maxBytes).toBe(MAX_CAPTURE_BYTES);
+        expect(new CaptureBuffer(MAX_CAPTURE_BYTES + 1).maxBytes).toBe(MAX_CAPTURE_BYTES);
+        expect(new CaptureBuffer(Number.MAX_SAFE_INTEGER).maxBytes).toBe(MAX_CAPTURE_BYTES);
     });
 
     it("keeps the running byte total under the cap when 6 MB is added in 1 KB chunks", () => {

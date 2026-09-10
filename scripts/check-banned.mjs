@@ -1,47 +1,52 @@
 // Banned-token net — two mechanical checks that must both pass.
 //
-// 1. SOURCE PATTERNS: production JS may not silently swallow a failure. The
-//    banned forms are `.catch(() => null)` / `.catch(()=>null)` and an empty
-//    `catch {}` block — both discard an error with no mapping and no log. The
-//    allowed alternative is an explicit catch that maps to a typed result and
-//    logs a PII-free event (shared/log.js). Note: `.catch(() => undefined)` on a
-//    best-effort UI broadcast is NOT banned — a closed popup is a normal,
-//    non-actionable outcome.
+// 1. SOURCE PATTERNS: canonical R75 net-new escape hatches, silent catches,
+//    unjustified TypeScript suppressions, and placeholder copy are forbidden.
 // 2. COMMIT IDENTITY (R3): every commit this branch adds must be authored AND
 //    committed as Bradley Gleave <bradley@bradleytgpcoaching.com>, with no
 //    AI/agent/co-author tokens anywhere in author, committer, or message.
 //
 // Usage: node scripts/check-banned.mjs
-import { readFileSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
 import { execSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolveBase, mergeBase } from "./lib/git-diff.mjs";
 
 const failures = [];
 
-// ---- 1. source patterns -----------------------------------------------------
+// ---- 1. canonical R75 diff-scoped source patterns -----------------------------
 
-const SILENT_CATCH = /\.catch\(\s*\(\s*\)\s*=>\s*null\s*\)/;
-const EMPTY_CATCH = /catch\s*\{\s*\}/;
-const SKIP_DIRS = new Set(["node_modules", ".git", "test", "scripts"]);
-
-function prodJsFiles(dir) {
-    const out = [];
-    for (const name of readdirSync(dir)) {
-        if (SKIP_DIRS.has(name)) continue;
-        const full = join(dir, name);
-        if (statSync(full).isDirectory()) out.push(...prodJsFiles(full));
-        else if (name.endsWith(".js")) out.push(full);
-    }
-    return out;
+const base = resolveBase();
+const from = mergeBase(base);
+const patch = execSync(
+    `git diff --unified=0 ${from} HEAD -- '*.js' '*.mjs' '*.ts' '*.tsx' ` +
+    `':(exclude)test/**' ':(exclude)scripts/check-banned.mjs'`,
+    { encoding: "utf8" },
+);
+const patterns = [
+    ["@ts-ignore", /@ts-ignore/g], ["as any", /\bas\s+any\b/g],
+    ["as unknown as", /\bas\s+unknown\s+as\b/g], ["as never", /\bas\s+never\b/g],
+    ["silent catch null", /\.catch\(\s*\(\s*\)\s*=>\s*null\s*\)/g],
+    ["silent catch undefined", /\.catch\(\s*\(\s*\)\s*=>\s*undefined\s*\)/g],
+    ["silent catch block", /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/g],
+    ["empty catch", /catch\s*\{\s*\}/g], ["Coming soon", /Coming soon/gi],
+];
+const added = patch.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++"));
+const removed = patch.split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---"));
+for (const [label, pattern] of patterns) {
+    const count = (lines) => lines.reduce((sum, line) => sum + [...line.matchAll(pattern)].length, 0);
+    if (count(added) > count(removed)) failures.push(`R75 net-new banned token: ${label}`);
 }
-
-for (const file of prodJsFiles(".")) {
-    const lines = readFileSync(file, "utf8").split("\n");
-    lines.forEach((line, i) => {
-        if (SILENT_CATCH.test(line)) failures.push(`${file}:${i + 1} banned silent .catch(() => null)`);
-        if (EMPTY_CATCH.test(line)) failures.push(`${file}:${i + 1} banned empty catch {}`);
-    });
+for (const line of added) {
+    const marker = line.indexOf("@ts-expect-error");
+    if (marker >= 0 && !/^\s+\S.{2,}$/.test(line.slice(marker + 16))) {
+        failures.push("R75 @ts-expect-error requires a current reason on the same line");
+    }
+}
+const manifest = JSON.parse(readFileSync("package.json", "utf8"));
+for (const [name, version] of Object.entries({ ...manifest.dependencies, ...manifest.devDependencies })) {
+    if (typeof version !== "string" || /[~^*]|\s|\|\|/.test(version)) {
+        failures.push(`R114 dependency ${name} is not pinned exactly: ${version}`);
+    }
 }
 
 // ---- 2. commit identity (R3) ------------------------------------------------
@@ -50,8 +55,6 @@ const EXPECTED_NAME = "Bradley Gleave";
 const EXPECTED_EMAIL = "bradley@bradleytgpcoaching.com";
 const IDENTITY_TOKENS = /(claude|anthropic|co-authored-by|copilot|openai|\bgpt\b|assistant|dynasia|noreply@)/i;
 
-const base = resolveBase();
-const from = mergeBase(base);
 // --no-merges: pull_request CI checks out a synthetic merge commit authored by
 // GitHub <noreply@github.com>. That is not a PR commit and must not trip R3.
 const raw = execSync(

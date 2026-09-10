@@ -139,9 +139,9 @@ describe("redactResponseBody — auth/secret material is stripped, PII preserved
             meta: { auth: { refresh_token: "leak2" } },
         });
         const out = JSON.parse(redactResponseBody(input));
-        expect(out.data[0].session.token).toBe(BODY_REDACTED);
+        expect(out.data[0].session).toBe(BODY_REDACTED);
         expect(out.data[0].name).toBe("Dana");
-        expect(out.meta.auth.refresh_token).toBe(BODY_REDACTED);
+        expect(out.meta.auth).toBe(BODY_REDACTED);
     });
 
     it.each([
@@ -182,6 +182,29 @@ describe("redactResponseBody — auth/secret material is stripped, PII preserved
             nested: { note: BODY_REDACTED },
         });
     });
+
+    it("redacts credential strings at the JSON root and every array depth", () => {
+        const bearer = "Bearer RAW-ARRAY-SECRET";
+        const basic = "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==";
+        expect(redactResponseBody(JSON.stringify(bearer))).toBe(JSON.stringify(BODY_REDACTED));
+        expect(JSON.parse(redactResponseBody(JSON.stringify([
+            bearer, [basic], { values: ["Ｂｅａｒｅｒ FULLWIDTH-SECRET"] },
+        ])))).toEqual([BODY_REDACTED, [BODY_REDACTED], { values: [BODY_REDACTED] }]);
+    });
+
+    it.each([
+        "cardNumber", "cvv", "cvc", "pan", "pwd", "passwd", "passcode",
+        "api_secret", "cookies",
+    ])("redacts expanded credential/payment alias %s", (key) => {
+        expect(JSON.parse(redactResponseBody(JSON.stringify({ [key]: "raw" }))))
+            .toEqual({ [key]: BODY_REDACTED });
+    });
+
+    it.each(["tокеn", "pаsswоrԁ", "passwo\u200Brd", "pássword"])(
+        "redacts normalized or multi-confusable credential key %s",
+        (key) => expect(JSON.parse(redactResponseBody(JSON.stringify({ [key]: "raw" }))))
+            .toEqual({ [key]: BODY_REDACTED }),
+    );
 
     it("fails closed to a whole-body marker when the absolute walk budget is exceeded", () => {
         const input = JSON.stringify(Array.from({ length: 20001 }, () => null));

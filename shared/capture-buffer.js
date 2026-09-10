@@ -11,6 +11,7 @@
 // R75: zero banned type-assertions — every narrowing is a real guard.
 
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
+const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 
 // Serialized UTF-8 byte size of an entry. TextEncoder is available in both the
 // MV3 service worker and the vitest (Node) test runner. Unserializable values
@@ -36,7 +37,7 @@ function byteSizeOf(entry) {
 class CaptureBuffer {
     constructor(maxBytes = DEFAULT_MAX_BYTES) {
         const valid = typeof maxBytes === "number" && Number.isFinite(maxBytes) && maxBytes > 0;
-        this.maxBytes = valid ? maxBytes : DEFAULT_MAX_BYTES;
+        this.maxBytes = valid ? Math.min(maxBytes, MAX_CAPTURE_BYTES) : DEFAULT_MAX_BYTES;
         this.entries = [];
         this.totalBytes = 0;
     }
@@ -66,4 +67,4 @@ function createCaptureBuffer(maxBytes = DEFAULT_MAX_BYTES) {
     return new CaptureBuffer(maxBytes);
 }
 
-export { CaptureBuffer, createCaptureBuffer, byteSizeOf, DEFAULT_MAX_BYTES };
+export { CaptureBuffer, createCaptureBuffer, byteSizeOf, DEFAULT_MAX_BYTES, MAX_CAPTURE_BYTES };

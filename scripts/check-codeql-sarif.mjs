@@ -10,19 +10,30 @@ function walk(dir) {
         else if (name.endsWith(".sarif")) files.push(path);
     }
 }
-walk(root);
-if (files.length === 0) {
-    process.stdout.write("FAIL: CodeQL produced no SARIF result\n");
+
+let findings = 0;
+const details = [];
+try {
+    walk(root);
+    if (files.length === 0) throw new Error("CodeQL produced no SARIF result");
+    for (const file of files) {
+        const sarif = JSON.parse(readFileSync(file, "utf8"));
+        if (!sarif || !Array.isArray(sarif.runs)) throw new Error(`${file}: runs must be an array`);
+        for (const [runIndex, run] of sarif.runs.entries()) {
+            if (!run || (run.results !== undefined && !Array.isArray(run.results))) {
+                throw new Error(`${file}: run ${runIndex} results must be an array`);
+            }
+            for (const result of run.results ?? []) {
+                findings += 1;
+                details.push(`${result?.ruleId ?? "<no-rule>"} level=${result?.level ?? "default"}`);
+            }
+        }
+    }
+} catch (error) {
+    process.stdout.write(`FAIL: invalid CodeQL SARIF: ${error instanceof Error ? error.message : "unknown error"}\n`);
     process.exit(1);
 }
-let findings = 0;
-for (const file of files) {
-    const sarif = JSON.parse(readFileSync(file, "utf8"));
-    for (const run of sarif.runs ?? []) {
-        findings += (run.results ?? []).filter((result) =>
-            result.level === "error" || result.level === "warning").length;
-    }
-}
-process.stdout.write(`CodeQL SARIF gate — files=${files.length} blocking_findings=${findings}\n`);
+process.stdout.write(`CodeQL SARIF gate — files=${files.length} findings=${findings}\n`);
+for (const detail of details) process.stdout.write(`  - ${detail}\n`);
 if (findings > 0) process.exit(1);
-process.stdout.write("OK: CodeQL analysis has no blocking findings\n");
+process.stdout.write("OK: CodeQL analysis has zero results\n");

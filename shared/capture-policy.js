@@ -65,17 +65,24 @@ function redactParsedValue(value) {
     while (pending.length > 0) {
         const current = pending.pop();
         if (++nodes > 20000) return null;
-        if (Array.isArray(current)) for (const child of current) pending.push(child);
+        if (Array.isArray(current)) for (let index = 0; index < current.length; index += 1) {
+            const child = current[index];
+            if (typeof child === "string") {
+                const redacted = redactCredentialText(child);
+                if (redacted !== child) { current[index] = redacted; changed = true; }
+            }
+            pending.push(child);
+        }
         else if (isRecord(current)) for (const [key, child] of Object.entries(current)) {
             if (isCredentialKey(key)) {
                 current[key] = BODY_REDACTED;
                 changed = true;
             }
-            else if (typeof child === "string" && redactCredentialText(child) !== child) {
-                current[key] = redactCredentialText(child);
-                changed = true;
+            else if (typeof child === "string") {
+                const redacted = redactCredentialText(child);
+                if (redacted !== child) { current[key] = redacted; changed = true; }
             }
-            else if (isRecord(child)) pending.push(child);
+            pending.push(child);
         }
     }
     return changed;

@@ -10,10 +10,10 @@
     "check:loc": "node scripts/check-prod-loc.mjs",
     "check:flags": "node scripts/check-flag-discipline.mjs",
     "check:fixtures": "node scripts/check-production-fixtures.mjs",
-    "test:deploy-readiness": "node scripts/check-deploy-readiness.mjs",
-    "gates": "npm run check:banned && npm run check:loc && npm run check:flags && npm run check:ratio && npm run check:fixtures && npm run test:deploy-readiness"
+    "check:production-preflight": "node scripts/check-deploy-readiness.mjs",
+    "gates": "npm run check:banned && npm run check:loc && npm run check:flags && npm run check:ratio && npm run check:fixtures && npm run check:production-preflight"
   },
   "devDependencies": {
-    "vitest": "^4.1.11"
+    "vitest": "4.1.11"
   }
 }

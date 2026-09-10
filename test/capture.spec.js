@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { makeChromeMock, installChrome } from "./helpers/chrome-mock.js";
-import { attachDebugger, stopCapture } from "../shared/capture.js";
+import { attachDebugger, redactHeaders, redactUrl, stopCapture } from "../shared/capture.js";
 
 const TAB = 11;
 
@@ -303,5 +303,29 @@ describe("attachDebugger / stopCapture", () => {
         const entries = await stopCapture(TAB);
         const ids = entries.map((e) => e.requestId).sort();
         expect(ids).toEqual(["a", "b"]);
+    });
+});
+
+describe("shared credential classification for request metadata", () => {
+    it.each(["X-Api-Key", "api_secret", "cookies", "pаsswоrԁ"])(
+        "redacts header alias %s",
+        (key) => expect(redactHeaders({ [key]: "RAW" })[key]).toBe("<redacted>"),
+    );
+
+    it.each(["refresh_token", "client_secret", "cardNumber", "tокеn"])(
+        "redacts query alias %s",
+        (key) => {
+            const result = redactUrl(`https://coach.example/path?${encodeURIComponent(key)}=RAW&safe=ok`);
+            const params = new URL(result).searchParams;
+            expect(params.get(key)).toBe("<redacted>");
+            expect(params.get("safe")).toBe("ok");
+        },
+    );
+
+    it("redacts credential-form values even under innocuous metadata keys", () => {
+        expect(redactHeaders({ "X-Note": "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==" }))
+            .toEqual({ "X-Note": "<redacted>" });
+        expect(new URL(redactUrl("https://coach.example/path?q=Bearer%20SECRET")).searchParams.get("q"))
+            .toBe("<redacted>");
     });
 });

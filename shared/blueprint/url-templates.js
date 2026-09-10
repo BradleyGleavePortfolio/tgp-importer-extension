@@ -1,4 +1,3 @@
-// Pure path-structure evidence. Arbitrary captured segments never enter output.
 import { compareText } from "./order.js";
 const SUPPORTED_QUERY_KEYS = new Set([
     "after", "before", "cursor", "end", "from", "limit", "offset", "page",
@@ -9,6 +8,8 @@ const INTEGER = /^(?:0|[1-9]\d*)$/;
 const OPAQUE = /^(?=.{6,64}$)(?=.*[A-Za-z])(?=.*\d)[A-Za-z0-9_-]+$/;
 const VERSION = /^v\d{1,3}$/i;
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
+const YEAR = /^\d{4}$/;
+const YEAR_MONTH = /^(?:19|20)\d{2}-(?:0[1-9]|1[0-2])$/;
 const DECIMAL = /^(?:0|[1-9]\d*)\.\d+$/;
 const HARD = Object.freeze({ minDistinct: 32, maxObservations: 1000, maxSegments: 32 });
 const MAX_PATH_CHARS = 1024 * 1024;
@@ -16,8 +17,8 @@ function candidateKind(segment) {
     const match = typeof segment === "string" ? segment.match(UUID_SHAPE) : null;
     if (match) return /[1-8]/i.test(match[1]) && /[89ab]/i.test(match[2]) ? "uuid" : null;
     if (typeof segment !== "string" || /^[a-f0-9-]{32,40}$/i.test(segment)) return null;
-    if (INTEGER.test(segment)) return "integer";
-    return OPAQUE.test(segment) ? "opaque" : null;
+    if (INTEGER.test(segment) && !YEAR.test(segment)) return "integer";
+    return !YEAR_MONTH.test(segment) && OPAQUE.test(segment) ? "opaque" : null;
 }
 function option(options, key, fallback, minimum = 1) {
     const raw = options?.[key];
@@ -28,14 +29,12 @@ function splitPath(path, maxSegments) {
         path.startsWith("//") || /[\\\x00-\x1f\x7f?#]/.test(path)) return null;
     const encoded = path.split("/").slice(1);
     if (encoded.length > maxSegments || encoded.some((part) => part.length > 256)) return null;
-    try {
-        const decoded = encoded.map((part) => decodeURIComponent(part).normalize("NFC"));
+    try { const decoded = encoded.map((part) => decodeURIComponent(part).normalize("NFC"));
         return decoded.some((part) => part.length > 256 || /@|^(?:<redacted>|\[redacted\])$/i.test(part)) ? null : decoded;
     } catch { return null; }
 }
 function safeOrigin(raw) {
-    try {
-        const url = new URL(raw);
+    try { const url = new URL(raw);
         const host = url.hostname.toLowerCase().replace(/\.+$/, "");
         return url.protocol === "https:" && !url.username && !url.password && url.origin === raw &&
             host !== "localhost" && !host.endsWith(".localhost") && !host.startsWith("[") &&
@@ -48,12 +47,8 @@ function structural(segment) {
     if (DECIMAL.test(segment)) return "{decimal}";
     return candidateKind(segment) === null ? "{text}" : "{candidate}";
 }
-function display(segment, tokens) {
-    if (VERSION.test(segment)) return segment.toLowerCase();
-    if (DATE.test(segment)) return "{date}";
-    if (DECIMAL.test(segment)) return "{decimal}";
-    return `{s${tokens.get(segment)}}`;
-}
+function literal(segment) { return encodeURIComponent(segment).replace(/[!'()*]/g,
+    (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`); }
 function supportedKeys(value) {
     if (!Array.isArray(value) || value.length > 64) return [];
     return [...new Set(value.filter((key) => typeof key === "string" &&
@@ -61,21 +56,15 @@ function supportedKeys(value) {
 }
 function grouped(values, keyFor) {
     const out = new Map();
-    for (const value of values) {
-        const key = keyFor(value);
-        const group = out.get(key) ?? [];
-        group.push(value);
-        out.set(key, group);
-    }
+    for (const value of values) { const key = keyFor(value), group = out.get(key) ?? [];
+        group.push(value); out.set(key, group); }
     return out;
 }
 export function inferUrlTemplates(observations, options) {
-    if (!Array.isArray(observations)) {
+    if (!Array.isArray(observations))
         return { clusters: [], excluded: [{ reason: "invalid_observations", count: 1 }] };
-    }
-    if (observations.length > HARD.maxObservations) {
+    if (observations.length > HARD.maxObservations)
         return { clusters: [], excluded: [{ reason: "observation_limit", count: observations.length }] };
-    }
     if (observations.reduce((n, item) => n + (typeof item?.path === "string" ? item.path.length : 0), 0) >
         MAX_PATH_CHARS) return { clusters: [], excluded: [{ reason: "path_byte_limit", count: observations.length }] };
     const minDistinct = option(options, "minDistinct", 3, 2);
@@ -92,19 +81,16 @@ export function inferUrlTemplates(observations, options) {
             queryKeys: supportedKeys(observation.queryKeys) });
     }
     rows.sort((a, b) => compareText(JSON.stringify(a), JSON.stringify(b)));
-    if (rows.length > maxObservations) {
-        rejected.set("observation_limit", rows.length - maxObservations);
-        rows.length = maxObservations;
-    }
-    const rawTokens = [...new Set(rows.flatMap((row) => row.segments).filter((segment) =>
-        !VERSION.test(segment) && !DATE.test(segment) && !DECIMAL.test(segment)))].sort(compareText);
-    const tokens = new Map(rawTokens.map((value, index) => [value, index + 1]));
+    if (rows.length > maxObservations)
+        rejected.set("observation_limit", rows.length - maxObservations), rows.length = maxObservations;
     const coarse = grouped(rows, (row) => JSON.stringify([row.origin, row.method, row.segments.map(structural)]));
     const clusters = [];
     for (const group of coarse.values()) {
         const dynamic = new Set(group[0].segments.flatMap((_segment, index) => {
             const values = [...new Set(group.map((row) => row.segments[index]))];
-            return values.length >= minDistinct && values.every((value) => candidateKind(value)) ? [index] : [];
+            const months = index > 0 && group.every((row) => YEAR.test(row.segments[index - 1])) &&
+                values.every((value) => INTEGER.test(value) && Number(value) >= 1 && Number(value) <= 12);
+            return values.length >= minDistinct && !months && values.every((value) => candidateKind(value)) ? [index] : [];
         }));
         const partitions = grouped(group, (row) =>
             JSON.stringify(row.segments.filter((_segment, index) => !dynamic.has(index))));
@@ -113,7 +99,7 @@ export function inferUrlTemplates(observations, options) {
             const cluster = {
                 origin: partition[0].origin, method: partition[0].method,
                 pathPattern: "/" + partition[0].segments.map((segment, index) =>
-                    dynamic.has(index) ? ":id" : display(segment, tokens)).join("/"),
+                    dynamic.has(index) ? ":id" : literal(segment)).join("/"),
                 dynamicSegments, replayCompatible: dynamicSegments <= 1,
                 queryKeys: [...new Set(partition.flatMap((row) => row.queryKeys))].sort(compareText),
                 observations: partition.length,

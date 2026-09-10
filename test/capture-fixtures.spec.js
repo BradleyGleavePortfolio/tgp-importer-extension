@@ -74,7 +74,7 @@ describe("capture replays real CDP traces", () => {
             clusters: [{
                 origin: "https://app.truecoach.co",
                 method: "GET",
-                pathPattern: "/{s3}/{s1}/{s2}",
+                pathPattern: "/proxy/api/clients",
                 dynamicSegments: 0,
                 replayCompatible: true,
                 queryKeys: ["page"],
