@@ -101,6 +101,7 @@ function redactResponseBody(body) {
     if (typeof body !== "string" || body.length === 0) {
         return body;
     }
+    if (body.length > 8 * 1024 * 1024) return JSON.stringify(BODY_REDACTED);
     let parsed;
     try {
         parsed = JSON.parse(body);

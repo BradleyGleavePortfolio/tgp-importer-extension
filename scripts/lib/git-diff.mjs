@@ -37,8 +37,8 @@ export function mergeBase(base) {
 // Category of a repo-relative path for gate accounting.
 export function classify(path) {
     if (path.includes("node_modules/")) return "ignore";
-    if (!path.endsWith(".js") && !path.endsWith(".mjs")) return "ignore";
-    if (path.startsWith("test/")) return "test";
+    if (!/\.(?:[cm]?[jt]s|[jt]sx)$/.test(path)) return "ignore";
+    if (/(^|\/)(?:test|tests|__tests__)\//.test(path) || /\.(?:spec|test)\.[cm]?[jt]sx?$/.test(path)) return "test";
     if (path.startsWith("scripts/")) return "ignore"; // gates + tooling are not shipped
     return "prod";
 }

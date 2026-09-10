@@ -46,7 +46,7 @@ describe("synthetic C2a fixture evidence (not a captured oracle)", () => {
         expect(result).toEqual([{
             origin: "https://app.truecoach.co",
             method: "GET",
-            signature: "object{number*1,object{boolean*1}*1,string*3}",
+            signature: "object{#j96a3d:string,email:string,id:number,name:string,profile:object{active:boolean}}",
             observations: 3,
         }]);
     });

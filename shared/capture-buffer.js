@@ -13,19 +13,34 @@
 const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
 const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 
-// Serialized UTF-8 byte size of an entry. TextEncoder is available in both the
-// MV3 service worker and the vitest (Node) test runner. Unserializable values
-// contribute 0 bytes rather than throwing.
+// A cheap conservative walk rejects oversized/cyclic input before allocating a
+// complete serialization or UTF-8 copy.
+function fitsCheapBound(entry, limit) {
+    const pending = [entry], seen = new WeakSet(); let chars = 0, nodes = 0;
+    while (pending.length) {
+        const value = pending.pop(); if (++nodes > 20000) return false;
+        if (typeof value === "string") chars += value.length + 2;
+        else if (value && typeof value === "object") {
+            if (seen.has(value)) return false; seen.add(value);
+            for (const [key, child] of Object.entries(value)) {
+                chars += key.length + 4; pending.push(child);
+            }
+        } else chars += 8;
+        if (chars > limit) return false;
+    }
+    return true;
+}
+
 function byteSizeOf(entry) {
     let json;
     try {
         json = JSON.stringify(entry);
     }
     catch {
-        return 0;
+        return null;
     }
     if (typeof json !== "string") {
-        return 0;
+        return null;
     }
     return new TextEncoder().encode(json).length;
 }
@@ -43,7 +58,9 @@ class CaptureBuffer {
     }
 
     push(entry) {
+        if (!fitsCheapBound(entry, this.maxBytes)) return;
         const size = byteSizeOf(entry);
+        if (size === null || size > this.maxBytes) return;
         this.entries.push({ entry, size });
         this.totalBytes += size;
         while (this.totalBytes > this.maxBytes && this.entries.length > 0) {

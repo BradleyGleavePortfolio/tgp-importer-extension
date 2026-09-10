@@ -85,7 +85,7 @@ describe("capture replays real CDP traces", () => {
         expect(clusterResponseShapes(normalized.observations, { maxDepth: 3 })).toEqual([{
             origin: "https://app.truecoach.co",
             method: "GET",
-            signature: "object{array[object{number*1,string*2}]*1,number*2}",
+            signature: "object{clients:array[object{email:string,id:number,name:string}],page:number,total:number}",
             observations: 1,
         }]);
     });

@@ -139,9 +139,9 @@ describe("redactResponseBody — auth/secret material is stripped, PII preserved
             meta: { auth: { refresh_token: "leak2" } },
         });
         const out = JSON.parse(redactResponseBody(input));
-        expect(out.data[0].session).toBe(BODY_REDACTED);
+        expect(out.data[0].session).toEqual({ token: BODY_REDACTED });
         expect(out.data[0].name).toBe("Dana");
-        expect(out.meta.auth).toBe(BODY_REDACTED);
+        expect(out.meta.auth).toEqual({ refresh_token: BODY_REDACTED });
     });
 
     it.each([
@@ -193,7 +193,7 @@ describe("redactResponseBody — auth/secret material is stripped, PII preserved
     });
 
     it.each([
-        "cardNumber", "cvv", "cvc", "pan", "pwd", "passwd", "passcode",
+        "cardNumber", "cvv", "cvc", "card_pan", "pwd", "passwd", "passcode",
         "api_secret", "cookies",
     ])("redacts expanded credential/payment alias %s", (key) => {
         expect(JSON.parse(redactResponseBody(JSON.stringify({ [key]: "raw" }))))
@@ -220,6 +220,17 @@ describe("redactResponseBody — auth/secret material is stripped, PII preserved
 
     it("does not clobber near-miss keys like token_count or secret_notes", () => {
         const input = JSON.stringify({ token_count: 3, secret_notes: "keep" });
+        expect(redactResponseBody(input)).toBe(input);
+    });
+
+    it("preserves benign coaching and multilingual content under broad nouns", () => {
+        const input = JSON.stringify({
+            session: { title: "Strength session", duration_minutes: 45, completed: true },
+            auth: "OAuth support article",
+            pan: "integral",
+            idioma: "es",
+            token数量: 3,
+        });
         expect(redactResponseBody(input)).toBe(input);
     });
 
@@ -258,11 +269,11 @@ describe("capture pipeline stores redacted bodies", () => {
         installChrome(mock);
     });
 
-    function emitJson(requestId, url) {
+    function emitJson(requestId, url, headers = {}) {
         const source = { tabId: TAB };
         mock.emit(source, "Network.requestWillBeSent", {
             requestId,
-            request: { url, method: "GET", headers: {} },
+            request: { url, method: "GET", headers },
         });
         mock.emit(source, "Network.responseReceived", {
             requestId,
@@ -318,5 +329,37 @@ describe("capture pipeline stores redacted bodies", () => {
         });
         expect(JSON.stringify(result)).not.toContain("live-access");
         expect(JSON.stringify(result)).not.toContain("RAW-BEARER-SECRET");
+    });
+
+    it.each([
+        "oauth_token", "csrf_token", "csrfToken", "xsrf_token", "xsrfToken", "x_auth_token",
+        "proxy_authorization", "secret_key", "access_key", "access_key_id", "card_cvv", "card_cvc",
+        "card_expiry", "expiry_month", "expiry_year", "security_code", "routing_number",
+        "account_number", "passphrase", "sid", "jsessionid", "PHPSESSID", "cc_number",
+        "creditCardNumber", "payment_token", "otp", "pin",
+    ])("redacts %s through body, header, URL, buffer, and C2a normalization", async (alias) => {
+        const secret = `raw-${alias}-must-not-survive`;
+        mock.onCommand("Network.getResponseBody", () => ({
+            body: JSON.stringify({
+                [alias]: secret,
+                nested: { [alias]: secret },
+                rows: [{ [alias]: secret }],
+            }),
+            base64Encoded: false,
+        }));
+        await attachDebugger(TAB);
+        emitJson(alias, `https://app.truecoach.co/api/clients?${encodeURIComponent(alias)}=${secret}`, {
+            [alias.replaceAll("_", "-")]: secret,
+        });
+        const captured = await stopCapture(TAB);
+        expect(JSON.stringify(captured)).not.toContain(secret);
+        const result = normalizeCaptureSnapshot(captured);
+        expect(result.excluded).toEqual([]);
+        expect(JSON.stringify(result)).not.toContain(secret);
+        expect(result.observations[0].body).toEqual({
+            [alias]: BODY_REDACTED,
+            nested: { [alias]: BODY_REDACTED },
+            rows: [{ [alias]: BODY_REDACTED }],
+        });
     });
 });

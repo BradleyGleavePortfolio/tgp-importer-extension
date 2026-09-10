@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": true,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "skipLibCheck": true,
+    "target": "ES2022"
+  },
+  "files": [
+    "shared/credential-policy.js",
+    "shared/capture-buffer.js",
+    "shared/blueprint/order.js",
+    "shared/blueprint/shapes.js",
+    "shared/blueprint/url-templates.js"
+  ]
+}

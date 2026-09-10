@@ -17,9 +17,10 @@ const failures = [];
 
 const base = resolveBase();
 const from = mergeBase(base);
+const range = process.env.BANNED_DIFF_CACHED === "1" ? "--cached" : `${from} HEAD`;
 const patch = execSync(
-    `git diff --unified=0 ${from} HEAD -- '*.js' '*.mjs' '*.ts' '*.tsx' ` +
-    `':(exclude)test/**' ':(exclude)scripts/check-banned.mjs'`,
+    `git diff --unified=0 ${range} -- '*.js' '*.mjs' '*.ts' '*.tsx' '*.jsx' ` +
+    `':(exclude)scripts/check-banned.mjs'`,
     { encoding: "utf8" },
 );
 const patterns = [
@@ -57,7 +58,7 @@ const IDENTITY_TOKENS = /(claude|anthropic|co-authored-by|copilot|openai|\bgpt\b
 
 // --no-merges: pull_request CI checks out a synthetic merge commit authored by
 // GitHub <noreply@github.com>. That is not a PR commit and must not trip R3.
-const raw = execSync(
+const raw = process.env.BANNED_DIFF_CACHED === "1" ? "" : execSync(
     `git log ${from}..HEAD --no-merges --format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e`,
     { encoding: "utf8" },
 );

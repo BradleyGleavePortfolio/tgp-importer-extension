@@ -44,3 +44,7 @@ jobs:
         run: node scripts/check-production-fixtures.mjs
       - name: Deploy readiness board
         run: node scripts/check-deploy-readiness.mjs
+      - name: Pre-commit hook alignment
+        run: node scripts/check-hook-config.mjs
+      - name: Lint and type-check
+        run: npm run lint && npm run type-check

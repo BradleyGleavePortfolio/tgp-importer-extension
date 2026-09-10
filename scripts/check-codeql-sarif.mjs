@@ -18,12 +18,20 @@ try {
     if (files.length === 0) throw new Error("CodeQL produced no SARIF result");
     for (const file of files) {
         const sarif = JSON.parse(readFileSync(file, "utf8"));
-        if (!sarif || !Array.isArray(sarif.runs)) throw new Error(`${file}: runs must be an array`);
+        if (!sarif || sarif.version !== "2.1.0" || !Array.isArray(sarif.runs) || sarif.runs.length === 0) {
+            throw new Error(`${file}: supported SARIF must contain at least one run`);
+        }
         for (const [runIndex, run] of sarif.runs.entries()) {
-            if (!run || (run.results !== undefined && !Array.isArray(run.results))) {
-                throw new Error(`${file}: run ${runIndex} results must be an array`);
+            const driver = run && typeof run === "object" && !Array.isArray(run) ? run.tool?.driver : null;
+            if (!driver || typeof driver.name !== "string" || !/codeql/i.test(driver.name) ||
+                !Array.isArray(run.results)) {
+                throw new Error(`${file}: run ${runIndex} must identify CodeQL and contain results`);
             }
-            for (const result of run.results ?? []) {
+            if (run.invocations !== undefined && (!Array.isArray(run.invocations) ||
+                run.invocations.some((item) => item?.executionSuccessful === false))) {
+                throw new Error(`${file}: run ${runIndex} has an invalid or failed invocation`);
+            }
+            for (const result of run.results) {
                 findings += 1;
                 const physical = result?.locations?.[0]?.physicalLocation;
                 const location = physical?.artifactLocation?.uri ?? "<no-file>";

@@ -8,7 +8,7 @@
 ## Security and readiness
 
 - [ ] `npm audit --audit-level=high` is clean.
-- [ ] `npm run test:deploy-readiness` passes.
+- [ ] `npm run check:production-preflight` passes (static manifest, entrypoint, and marker checks).
 - [ ] Production fixture exclusion passes.
 - [ ] RLS/PII/auth/write-back impacts are stated (N/A with reason is allowed).
 - [ ] Flag, SLO, migration, and idempotency impacts are stated (N/A with reason is allowed).

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
+import { classify } from "../scripts/lib/git-diff.mjs";
 
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const made = [];
@@ -21,14 +22,16 @@ function run(script, root) {
     return spawnSync(process.execPath, [join(repo, "scripts", script), root], { encoding: "utf8" });
 }
 function sarif(runs) {
-    return JSON.stringify({ version: "2.1.0", runs });
+    return JSON.stringify({ version: "2.1.0", runs: runs.map((run) => ({
+        tool: { driver: { name: "CodeQL" } }, ...run,
+    })) });
 }
 afterEach(() => made.splice(0).forEach((dir) => rmSync(dir, { recursive: true, force: true })));
 
 describe("CodeQL SARIF zero-result gate", () => {
     it("accepts valid empty runs", () => {
         const root = temp();
-        put(root, "clean.sarif", sarif([{ results: [] }, {}]));
+        put(root, "clean.sarif", sarif([{ results: [] }, { results: [] }]));
         const result = run("check-codeql-sarif.mjs", root);
         expect(result.status).toBe(0);
         expect(result.stdout).toContain("findings=0");
@@ -66,6 +69,18 @@ describe("CodeQL SARIF zero-result gate", () => {
         put(root, "bad.sarif", body);
         expect(run("check-codeql-sarif.mjs", root).status).toBe(1);
     });
+
+    it.each([
+        JSON.stringify({ version: "2.1.0", runs: [] }),
+        JSON.stringify({ version: "2.1.0", runs: [42] }),
+        JSON.stringify({ version: "2.1.0", runs: ["bad"] }),
+        JSON.stringify({ version: "2.1.0", runs: [{ results: [] }] }),
+        sarif([{ invocations: [{ executionSuccessful: false }], results: [] }]),
+    ])("rejects incomplete or failed CodeQL run structure", (body) => {
+        const root = temp();
+        put(root, "bad.sarif", body);
+        expect(run("check-codeql-sarif.mjs", root).status).toBe(1);
+    });
 });
 
 describe("production fixture import preflight", () => {
@@ -75,6 +90,11 @@ describe("production fixture import preflight", () => {
         'import("./__mocks__/customer.js");',
         'const value = require("./mocks/customer.js");',
         'import {\n value\n} from "./test/fixtures/customer.js";',
+        'const value = require(`./fixtures/customer.js`);',
+        'import(`./fixtures/customer.js`, { with: { type: "json" } });',
+        'import/* keep */"./mocks/customer.js";',
+        'const value = require (/* keep */ "./mocks/customer.js");',
+        'import value from "./fixtures/customer.json" with { type: "json" };',
     ])("rejects production reference: %s", (source) => {
         const root = temp();
         put(root, "background.js", source);
@@ -101,6 +121,8 @@ describe("production static preflight", () => {
     it.each([
         "const state = 'STUB';", "fetch('http://localhost:3000/api');",
         "fetch('https://example.com/api');", "const key = 'pk_test_123';",
+        "const state = 'MOCK';", "const state = 'FAKE';", "const state = 'PLACEHOLDER';",
+        "fetch('http://127.0.0.1:8080/api');",
     ])("rejects forbidden marker %s", (source) => {
         expect(run("check-deploy-readiness.mjs", project(source)).status).toBe(1);
     });
@@ -117,5 +139,57 @@ describe("production static preflight", () => {
         expect(run("check-deploy-readiness.mjs", project("", {
             background: { service_worker: "missing.js" },
         })).status).toBe(1);
+        expect(run("check-deploy-readiness.mjs", project("", {
+            background: { service_worker: "." },
+        })).status).toBe(1);
+        expect(run("check-deploy-readiness.mjs", project("", {
+            background: { service_worker: "manifest.json" },
+        })).status).toBe(1);
+    });
+});
+
+describe("canonical diff classification", () => {
+    it.each([
+        ["src/main.js", "prod"], ["src/view.jsx", "prod"], ["src/types.ts", "prod"],
+        ["src/view.tsx", "prod"], ["test/unit.js", "test"], ["src/__tests__/unit.ts", "test"],
+        ["src/unit.spec.jsx", "test"], ["src/unit.test.tsx", "test"],
+    ])("classifies %s as %s", (path, category) => expect(classify(path)).toBe(category));
+});
+
+describe("banned-token gate source coverage", () => {
+    function mutation(path, source) {
+        const root = temp();
+        put(root, "package.json", JSON.stringify({ private: true }));
+        put(root, "base.txt", "base");
+        for (const args of [["init"], ["add", "."], ["commit", "-m", "base"]]) {
+            const output = spawnSync("git", args, {
+                cwd: root, encoding: "utf8",
+                env: { ...process.env, GIT_AUTHOR_NAME: "Bradley Gleave",
+                    GIT_AUTHOR_EMAIL: "bradley@bradleytgpcoaching.com",
+                    GIT_COMMITTER_NAME: "Bradley Gleave",
+                    GIT_COMMITTER_EMAIL: "bradley@bradleytgpcoaching.com" },
+            });
+            expect(output.status).toBe(0);
+        }
+        put(root, path, source);
+        spawnSync("git", ["add", "."], { cwd: root });
+        spawnSync("git", ["commit", "-m", "mutation"], {
+            cwd: root, env: { ...process.env, GIT_AUTHOR_NAME: "Bradley Gleave",
+                GIT_AUTHOR_EMAIL: "bradley@bradleytgpcoaching.com",
+                GIT_COMMITTER_NAME: "Bradley Gleave",
+                GIT_COMMITTER_EMAIL: "bradley@bradleytgpcoaching.com" },
+        });
+        return spawnSync(process.execPath, [join(repo, "scripts/check-banned.mjs")], {
+            cwd: root, encoding: "utf8", env: { ...process.env, RATIO_BASE: "HEAD~1" },
+        });
+    }
+
+    it.each([
+        ["test/r75-mutant.ts", `const value = thing ${"as " + "any"};`],
+        ["src/r75-mutant.jsx", `Promise.resolve().catch(() => ${"undefined"});`],
+    ])("rejects a banned addition in %s", (path, source) => {
+        const output = mutation(path, source);
+        expect(output.status).toBe(1);
+        expect(output.stdout).toContain("R75 net-new banned token");
     });
 });

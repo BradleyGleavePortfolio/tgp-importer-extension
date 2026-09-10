@@ -15,17 +15,17 @@ function walk(dir) {
 walk(root);
 const fixturePath = /(?:^|\/)(?:test\/fixtures|fixtures|__mocks__|mocks)(?:\/|$)/;
 const importForms = [
-    /\b(?:import|export)\s+(?:(?:[\w*{},\s]+)\s+from\s+)?["']([^"']+)["']/g,
-    /\b(?:import|require)\s*\(\s*["']([^"']+)["']\s*\)/g,
+    /\b(?:import|export)\s+(?:(?:[\w*{},\s]+)\s+from\s+)?(["'`])([^"'`]+)\1/g,
+    /\b(?:import|require)\s*\(\s*(["'`])([^"'`]+)\1/g,
 ];
 const bad = [];
 for (const file of files) {
-    const source = readFileSync(file, "utf8");
+    const source = readFileSync(file, "utf8").replace(/\/\*[\s\S]*?\*\//g, " ");
     for (const pattern of importForms) {
         pattern.lastIndex = 0;
         for (const match of source.matchAll(pattern)) {
-            if (fixturePath.test(match[1].replaceAll("\\", "/"))) {
-                bad.push(`${relative(root, file)} -> ${match[1]}`);
+            if (fixturePath.test(match[2].replaceAll("\\", "/"))) {
+                bad.push(`${relative(root, file)} -> ${match[2]}`);
             }
         }
     }

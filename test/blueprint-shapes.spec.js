@@ -24,7 +24,14 @@ describe("shapeSignature — stable structural identity", () => {
         const left = { name: "Dana", active: true, age: 40 };
         const right = { age: 12, active: false, name: "Sam" };
         expect(shapeSignature(left)).toBe(shapeSignature(right));
-        expect(shapeSignature(left)).toBe("object{boolean*1,number*1,string*1}");
+        expect(shapeSignature(left)).toBe("object{active:boolean,age:number,name:string}");
+    });
+
+    it("does not collapse unrelated schemas with equal type cardinalities", () => {
+        const client = { id: 1, name: "Ada", active: true };
+        const account = { age: 44, email: "x@y", verified: false };
+        expect(shapeSignature(client)).not.toBe(shapeSignature(account));
+        expect(clusterResponseShapes([{ body: client }, { body: account }])).toHaveLength(2);
     });
 
     it("is independent of array value order and duplicate values", () => {
@@ -44,7 +51,7 @@ describe("shapeSignature — stable structural identity", () => {
         const strings = { client: { id: "private", enabled: true } };
         const numbers = { client: { id: 99, enabled: true } };
         expect(shapeSignature(strings, { maxDepth: 3 }))
-            .toBe("object{object{boolean*1,string*1}*1}");
+            .toBe("object{client:object{enabled:boolean,id:string}}");
         expect(shapeSignature(strings, { maxDepth: 3 }))
             .not.toBe(shapeSignature(numbers, { maxDepth: 3 }));
     });
@@ -53,7 +60,7 @@ describe("shapeSignature — stable structural identity", () => {
         const left = { client: { profile: { email: "dana@private.test" } } };
         const right = { client: { profile: { phone: "+1 555 0100" } } };
         expect(shapeSignature(left)).toBe(shapeSignature(right));
-        expect(shapeSignature(left)).toBe("object{object{object(*)*1}*1}");
+        expect(shapeSignature(left)).toBe("object{client:object{profile:object(*)}}");
     });
 
     it("supports a root-only depth budget", () => {
@@ -78,7 +85,7 @@ describe("shapeSignature — stable structural identity", () => {
         }, { maxDepth: 4 });
         for (const value of pii) expect(signature).not.toContain(value);
         expect(signature).toBe(
-            "object{array[string]*1,string*4}",
+            "object{address:string,email:string,name:string,notes:array[string],phone:string}",
         );
     });
 
@@ -89,7 +96,7 @@ describe("shapeSignature — stable structural identity", () => {
         const signature = shapeSignature(value);
         expect(signature).not.toContain(email);
         expect(signature).not.toContain(uuid);
-        expect(signature).toBe("object{boolean*2,number*1}");
+        expect(signature).toMatch(/^object\{#[a-z0-9]+:boolean,#[a-z0-9]+:boolean,#[a-z0-9]+:number\}$/);
     });
 
     it("does not expose prototype-like keys", () => {
@@ -97,7 +104,7 @@ describe("shapeSignature — stable structural identity", () => {
         const signature = shapeSignature(value);
         expect(signature).not.toContain("__proto__");
         expect(signature).not.toContain("constructor");
-        expect(signature).toBe("object{number*3}");
+        expect(signature).toMatch(/^object\{#[a-z0-9]+:number,#[a-z0-9]+:number,safe:number\}$/);
     });
 
     it("classifies non-finite and non-JSON scalars as unsupported", () => {
@@ -146,17 +153,17 @@ describe("shapeSignature — bounded collection work", () => {
     });
 
     it.each([
-        [1, "object{object(*)*1}"],
-        [2, "object{object{number*1}*1}"],
-        [3, "object{object{number*1}*1}"],
+        [1, "object{nested:object(*)}"],
+        [2, "object{nested:object{value:number}}"],
+        [3, "object{nested:object{value:number}}"],
     ])("enforces maxDepth at below/equal/above needed depth (%i)", (maxDepth, expected) => {
         expect(shapeSignature({ nested: { value: 1 } }, { maxDepth })).toBe(expected);
     });
 
     it.each([
         [1, "work(overflow)"],
-        [2, "object{number*1}"],
-        [3, "object{number*1}"],
+        [2, "object{value:number}"],
+        [3, "object{value:number}"],
     ])("enforces maxNodes at below/equal/above needed work (%i)", (maxNodes, expected) => {
         expect(shapeSignature({ value: 1 }, { maxNodes })).toBe(expected);
     });
@@ -165,7 +172,7 @@ describe("shapeSignature — bounded collection work", () => {
         const value = {};
         value.self = value;
         expect(shapeSignature(value, { maxDepth: 4 }))
-            .toBe("object{object(cycle)*1}");
+            .toBe("object{self:object(cycle)}");
     });
 
     it("uses defaults when numeric options are invalid", () => {
@@ -174,7 +181,7 @@ describe("shapeSignature — bounded collection work", () => {
             maxDepth: -1,
             maxCollection: 0,
             maxVariants: "many",
-        })).toBe("object{object{object(*)*1}*1}");
+        })).toBe("object{nested:object{deep:object(*)}}");
     });
 
     it("does not recurse into a huge array past the collection check", () => {
@@ -192,7 +199,7 @@ describe("clusterResponseShapes", () => {
         expect(clusterResponseShapes(observations)).toEqual([{
             origin: null,
             method: null,
-            signature: "object{number*1,string*2}",
+            signature: "object{email:string,id:number,name:string}",
             observations: 2,
         }]);
     });
@@ -275,38 +282,38 @@ describe("clusterResponseShapes", () => {
             {
                 origin: "https://one.example",
                 method: "GET",
-                signature: "object{number*1}",
+                signature: "object{id:number}",
                 observations: 1,
             },
             {
                 origin: "https://one.example",
                 method: "HEAD",
-                signature: "object{number*1}",
+                signature: "object{id:number}",
                 observations: 1,
             },
             {
                 origin: "https://two.example",
                 method: "GET",
-                signature: "object{number*1}",
+                signature: "object{id:number}",
                 observations: 1,
             },
         ]);
     });
 
-    it("preserves privacy-safe multiplicity and child-type distribution", () => {
+    it("preserves privacy-safe field identity and child types", () => {
         expect(shapeSignature({ DanaCoach: true }))
-            .toBe("object{boolean*1}");
+            .toMatch(/^object\{#[a-z0-9]+:boolean\}$/);
         expect(shapeSignature({ DanaCoach: true, SamLift: false }))
-            .toBe("object{boolean*2}");
+            .not.toBe(shapeSignature({ DanaCoach: true }));
         expect(shapeSignature({ DanaCoach: true, SamLift: 2 }))
-            .toBe("object{boolean*1,number*1}");
+            .not.toBe(shapeSignature({ DanaCoach: true, SamLift: false }));
     });
 
     it.each([
         "DanaCoach", "dana_coach", "+15550100", "abc123", "Ｄａｎａ", "é", "e\u0301",
     ])("never emits arbitrary object key %s", (key) => {
         const signature = shapeSignature({ nested: { [key]: { id: 1 } } }, { maxDepth: 4 });
-        expect(signature).toBe("object{object{object{number*1}*1}*1}");
+        expect(signature).toMatch(/^object\{nested:object\{#[a-z0-9]+:object\{id:number\}\}\}$/);
         expect(signature).not.toContain(key);
     });
 
@@ -327,8 +334,8 @@ describe("clusterResponseShapes", () => {
     });
 
     it.each([
-        [1, "object{number*1}"],
-        [2, "object{number*2}"],
+        [1, "object{#75o54p:number}"],
+        [2, "object{#6vojfq:number,#75o54p:number}"],
         [3, "object(overflow)"],
     ])("enforces maxCollection at exact object boundary %i", (count, expected) => {
         const value = Object.fromEntries(Array.from({ length: count }, (_, i) => [`private-${i}`, i]));

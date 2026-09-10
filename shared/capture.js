@@ -20,6 +20,7 @@ import { assertCaptureTabAllowed, redactResponseBody } from "./capture-policy.js
 import { isCredentialKey, redactCredentialText } from "./credential-policy.js";
 
 const DEBUGGER_PROTOCOL_VERSION = "1.3";
+const MAX_PENDING = 1000;
 
 // Per-tab capture state, keyed by tabId. Each entry owns its own ring buffer,
 // inflight-request table, and the debugger event listener used to tear down.
@@ -149,6 +150,7 @@ async function attachDebugger(tabId, options) {
         if (source.tabId !== tabId) {
             return;
         }
+        if (finalizers.size >= MAX_PENDING) return;
         const done = handleDebuggerEvent(target, method, params, inflight, buffer).catch(
             () => undefined,
         );
@@ -207,6 +209,9 @@ function recordRequest(params, inflight) {
     const requestHeaders = isRecord(params.request) && isRecord(params.request.headers)
         ? params.request.headers
         : {};
+    if (!inflight.has(requestId) && inflight.size >= MAX_PENDING) {
+        inflight.delete(inflight.keys().next().value);
+    }
     inflight.set(requestId, { url, method: method ?? "", requestHeaders });
 }
 
@@ -242,6 +247,9 @@ async function finalizeEntry(target, params, inflight, buffer) {
     if (pending === undefined) {
         return;
     }
+    const encodedLength = isRecord(params) && typeof params.encodedDataLength === "number"
+        ? params.encodedDataLength : 0;
+    if (encodedLength > buffer.maxBytes) return;
 
     let body;
     try {
@@ -256,7 +264,7 @@ async function finalizeEntry(target, params, inflight, buffer) {
         return;
     }
     const responseBody = readString(body, "body");
-    if (responseBody === null) {
+    if (responseBody === null || responseBody.length > buffer.maxBytes) {
         return;
     }
 

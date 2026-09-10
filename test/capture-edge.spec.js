@@ -258,12 +258,17 @@ describe("redactHeaders", () => {
 
 describe("redactUrl", () => {
     it("redacts every sensitive query key variant", () => {
-        for (const key of ["token", "access_token", "id_token", "api_key", "api-key", "apikey", "auth", "session"]) {
+        for (const key of ["token", "access_token", "id_token", "api_key", "api-key", "apikey"]) {
             const out = redactUrl(`https://x.co/p?${key}=secret&keep=1`);
             expect(out).toContain(`${key}=<redacted>`);
             expect(out).toContain("keep=1");
             expect(out).not.toContain("secret");
         }
+    });
+
+    it("preserves generic auth and session query labels with benign values", () => {
+        const url = "https://x.co/p?auth=documentation&session=strength";
+        expect(redactUrl(url)).toBe(url);
     });
 
     it("is case-insensitive on the query key", () => {
@@ -337,5 +342,37 @@ describe("capture buffer overflow under load", () => {
         const entries = await stopCapture(32);
         // Attaching succeeds and the buffer captures normally under the default cap.
         expect(entries).toHaveLength(1);
+    });
+
+    it("uses encoded length to reject an oversized body before fetching it", async () => {
+        await attachDebugger(33, { maxBytes: 100 });
+        reqWillBeSent(mock, 33, "large", "https://x.co/large.json", "GET", {});
+        respReceived(mock, 33, "large", "application/json", 200);
+        mock.emit({ tabId: 33 }, "Network.loadingFinished", {
+            requestId: "large", encodedDataLength: 101,
+        });
+        expect(await stopCapture(33)).toEqual([]);
+        expect(mock.calls.sendCommand.filter((call) => call.method === "Network.getResponseBody"))
+            .toHaveLength(0);
+    });
+
+    it("bounds pending requests and finalizers under a stalled response flood", async () => {
+        const resolvers = [];
+        mock.onCommand("Network.getResponseBody", () => new Promise((resolve) => resolvers.push(resolve)));
+        await attachDebugger(34);
+        for (let index = 0; index < 1002; index += 1) {
+            const id = `pending-${index}`;
+            reqWillBeSent(mock, 34, id, `https://x.co/${id}.json`, "GET", {});
+            await Promise.resolve();
+        }
+        for (let index = 2; index < 1002; index += 1) {
+            const id = `pending-${index}`;
+            respReceived(mock, 34, id, "application/json", 200);
+            await Promise.resolve();
+            loadingFinished(mock, 34, id);
+        }
+        expect(resolvers).toHaveLength(1000);
+        resolvers.forEach((resolve) => resolve({ body: "{}", base64Encoded: false }));
+        expect(await stopCapture(34)).toHaveLength(1000);
     });
 });

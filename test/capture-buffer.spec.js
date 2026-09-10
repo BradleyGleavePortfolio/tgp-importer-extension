@@ -104,10 +104,33 @@ describe("byteSizeOf", () => {
         expect(byteSizeOf({ a: 1 })).toBe(new TextEncoder().encode('{"a":1}').length);
     });
 
-    it("returns 0 for a value that cannot be serialized", () => {
+    it("returns null for a value that cannot be serialized", () => {
         const cyclic = {};
         cyclic.self = cyclic;
-        expect(byteSizeOf(cyclic)).toBe(0);
+        expect(byteSizeOf(cyclic)).toBeNull();
+    });
+
+    it("drops cyclic input instead of retaining an unaccounted entry", () => {
+        const cyclic = {};
+        cyclic.self = cyclic;
+        const buf = new CaptureBuffer(1);
+        for (let index = 0; index < 100; index += 1) buf.push(cyclic);
+        expect(buf.snapshot()).toEqual([]);
+        expect(buf.totalBytes).toBe(0);
+    });
+
+    it("rejects a clearly oversized string before UTF-8 encoding", () => {
+        const Original = globalThis.TextEncoder;
+        globalThis.TextEncoder = class {
+            encode() { throw new Error("oversize encoded before rejection"); }
+        };
+        try {
+            const buf = new CaptureBuffer(32);
+            expect(() => buf.push({ body: "x".repeat(10_000) })).not.toThrow();
+            expect(buf.snapshot()).toEqual([]);
+        } finally {
+            globalThis.TextEncoder = Original;
+        }
     });
 
     it("counts multi-byte characters by their encoded byte length", () => {

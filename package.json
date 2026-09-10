@@ -11,9 +11,15 @@
     "check:flags": "node scripts/check-flag-discipline.mjs",
     "check:fixtures": "node scripts/check-production-fixtures.mjs",
     "check:production-preflight": "node scripts/check-deploy-readiness.mjs",
-    "gates": "npm run check:banned && npm run check:loc && npm run check:flags && npm run check:ratio && npm run check:fixtures && npm run check:production-preflight"
+    "check:hooks": "node scripts/check-hook-config.mjs",
+    "lint": "node scripts/check-js-syntax.mjs",
+    "type-check": "tsc -p jsconfig.json",
+    "prepare": "lefthook install",
+    "gates": "npm run check:banned && npm run check:loc && npm run check:flags && npm run check:ratio && npm run check:fixtures && npm run check:production-preflight && npm run check:hooks"
   },
   "devDependencies": {
+    "lefthook": "2.1.12",
+    "typescript": "5.9.2",
     "vitest": "4.1.11"
   }
 }

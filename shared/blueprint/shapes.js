@@ -1,14 +1,17 @@
 import { compareText } from "./order.js";
 const DEFAULTS = Object.freeze({ maxDepth: 2, maxCollection: 100, maxVariants: 16, maxNodes: 5000, maxObservations: 1000 });
 const HARD = Object.freeze({ maxDepth: 16, maxCollection: 200, maxVariants: 32, maxNodes: 20000, maxObservations: 1000 });
-function kindOf(value) {
-    if (value === null) return "null"; if (Array.isArray(value)) return "array";
+function kindOf(value) { if (value === null) return "null"; if (Array.isArray(value)) return "array";
     const type = typeof value;
     return type === "object" || type === "string" || type === "boolean" || (type === "number" && Number.isFinite(value)) ? type : "unsupported";
 }
-function limit(options, key) {
-    const raw = options?.[key];
+function limit(options, key) { const raw = options?.[key];
     return Number.isInteger(raw) && raw >= (key === "maxDepth" ? 0 : 1) ? Math.min(raw, HARD[key]) : DEFAULTS[key];
+}
+function keyToken(key) {
+    if (/^[a-z]{1,32}$/.test(key) && key !== "constructor") return key;
+    let hash = 2166136261; for (const char of key) { hash ^= char.codePointAt(0); hash = Math.imul(hash, 16777619); }
+    return `#${(hash >>> 0).toString(36)}`;
 }
 export function shapeSignature(value, options) {
     const maxDepth = limit(options, "maxDepth"), maxCollection = limit(options, "maxCollection");
@@ -20,8 +23,7 @@ export function shapeSignature(value, options) {
         if (kind !== "array" && kind !== "object") return kind;
         if (depth >= maxDepth) return `${kind}(*)`;
         if (active.has(node)) return `${kind}(cycle)`;
-        active.add(node);
-        let result;
+        active.add(node); let result;
         if (Array.isArray(node)) {
             if (node.length > maxCollection) result = "array(overflow)";
             else { const variants = [...new Set(node.map((item) => visit(item, depth + 1)))].sort(compareText);
@@ -30,15 +32,9 @@ export function shapeSignature(value, options) {
                 result = `array[${kept.join("|")}]`;
             }
         } else {
-            const keys = Object.keys(node);
-            if (keys.length > maxCollection) result = "object(overflow)";
-            else { const counts = new Map();
-                for (const key of keys.sort(compareText)) {
-                    const child = visit(node[key], depth + 1);
-                    counts.set(child, (counts.get(child) ?? 0) + 1);
-                }
-                result = `object{${[...counts].sort(([a], [b]) => compareText(a, b))
-                    .map(([child, count]) => `${child}*${count}`).join(",")}}`;
+            const keys = Object.keys(node); if (keys.length > maxCollection) result = "object(overflow)";
+            else { const fields = keys.map((key) => [keyToken(key), key]).sort(([a], [b]) => compareText(a, b));
+                result = `object{${fields.map(([token, key]) => `${token}:${visit(node[key], depth + 1)}`).join(",")}}`;
             }
         }
         active.delete(node);
@@ -56,8 +52,7 @@ export function clusterResponseShapes(observations, options) {
         signature: shapeSignature(observation?.body, options) }))
         .sort((a, b) => compareText(JSON.stringify(a), JSON.stringify(b)));
     rows.length = Math.min(rows.length, limit(options, "maxObservations"));
-    const counts = new Map();
-    for (const row of rows) { const key = JSON.stringify(row);
+    const counts = new Map(); for (const row of rows) { const key = JSON.stringify(row);
         counts.set(key, (counts.get(key) ?? 0) + 1); }
     return [...counts].sort(([a], [b]) => compareText(a, b))
         .map(([key, count]) => ({ ...JSON.parse(key), observations: count }));

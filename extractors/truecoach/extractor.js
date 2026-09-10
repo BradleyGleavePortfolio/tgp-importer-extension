@@ -146,7 +146,7 @@ export class TrueCoachExtractor {
     async runClients(ctx) {
         const collected = [];
         let page = 1;
-        let totalPages;
+        let totalPages = 1;
         do {
             const path = `/clients?page=${page}&per_page=${CLIENTS_PER_PAGE}`;
             const raw = await this.net.getJson(path, ctx.token, ctx.signal);
