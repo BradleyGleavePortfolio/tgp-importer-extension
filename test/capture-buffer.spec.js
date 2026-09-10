@@ -1,129 +1,439 @@
-import { describe, it, expect } from "vitest";
+import { describe, expect, it } from "vitest";
 import {
   CaptureBuffer,
   createCaptureBuffer,
   byteSizeOf,
   DEFAULT_MAX_BYTES,
+  MAX_CAPTURE_BYTES,
 } from "../shared/capture-buffer.js";
 import { sourcePlatformFor } from "../shared/capture.js";
 
-// A payload whose serialized size is ~1 KB, for byte-accounting tests.
 function kilobyteEntry(tag) {
   return { tag, body: "x".repeat(1024) };
 }
 
-describe("CaptureBuffer byte accounting", () => {
-  it("defaults to a 5 MB cap", () => {
-    expect(new CaptureBuffer().maxBytes).toBe(5 * 1024 * 1024);
+function tags(buffer) {
+  return buffer.snapshot().map((entry) => entry.tag);
+}
+
+describe("CaptureBuffer byte ceiling", () => {
+  it("defaults to a five-megabyte cap", () => {
     expect(DEFAULT_MAX_BYTES).toBe(5 * 1024 * 1024);
+    expect(new CaptureBuffer().maxBytes).toBe(DEFAULT_MAX_BYTES);
   });
 
-  it("keeps the running byte total under the cap when 6 MB is added in 1 KB chunks", () => {
-    const cap = 5 * 1024 * 1024;
-    const buf = new CaptureBuffer(cap);
-    const chunkBytes = byteSizeOf(kilobyteEntry("c"));
-    const chunks = Math.ceil((6 * 1024 * 1024) / chunkBytes);
-    for (let i = 0; i < chunks; i += 1) {
-      buf.push(kilobyteEntry(`c${i}`));
+  it("enforces a non-overridable absolute capacity ceiling", () => {
+    expect(new CaptureBuffer(MAX_CAPTURE_BYTES - 1).maxBytes).toBe(
+      MAX_CAPTURE_BYTES - 1,
+    );
+    expect(new CaptureBuffer(MAX_CAPTURE_BYTES).maxBytes).toBe(
+      MAX_CAPTURE_BYTES,
+    );
+    expect(new CaptureBuffer(MAX_CAPTURE_BYTES + 1).maxBytes).toBe(
+      MAX_CAPTURE_BYTES,
+    );
+    expect(new CaptureBuffer(Number.MAX_SAFE_INTEGER).maxBytes).toBe(
+      MAX_CAPTURE_BYTES,
+    );
+  });
+
+  it.each([0, -1, Number.NaN, Infinity, -Infinity])(
+    "uses the default for invalid numeric capacity %s",
+    (capacity) => {
+      expect(new CaptureBuffer(capacity).maxBytes).toBe(DEFAULT_MAX_BYTES);
+    },
+  );
+
+  it("uses the default for a non-numeric capacity", () => {
+    // @ts-expect-error -- verifies validation at the JavaScript API boundary.
+    expect(new CaptureBuffer("large").maxBytes).toBe(DEFAULT_MAX_BYTES);
+  });
+
+  it("accounts for the exact UTF-8 JSON size of stored entries", () => {
+    const buffer = new CaptureBuffer(1024);
+    const entries = [{ plain: "abc" }, { unicode: "€😀" }, [true, null, 3]];
+    for (const entry of entries) buffer.push(entry);
+    expect(buffer.totalBytes).toBe(
+      entries.reduce((total, entry) => total + byteSizeOf(entry), 0),
+    );
+  });
+
+  it("keeps the running byte total within the cap under sustained writes", () => {
+    const cap = 128 * 1024;
+    const buffer = new CaptureBuffer(cap);
+    for (let index = 0; index < 1000; index += 1) {
+      buffer.push(kilobyteEntry(`entry-${index}`));
+      expect(buffer.totalBytes).toBeLessThanOrEqual(cap);
     }
-    expect(buf.totalBytes).toBeLessThanOrEqual(cap);
-    // A representative slice of the newest data survives; nothing is over cap.
-    expect(buf.snapshot().length).toBeGreaterThan(0);
+    expect(buffer.snapshot().length).toBeGreaterThan(0);
   });
 
-  it("evicts oldest-first until back under the cap", () => {
-    // Cap sized to hold ~3 one-kilobyte entries.
-    const cap = byteSizeOf(kilobyteEntry("x")) * 3 + 8;
-    const buf = new CaptureBuffer(cap);
-    buf.push(kilobyteEntry("a"));
-    buf.push(kilobyteEntry("b"));
-    buf.push(kilobyteEntry("c"));
-    buf.push(kilobyteEntry("d"));
-    const tags = buf.snapshot().map((e) => e.tag);
-    expect(tags).not.toContain("a");
-    expect(tags[tags.length - 1]).toBe("d");
-    expect(buf.totalBytes).toBeLessThanOrEqual(cap);
+  it("fills an exact byte boundary without eviction", () => {
+    const first = { tag: "a", value: "€" };
+    const second = { tag: "b", value: "x" };
+    const cap = byteSizeOf(first) + byteSizeOf(second);
+    const buffer = new CaptureBuffer(cap);
+    buffer.push(first);
+    buffer.push(second);
+    expect(tags(buffer)).toEqual(["a", "b"]);
+    expect(buffer.totalBytes).toBe(cap);
   });
 
-  it("stores small entries without eviction while under the cap", () => {
-    const buf = new CaptureBuffer(1024 * 1024);
-    buf.push({ n: 1 });
-    buf.push({ n: 2 });
-    expect(buf.snapshot()).toEqual([{ n: 1 }, { n: 2 }]);
+  it("never admits a single entry one byte above the configured cap", () => {
+    const entry = { tag: "large", body: "abcdef" };
+    const buffer = new CaptureBuffer(byteSizeOf(entry) - 1);
+    buffer.push(entry);
+    expect(buffer.snapshot()).toEqual([]);
+    expect(buffer.totalBytes).toBe(0);
   });
 
-  it("drops a single entry that alone exceeds the cap", () => {
-    const buf = new CaptureBuffer(64);
-    buf.push({ body: "y".repeat(10_000) });
-    expect(buf.snapshot()).toEqual([]);
-    expect(buf.totalBytes).toBe(0);
+  it("does not evict existing entries for an oversized new entry", () => {
+    const existing = { tag: "existing" };
+    const buffer = new CaptureBuffer(byteSizeOf(existing) + 2);
+    buffer.push(existing);
+    buffer.push({ tag: "oversized", body: "x".repeat(1000) });
+    expect(tags(buffer)).toEqual(["existing"]);
+    expect(buffer.totalBytes).toBe(byteSizeOf(existing));
+  });
+});
+
+describe("CaptureBuffer oldest-first eviction", () => {
+  it("evicts the oldest entries until the total is within the cap", () => {
+    const size = byteSizeOf(kilobyteEntry("x"));
+    const buffer = new CaptureBuffer(size * 3 + 8);
+    buffer.push(kilobyteEntry("a"));
+    buffer.push(kilobyteEntry("b"));
+    buffer.push(kilobyteEntry("c"));
+    buffer.push(kilobyteEntry("d"));
+    expect(tags(buffer)).toEqual(["b", "c", "d"]);
+    expect(buffer.totalBytes).toBeLessThanOrEqual(buffer.maxBytes);
   });
 
-  it("clear() empties the buffer and resets the byte total", () => {
-    const buf = new CaptureBuffer(1024);
-    buf.push({ n: 1 });
-    buf.clear();
-    expect(buf.snapshot()).toEqual([]);
-    expect(buf.totalBytes).toBe(0);
+  it("can evict multiple old entries for one admissible new entry", () => {
+    const small = { tag: "small", body: "x".repeat(20) };
+    const large = { tag: "large", body: "y".repeat(80) };
+    const buffer = new CaptureBuffer(byteSizeOf(large));
+    buffer.push(small);
+    buffer.push({ ...small, tag: "other" });
+    buffer.push(large);
+    expect(tags(buffer)).toEqual(["large"]);
+    expect(buffer.totalBytes).toBe(byteSizeOf(large));
   });
 
-  it("snapshot() returns a copy, not the internal array", () => {
-    const buf = new CaptureBuffer(1024);
-    buf.push({ n: 1 });
-    const snap = buf.snapshot();
-    snap.push("mutated");
-    expect(buf.snapshot()).toEqual([{ n: 1 }]);
+  it("preserves insertion order for entries that survive eviction", () => {
+    const entries = Array.from({ length: 8 }, (_, index) => ({
+      tag: `e${index}`,
+      value: index,
+    }));
+    const cap = entries
+      .slice(4)
+      .reduce((total, entry) => total + byteSizeOf(entry), 0);
+    const buffer = new CaptureBuffer(cap);
+    for (const entry of entries) buffer.push(entry);
+    expect(tags(buffer)).toEqual(["e4", "e5", "e6", "e7"]);
   });
 
-  it("falls back to the default cap for zero, negative, or non-numeric maxBytes", () => {
-    expect(new CaptureBuffer(0).maxBytes).toBe(DEFAULT_MAX_BYTES);
-    expect(new CaptureBuffer(-10).maxBytes).toBe(DEFAULT_MAX_BYTES);
-    // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
-    expect(new CaptureBuffer("big").maxBytes).toBe(DEFAULT_MAX_BYTES);
-    expect(new CaptureBuffer(Number.NaN).maxBytes).toBe(DEFAULT_MAX_BYTES);
-    expect(new CaptureBuffer(Infinity).maxBytes).toBe(DEFAULT_MAX_BYTES);
+  it("starts fresh after clear", () => {
+    const buffer = new CaptureBuffer(1024);
+    buffer.push({ tag: "old" });
+    buffer.clear();
+    buffer.push({ tag: "new" });
+    expect(tags(buffer)).toEqual(["new"]);
+    expect(buffer.totalBytes).toBe(byteSizeOf({ tag: "new" }));
   });
 
-  it("preserves object references, not copies", () => {
-    const buf = new CaptureBuffer(1024);
-    const obj = { k: 1 };
-    buf.push(obj);
-    expect(buf.snapshot()[0]).toBe(obj);
+  it("makes repeated clear operations idempotent", () => {
+    const buffer = new CaptureBuffer(1024);
+    buffer.push({ tag: "old" });
+    buffer.clear();
+    buffer.clear();
+    expect(buffer.snapshot()).toEqual([]);
+    expect(buffer.totalBytes).toBe(0);
+  });
+});
+
+describe("CaptureBuffer immutable snapshots", () => {
+  it("captures values at push time rather than retaining input references", () => {
+    const input = {
+      tag: "entry",
+      nested: { name: "before" },
+      list: [{ enabled: true }],
+    };
+    const buffer = new CaptureBuffer(1024);
+    buffer.push(input);
+    input.tag = "changed";
+    input.nested.name = "after";
+    input.list[0].enabled = false;
+    input.list.push({ enabled: false });
+    expect(buffer.snapshot()).toEqual([
+      {
+        tag: "entry",
+        nested: { name: "before" },
+        list: [{ enabled: true }],
+      },
+    ]);
+  });
+
+  it("does not expose internal entries through snapshot results", () => {
+    const buffer = new CaptureBuffer(1024);
+    buffer.push({ nested: { count: 1 }, list: [1, 2] });
+    const first = buffer.snapshot();
+    first[0].nested.count = 99;
+    first[0].list.push(3);
+    first.push({ injected: true });
+    expect(buffer.snapshot()).toEqual([{ nested: { count: 1 }, list: [1, 2] }]);
+  });
+
+  it("returns independent object graphs for repeated snapshots", () => {
+    const buffer = new CaptureBuffer(1024);
+    buffer.push({ nested: { value: "stable" } });
+    const first = buffer.snapshot();
+    const second = buffer.snapshot();
+    expect(first).toEqual(second);
+    expect(first).not.toBe(second);
+    expect(first[0]).not.toBe(second[0]);
+    expect(first[0].nested).not.toBe(second[0].nested);
+  });
+
+  it("copies null-prototype objects without changing their data", () => {
+    const input = Object.create(null);
+    input.tag = "safe";
+    input.nested = Object.assign(Object.create(null), { count: 2 });
+    const buffer = new CaptureBuffer(1024);
+    buffer.push(input);
+    expect(buffer.snapshot()).toEqual([{ tag: "safe", nested: { count: 2 } }]);
+  });
+
+  it("preserves sparse-array JSON semantics without inherited values", () => {
+    const input = [];
+    input.length = 3;
+    input[1] = "middle";
+    const buffer = new CaptureBuffer(1024);
+    buffer.push(input);
+    expect(buffer.snapshot()).toEqual([[null, "middle", null]]);
+  });
+});
+
+describe("CaptureBuffer hostile input handling", () => {
+  it("rejects cyclic input without throwing or changing buffer state", () => {
+    const cyclic = { tag: "cycle" };
+    cyclic.self = cyclic;
+    const buffer = new CaptureBuffer(1024);
+    expect(() => buffer.push(cyclic)).not.toThrow();
+    expect(buffer.snapshot()).toEqual([]);
+    expect(buffer.totalBytes).toBe(0);
+  });
+
+  it("does not invoke object getters", () => {
+    let calls = 0;
+    const hostile = {
+      tag: "getter",
+      get secret() {
+        calls += 1;
+        throw new Error("must not execute");
+      },
+    };
+    const buffer = new CaptureBuffer(1024);
+    expect(() => buffer.push(hostile)).not.toThrow();
+    expect(calls).toBe(0);
+    expect(buffer.snapshot()).toEqual([]);
+  });
+
+  it("does not invoke array getters", () => {
+    let calls = 0;
+    const hostile = [];
+    Object.defineProperty(hostile, "0", {
+      enumerable: true,
+      get() {
+        calls += 1;
+        return "private";
+      },
+    });
+    hostile.length = 1;
+    const buffer = new CaptureBuffer(1024);
+    buffer.push(hostile);
+    expect(calls).toBe(0);
+    expect(buffer.snapshot()).toEqual([]);
+  });
+
+  it("does not invoke toJSON hooks", () => {
+    let calls = 0;
+    const hostile = {
+      value: "private",
+      toJSON() {
+        calls += 1;
+        throw new Error("must not execute");
+      },
+    };
+    const buffer = new CaptureBuffer(1024);
+    buffer.push(hostile);
+    expect(calls).toBe(0);
+    expect(buffer.snapshot()).toEqual([]);
+  });
+
+  it("contains proxy trap failures", () => {
+    const hostile = new Proxy(
+      {},
+      {
+        getOwnPropertyDescriptor() {
+          throw new Error("hostile trap");
+        },
+        ownKeys() {
+          throw new Error("hostile trap");
+        },
+      },
+    );
+    const buffer = new CaptureBuffer(1024);
+    expect(() => buffer.push(hostile)).not.toThrow();
+    expect(buffer.snapshot()).toEqual([]);
+  });
+
+  it.each([undefined, 1n, Symbol("private"), () => "private", NaN, Infinity])(
+    "rejects non-JSON value %s without throwing",
+    (value) => {
+      const buffer = new CaptureBuffer(1024);
+      expect(() => buffer.push(value)).not.toThrow();
+      expect(buffer.snapshot()).toEqual([]);
+      expect(buffer.totalBytes).toBe(0);
+    },
+  );
+
+  it("rejects unsupported nested values atomically", () => {
+    const buffer = new CaptureBuffer(1024);
+    buffer.push({ tag: "good" });
+    buffer.push({ tag: "bad", nested: { value: 1n } });
+    expect(tags(buffer)).toEqual(["good"]);
+    expect(buffer.totalBytes).toBe(byteSizeOf({ tag: "good" }));
+  });
+
+  it("rejects custom prototypes instead of executing their behavior", () => {
+    class Hostile {
+      constructor() {
+        this.value = "private";
+      }
+    }
+    const buffer = new CaptureBuffer(1024);
+    expect(() => buffer.push(new Hostile())).not.toThrow();
+    expect(buffer.snapshot()).toEqual([]);
+  });
+
+  it("rejects deeply nested objects before recursive work can exhaust the stack", () => {
+    const root = {};
+    let cursor = root;
+    for (let index = 0; index < 20_000; index += 1) {
+      cursor.next = {};
+      cursor = cursor.next;
+    }
+    const buffer = new CaptureBuffer(1024);
+    expect(() => buffer.push(root)).not.toThrow();
+    expect(buffer.snapshot()).toEqual([]);
+  });
+
+  it("rejects huge arrays before visiting their elements", () => {
+    let calls = 0;
+    const value = new Array(10_001);
+    Object.defineProperty(value, "0", {
+      enumerable: true,
+      get() {
+        calls += 1;
+        return "private";
+      },
+    });
+    const buffer = new CaptureBuffer(1024);
+    expect(() => buffer.push(value)).not.toThrow();
+    expect(calls).toBe(0);
+    expect(buffer.snapshot()).toEqual([]);
+  });
+
+  it("rejects a graph that exceeds the node-work ceiling", () => {
+    const value = Array.from({ length: 10_000 }, () => [null, null]);
+    const buffer = new CaptureBuffer(1024);
+    expect(() => buffer.push(value)).not.toThrow();
+    expect(buffer.snapshot()).toEqual([]);
+  });
+
+  it("rejects strings beyond the absolute byte ceiling", () => {
+    const buffer = new CaptureBuffer(MAX_CAPTURE_BYTES);
+    const value = "x".repeat(MAX_CAPTURE_BYTES + 1);
+    expect(() => buffer.push(value)).not.toThrow();
+    expect(buffer.snapshot()).toEqual([]);
   });
 });
 
 describe("byteSizeOf", () => {
-  it("measures UTF-8 serialized length", () => {
-    expect(byteSizeOf({ a: 1 })).toBe(
-      new TextEncoder().encode('{"a":1}').length,
+  it.each([
+    null,
+    true,
+    false,
+    0,
+    -12.5,
+    "",
+    "plain",
+    "€",
+    [1, "two", null],
+    { a: 1, b: [true] },
+  ])("matches TextEncoder(JSON.stringify(value)) for %j", (value) => {
+    expect(byteSizeOf(value)).toBe(
+      new TextEncoder().encode(JSON.stringify(value)).length,
     );
   });
 
-  it("returns 0 for a value that cannot be serialized", () => {
-    const cyclic = {};
-    cyclic.self = cyclic;
-    expect(byteSizeOf(cyclic)).toBe(0);
+  it("is stable across later mutation", () => {
+    const input = { value: "before" };
+    const before = byteSizeOf(input);
+    input.value = "a much longer value after mutation";
+    expect(before).toBe(new TextEncoder().encode('{"value":"before"}').length);
+    expect(byteSizeOf(input)).toBeGreaterThan(before);
   });
 
-  it("counts multi-byte characters by their encoded byte length", () => {
-    expect(byteSizeOf("€")).toBe(new TextEncoder().encode('"€"').length);
+  it.each([undefined, 1n, Symbol("private"), () => "private", NaN, Infinity])(
+    "returns zero for unsupported value %s",
+    (value) => {
+      expect(byteSizeOf(value)).toBe(0);
+    },
+  );
+
+  it("returns zero for cyclic input", () => {
+    const value = {};
+    value.self = value;
+    expect(byteSizeOf(value)).toBe(0);
+  });
+
+  it("returns zero without invoking an accessor", () => {
+    let calls = 0;
+    const value = {};
+    Object.defineProperty(value, "secret", {
+      enumerable: true,
+      get() {
+        calls += 1;
+        return "private";
+      },
+    });
+    expect(byteSizeOf(value)).toBe(0);
+    expect(calls).toBe(0);
   });
 });
 
 describe("createCaptureBuffer", () => {
   it("returns a CaptureBuffer with the requested cap", () => {
-    const buf = createCaptureBuffer(4096);
-    expect(buf).toBeInstanceOf(CaptureBuffer);
-    expect(buf.maxBytes).toBe(4096);
+    const buffer = createCaptureBuffer(4096);
+    expect(buffer).toBeInstanceOf(CaptureBuffer);
+    expect(buffer.maxBytes).toBe(4096);
   });
 
-  it("defaults to the 5 MB cap with no argument", () => {
+  it("defaults to the five-megabyte cap", () => {
     expect(createCaptureBuffer().maxBytes).toBe(DEFAULT_MAX_BYTES);
+  });
+
+  it("applies the absolute ceiling through the factory", () => {
+    expect(createCaptureBuffer(MAX_CAPTURE_BYTES * 2).maxBytes).toBe(
+      MAX_CAPTURE_BYTES,
+    );
   });
 });
 
 describe("sourcePlatformFor", () => {
-  it("returns auto:<hostname> for a valid https URL", () => {
+  it("returns auto:<hostname> for a valid HTTPS URL", () => {
     expect(sourcePlatformFor("https://app.truecoach.co/clients/42")).toBe(
       "auto:app.truecoach.co",
     );
@@ -135,11 +445,8 @@ describe("sourcePlatformFor", () => {
     );
   });
 
-  it("returns null for a malformed URL", () => {
+  it("returns null for malformed, empty, or non-string input", () => {
     expect(sourcePlatformFor("not a url")).toBeNull();
-  });
-
-  it("returns null for empty or non-string input", () => {
     expect(sourcePlatformFor("")).toBeNull();
     expect(sourcePlatformFor(null)).toBeNull();
     expect(sourcePlatformFor(undefined)).toBeNull();
