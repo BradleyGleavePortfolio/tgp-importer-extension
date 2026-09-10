@@ -11,7 +11,10 @@
   "files": [
     "shared/credential-policy.js",
     "shared/capture-buffer.js",
+    "shared/capture-policy.js",
+    "shared/capture.js",
     "shared/blueprint/order.js",
+    "shared/blueprint/input.js",
     "shared/blueprint/shapes.js",
     "shared/blueprint/url-templates.js"
   ]

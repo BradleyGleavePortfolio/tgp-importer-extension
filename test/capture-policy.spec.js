@@ -337,6 +337,9 @@ describe("capture pipeline stores redacted bodies", () => {
         "card_expiry", "expiry_month", "expiry_year", "security_code", "routing_number",
         "account_number", "passphrase", "sid", "jsessionid", "PHPSESSID", "cc_number",
         "creditCardNumber", "payment_token", "otp", "pin",
+        "X-CSRF-Token", "X-CSRFToken", "X-XSRF-TOKEN", "X-Access-Token", "X-Refresh-Token",
+        "X-OAuth-Token", "X-Session-Token", "X-Id-Token", "X-Authorization",
+        "authorization_token", "oauth2_token",
     ])("redacts %s through body, header, URL, buffer, and C2a normalization", async (alias) => {
         const secret = `raw-${alias}-must-not-survive`;
         mock.onCommand("Network.getResponseBody", () => ({
@@ -361,5 +364,20 @@ describe("capture pipeline stores redacted bodies", () => {
             nested: { [alias]: BODY_REDACTED },
             rows: [{ [alias]: BODY_REDACTED }],
         });
+    });
+
+    it("preserves a structured benign credential-name near miss", async () => {
+        const value = "west-coast";
+        mock.onCommand("Network.getResponseBody", () => ({
+            body: JSON.stringify({ "X-Custom-Session-Region": value }), base64Encoded: false,
+        }));
+        await attachDebugger(TAB);
+        emitJson("benign", `https://app.truecoach.co/api/clients?X-Custom-Session-Region=${value}`, {
+            "X-Custom-Session-Region": value,
+        });
+        const captured = await stopCapture(TAB);
+        expect(captured[0].requestHeaders["X-Custom-Session-Region"]).toBe(value);
+        expect(captured[0].responseBody).toContain(value);
+        expect(normalizeCaptureSnapshot(captured).observations[0].body["X-Custom-Session-Region"]).toBe(value);
     });
 });

@@ -76,6 +76,9 @@ describe("CodeQL SARIF zero-result gate", () => {
         JSON.stringify({ version: "2.1.0", runs: ["bad"] }),
         JSON.stringify({ version: "2.1.0", runs: [{ results: [] }] }),
         sarif([{ invocations: [{ executionSuccessful: false }], results: [] }]),
+        sarif([{ invocations: [{}], results: [] }]),
+        sarif([{ invocations: [{ executionSuccessful: "false" }], results: [] }]),
+        sarif([{ tool: { driver: { name: "Definitely Not CodeQL" } }, results: [] }]),
     ])("rejects incomplete or failed CodeQL run structure", (body) => {
         const root = temp();
         put(root, "bad.sarif", body);
@@ -95,6 +98,8 @@ describe("production fixture import preflight", () => {
         'import/* keep */"./mocks/customer.js";',
         'const value = require (/* keep */ "./mocks/customer.js");',
         'import value from "./fixtures/customer.json" with { type: "json" };',
+        'import("./test/fixt\\u0075res/customer.js");',
+        'import("./test/" + "fixtures/customer.js");',
     ])("rejects production reference: %s", (source) => {
         const root = temp();
         put(root, "background.js", source);
@@ -123,6 +128,8 @@ describe("production static preflight", () => {
         "fetch('https://example.com/api');", "const key = 'pk_test_123';",
         "const state = 'MOCK';", "const state = 'FAKE';", "const state = 'PLACEHOLDER';",
         "fetch('http://127.0.0.1:8080/api');",
+        'const state = "MO" + "CK";',
+        'const host = "http://127.0.0." + "1:8080";',
     ])("rejects forbidden marker %s", (source) => {
         expect(run("check-deploy-readiness.mjs", project(source)).status).toBe(1);
     });
@@ -187,9 +194,60 @@ describe("banned-token gate source coverage", () => {
     it.each([
         ["test/r75-mutant.ts", `const value = thing ${"as " + "any"};`],
         ["src/r75-mutant.jsx", `Promise.resolve().catch(() => ${"undefined"});`],
+        ["src/multiline.ts", "const value = thing as" + "\n" + "any;"],
+        ["src/comment.ts", "const value = thing as /" + "* comment */ any;"],
+        ["src/catch.ts", "Promise.resolve().catch(\n () => " + "undefined,\n);"],
+        ["src/catch-comment.ts", "Promise.resolve().catch(() => { /" + "* empty */ });"],
     ])("rejects a banned addition in %s", (path, source) => {
         const output = mutation(path, source);
         expect(output.status).toBe(1);
         expect(output.stdout).toContain("R75 net-new banned token");
+    });
+
+    it("checks merge-commit author and committer identity", () => {
+        const root = temp(), good = {
+            ...process.env, GIT_AUTHOR_NAME: "Bradley Gleave",
+            GIT_AUTHOR_EMAIL: "bradley@bradleytgpcoaching.com",
+            GIT_COMMITTER_NAME: "Bradley Gleave",
+            GIT_COMMITTER_EMAIL: "bradley@bradleytgpcoaching.com",
+        };
+        const git = (args, env = good) => spawnSync("git", args, { cwd: root, env, encoding: "utf8" });
+        put(root, "package.json", JSON.stringify({ private: true }));
+        expect(git(["init"]).status).toBe(0);
+        expect(git(["add", "."]).status).toBe(0);
+        expect(git(["commit", "-m", "base"]).status).toBe(0);
+        const base = git(["rev-parse", "HEAD"]).stdout.trim();
+        expect(git(["checkout", "-b", "topic"]).status).toBe(0);
+        put(root, "src/value.js", "export const value = 1;\n");
+        expect(git(["add", "."]).status).toBe(0);
+        expect(git(["commit", "-m", "topic"]).status).toBe(0);
+        expect(git(["checkout", "master"]).status).toBe(0);
+        const evil = { ...good, GIT_AUTHOR_NAME: "Evil Agent", GIT_AUTHOR_EMAIL: "evil@example.invalid",
+            GIT_COMMITTER_NAME: "Evil Agent", GIT_COMMITTER_EMAIL: "evil@example.invalid" };
+        expect(git(["merge", "--no-ff", "topic", "-m", "merge topic"], evil).status).toBe(0);
+        const output = spawnSync(process.execPath, [join(repo, "scripts/check-banned.mjs")], {
+            cwd: root, encoding: "utf8", env: { ...process.env, RATIO_BASE: base },
+        });
+        expect(output.status).toBe(1);
+        expect(output.stdout).toContain("author is");
+        expect(output.stdout).toContain("committer is");
+    });
+});
+
+describe("pre-commit hook semantic validation", () => {
+    it("rejects required command text hidden in comments", () => {
+        const root = temp();
+        put(root, "lefthook.yml", [
+            "min_version: 2.1.12", "pre-commit:", "  commands:",
+            "    fake:", "      run: echo harmless",
+            "      # BANNED_DIFF_CACHED=1 npm run check:banned",
+            "      # npm run check:production-preflight",
+            "      # npm run lint", "      # npm run type-check", "      # npm run format:check",
+        ].join("\n"));
+        const output = spawnSync(process.execPath, [join(repo, "scripts/check-hook-config.mjs")], {
+            cwd: root, encoding: "utf8",
+        });
+        expect(output.status).toBe(1);
+        expect(output.stdout).toContain("banned");
     });
 });

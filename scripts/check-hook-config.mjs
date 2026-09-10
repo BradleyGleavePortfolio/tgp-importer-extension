@@ -1,15 +1,19 @@
 import { readFileSync } from "node:fs";
+import { parse } from "yaml";
 
-let source = "";
-try { source = readFileSync("lefthook.yml", "utf8"); } catch { /* reported below */ }
-const required = [
-    "min_version: 2.1.12",
-    "BANNED_DIFF_CACHED=1 npm run check:banned",
-    "npm run check:production-preflight",
-    "npm run lint",
-    "npm run type-check",
-];
-const missing = required.filter((text) => !source.includes(text));
+let config = {};
+try { config = parse(readFileSync("lefthook.yml", "utf8")); } catch { config = {}; }
+const required = {
+    banned: "BANNED_DIFF_CACHED=1 npm run check:banned",
+    "deploy-readiness": "npm run check:production-preflight",
+    lint: "npm run lint",
+    "type-check": "npm run type-check",
+    format: "npm run format:check",
+};
+const commands = config?.["pre-commit"]?.commands;
+const missing = Object.entries(required).filter(([name, run]) =>
+    !commands || commands[name]?.run !== run).map(([name]) => name);
+if (config?.min_version !== "2.1.12") missing.unshift("min_version");
 if (missing.length) {
     process.stdout.write(`FAIL: pre-commit hook missing/alignment error: ${missing.join(", ")}\n`);
     process.exit(1);

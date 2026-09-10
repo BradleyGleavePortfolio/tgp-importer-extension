@@ -10,39 +10,42 @@
 //
 // R75: zero banned type-assertions — every narrowing is a real guard.
 
-const DEFAULT_MAX_BYTES = 5 * 1024 * 1024;
-const MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
+const DEFAULT_MAX_BYTES = 5 * 1024 * 1024, MAX_CAPTURE_BYTES = 8 * 1024 * 1024;
 
-// A cheap conservative walk rejects oversized/cyclic input before allocating a
-// complete serialization or UTF-8 copy.
 function fitsCheapBound(entry, limit) {
-    const pending = [entry], seen = new WeakSet(); let chars = 0, nodes = 0;
-    while (pending.length) {
-        const value = pending.pop(); if (++nodes > 20000) return false;
-        if (typeof value === "string") chars += value.length + 2;
+    const pending = [entry], seen = new WeakSet(); let bytes = 0, nodes = 0;
+    const stringBytes = (text) => { let size = 2; for (const char of text) {
+        const code = char.codePointAt(0); size += code === 34 || code === 92 || [8, 9, 10, 12, 13].includes(code) ? 2
+            : code < 32 || code >= 0xd800 && code <= 0xdfff ? 6 : code < 128 ? 1 : code < 2048 ? 2 : code < 65536 ? 3 : 4; }
+        return size; };
+    while (pending.length) { const value = pending.pop(); if (++nodes > 20000) return false;
+        if (typeof value === "string") bytes += stringBytes(value);
         else if (value && typeof value === "object") {
-            if (seen.has(value)) return false; seen.add(value);
-            for (const [key, child] of Object.entries(value)) {
-                chars += key.length + 4; pending.push(child);
-            }
-        } else chars += 8;
-        if (chars > limit) return false;
-    }
-    return true;
+            if (seen.has(value)) return false; seen.add(value); const array = Array.isArray(value), proto = Object.getPrototypeOf(value);
+            if (proto !== (array ? Array.prototype : Object.prototype) && proto !== null) return false;
+            const keys = array ? null : Object.keys(value);
+            if (array) {
+                if (value.length > 20000) return false; bytes += 2 + Math.max(0, value.length - 1);
+                for (let index = 0; index < value.length; index++)
+                    if (Object.hasOwn(value, index)) pending.push(value[index]); else bytes += 4;
+            } else {
+                bytes += 2 + Math.max(0, keys.length - 1);
+                for (const key of keys) { const descriptor = Object.getOwnPropertyDescriptor(value, key);
+                    if (!descriptor || !("value" in descriptor) || key === "toJSON") return false;
+                    bytes += stringBytes(key) + 1; pending.push(descriptor.value); } }
+        } else bytes += 8;
+        if (bytes > limit) return false; } return true;
 }
 
 function byteSizeOf(entry) {
-    let json;
-    try {
-        json = JSON.stringify(entry);
-    }
-    catch {
-        return null;
-    }
-    if (typeof json !== "string") {
-        return null;
-    }
-    return new TextEncoder().encode(json).length;
+    try { const json = JSON.stringify(entry);
+        return typeof json === "string" ? new TextEncoder().encode(json).length : null;
+    } catch { return null; }
+}
+function freezeTree(value) {
+    if (value && typeof value === "object" && !Object.isFrozen(value))
+        Object.freeze(value), Object.values(value).forEach(freezeTree);
+    return value;
 }
 
 // Byte-bounded LRU buffer. push() appends and then evicts oldest-first until the
@@ -61,7 +64,8 @@ class CaptureBuffer {
         if (!fitsCheapBound(entry, this.maxBytes)) return;
         const size = byteSizeOf(entry);
         if (size === null || size > this.maxBytes) return;
-        this.entries.push({ entry, size });
+        let held; try { held = freezeTree(JSON.parse(JSON.stringify(entry))); } catch { return; }
+        this.entries.push({ entry: held, size });
         this.totalBytes += size;
         while (this.totalBytes > this.maxBytes && this.entries.length > 0) {
             const oldest = this.entries.shift();

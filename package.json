@@ -12,14 +12,19 @@
     "check:fixtures": "node scripts/check-production-fixtures.mjs",
     "check:production-preflight": "node scripts/check-deploy-readiness.mjs",
     "check:hooks": "node scripts/check-hook-config.mjs",
-    "lint": "node scripts/check-js-syntax.mjs",
+    "lint": "eslint --max-warnings=0 --config scripts/eslint.config.mjs .",
+    "format:check": "prettier --check package.json jsconfig.json lefthook.yml scripts/eslint.config.mjs",
     "type-check": "tsc -p jsconfig.json",
     "prepare": "lefthook install",
-    "gates": "npm run check:banned && npm run check:loc && npm run check:flags && npm run check:ratio && npm run check:fixtures && npm run check:production-preflight && npm run check:hooks"
+    "gates": "npm run check:banned && npm run check:loc && npm run check:flags && npm run check:ratio && npm run check:fixtures && npm run check:production-preflight && npm run check:hooks && npm run lint && npm run type-check && npm run format:check"
   },
   "devDependencies": {
+    "@types/chrome": "0.2.9",
+    "eslint": "10.10.0",
     "lefthook": "2.1.12",
+    "prettier": "3.9.6",
     "typescript": "5.9.2",
-    "vitest": "4.1.11"
+    "vitest": "4.1.11",
+    "yaml": "2.9.0"
   }
 }

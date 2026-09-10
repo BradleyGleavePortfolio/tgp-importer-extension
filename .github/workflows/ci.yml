@@ -46,5 +46,5 @@ jobs:
         run: node scripts/check-deploy-readiness.mjs
       - name: Pre-commit hook alignment
         run: node scripts/check-hook-config.mjs
-      - name: Lint and type-check
-        run: npm run lint && npm run type-check
+      - name: Lint, type-check, and format
+        run: npm run lint && npm run type-check && npm run format:check

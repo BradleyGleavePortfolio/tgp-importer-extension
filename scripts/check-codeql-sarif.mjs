@@ -23,12 +23,13 @@ try {
         }
         for (const [runIndex, run] of sarif.runs.entries()) {
             const driver = run && typeof run === "object" && !Array.isArray(run) ? run.tool?.driver : null;
-            if (!driver || typeof driver.name !== "string" || !/codeql/i.test(driver.name) ||
+            if (!driver || driver.name !== "CodeQL" ||
                 !Array.isArray(run.results)) {
                 throw new Error(`${file}: run ${runIndex} must identify CodeQL and contain results`);
             }
             if (run.invocations !== undefined && (!Array.isArray(run.invocations) ||
-                run.invocations.some((item) => item?.executionSuccessful === false))) {
+                run.invocations.some((item) => !item || typeof item !== "object" ||
+                    item.executionSuccessful !== true))) {
                 throw new Error(`${file}: run ${runIndex} has an invalid or failed invocation`);
             }
             for (const result of run.results) {

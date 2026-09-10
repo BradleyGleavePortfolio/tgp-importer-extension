@@ -260,7 +260,7 @@ async function finalizeEntry(target, params, inflight, buffer) {
         return;
     }
     // Binary bodies arrive base64-encoded — the buffer is JSON-only, so drop.
-    if (isRecord(body) && body.base64Encoded === true) {
+    if (isRecord(body) && Reflect.get(body, "base64Encoded") === true) {
         return;
     }
     const responseBody = readString(body, "body");

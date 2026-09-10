@@ -34,6 +34,20 @@ describe("shapeSignature — stable structural identity", () => {
         expect(clusterResponseShapes([{ body: client }, { body: account }])).toHaveLength(2);
     });
 
+    it("preserves entity fields directly inside a wrapper array by default", () => {
+        const clients = { clients: [{ id: 1, name: "Ada" }] };
+        const records = { clients: [{ records: 1, totallyDifferent: "yes" }] };
+        expect(shapeSignature(clients)).toContain("object{id:number,name:string}");
+        expect(shapeSignature(clients)).not.toBe(shapeSignature(records));
+    });
+
+    it("separates former 32-bit collisions and stays insertion-order independent", () => {
+        const first = "field-1yipvhh-dnq", second = "field-1rrujnl-1d8i";
+        expect(shapeSignature({ [first]: 1 })).not.toBe(shapeSignature({ [second]: 1 }));
+        expect(shapeSignature({ [first]: 1, [second]: "x" }))
+            .toBe(shapeSignature({ [second]: "y", [first]: 2 }));
+    });
+
     it("is independent of array value order and duplicate values", () => {
         const left = [1, "private", true, 2, "different"];
         const right = [false, "other", 99];
@@ -59,8 +73,8 @@ describe("shapeSignature — stable structural identity", () => {
     it("uses a stable type marker beyond the depth bound", () => {
         const left = { client: { profile: { email: "dana@private.test" } } };
         const right = { client: { profile: { phone: "+1 555 0100" } } };
-        expect(shapeSignature(left)).toBe(shapeSignature(right));
-        expect(shapeSignature(left)).toBe("object{client:object{profile:object(*)}}");
+        expect(shapeSignature(left, { maxDepth: 2 })).toBe(shapeSignature(right, { maxDepth: 2 }));
+        expect(shapeSignature(left, { maxDepth: 2 })).toBe("object{client:object{profile:object(*)}}");
     });
 
     it("supports a root-only depth budget", () => {
@@ -96,7 +110,9 @@ describe("shapeSignature — stable structural identity", () => {
         const signature = shapeSignature(value);
         expect(signature).not.toContain(email);
         expect(signature).not.toContain(uuid);
-        expect(signature).toMatch(/^object\{#[a-z0-9]+:boolean,#[a-z0-9]+:boolean,#[a-z0-9]+:number\}$/);
+        expect(signature.match(/#[a-f0-9]{16}/g)).toHaveLength(3);
+        expect(signature).toContain(":number");
+        expect(signature.match(/:boolean/g)).toHaveLength(2);
     });
 
     it("does not expose prototype-like keys", () => {
@@ -181,7 +197,7 @@ describe("shapeSignature — bounded collection work", () => {
             maxDepth: -1,
             maxCollection: 0,
             maxVariants: "many",
-        })).toBe("object{nested:object{deep:object(*)}}");
+        })).toBe("object{nested:object{deep:object{private:string}}}");
     });
 
     it("does not recurse into a huge array past the collection check", () => {
@@ -334,8 +350,8 @@ describe("clusterResponseShapes", () => {
     });
 
     it.each([
-        [1, "object{#75o54p:number}"],
-        [2, "object{#6vojfq:number,#75o54p:number}"],
+        [1, "object{#bb7d94b213ca5c59:number}"],
+        [2, "object{#bb7d93b213ca5aa6:number,#bb7d94b213ca5c59:number}"],
         [3, "object(overflow)"],
     ])("enforces maxCollection at exact object boundary %i", (count, expected) => {
         const value = Object.fromEntries(Array.from({ length: count }, (_, i) => [`private-${i}`, i]));

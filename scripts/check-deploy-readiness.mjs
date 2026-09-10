@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { extname, join, relative, resolve, sep } from "node:path";
+import { constantString, parseSource, ts, visit } from "./lib/js-ast.mjs";
 
 const root = resolve(process.argv[2] ?? ".");
 const excluded = new Set([".git", ".github", "docs", "node_modules", "scripts", "test"]);
@@ -16,19 +17,26 @@ walk(root);
 const marker = /TODO_BEFORE_PROD|_test_PLACEHOLDER|pk_test_|sk_test_|whsec_test|\b(?:STUB|MOCK|FAKE|PLACEHOLDER)\b|127\.0\.0\.1|https?:\/\/(?:localhost(?=[:/])|(?:[^/\s"']+\.)?example\.com(?=[:/\s"']))/;
 const hits = [];
 for (const file of files) {
-    readFileSync(file, "utf8").split("\n").forEach((line, index) => {
+    const source = readFileSync(file, "utf8");
+    source.split("\n").forEach((line, index) => {
         if (marker.test(line)) hits.push(`${relative(root, file)}:${index + 1}`);
+    });
+    if (/\.[cm]?[jt]sx?$/.test(file)) visit(parseSource(source, file), (node) => {
+        if (ts.isBinaryExpression(node)) {
+            const text = constantString(node);
+            if (text && marker.test(text)) hits.push(`${relative(root, file)}:composed`);
+        }
     });
 }
 let manifest = {};
-try { manifest = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8")); } catch { /* failed check below */ }
+try { manifest = JSON.parse(readFileSync(join(root, "manifest.json"), "utf8")); } catch { manifest = {}; }
 const worker = manifest.background?.service_worker;
 const workerPath = typeof worker === "string" ? resolve(root, worker) : "";
 let workerIsFile = false;
 try {
     workerIsFile = workerPath.startsWith(`${root}${sep}`) && [".js", ".mjs", ".cjs"].includes(extname(workerPath)) &&
         statSync(workerPath).isFile();
-} catch { /* failed check below */ }
+} catch { workerIsFile = false; }
 const checks = [
     ["manifest-v3", manifest.manifest_version === 3],
     ["background-worker-declared", typeof worker === "string" && worker.length > 0],

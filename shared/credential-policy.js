@@ -22,10 +22,13 @@ function credentialSkeleton(key) { return [...key.normalize("NFKD").replace(/[\p
 function isCredentialKey(key) {
     if (typeof key !== "string" || key.length > 128) return false;
     const normalized = key.normalize("NFKC");
-    const canonical = canonicalCredentialKey(normalized);
-    const ascii = normalized.normalize("NFKD").replace(/[\p{M}\p{Default_Ignorable_Code_Point}]/gu, "");
-    if (/^[\x00-\x7F]*$/.test(ascii) &&
-        (CREDENTIAL_KEYS.has(canonical) || COMPACT_KEYS.has(canonical.replaceAll("_", "")))) return true;
+    const canonical = canonicalCredentialKey(normalized),
+        ascii = normalized.normalize("NFKD").replace(/[\p{M}\p{Default_Ignorable_Code_Point}]/gu, "");
+    const candidates = [canonical, canonical.replace(/^x_/, "")]
+        .map((name) => name.replace(/^oauth\d+_/, "oauth_"));
+    if (/^[\x00-\x7F]*$/.test(ascii) && candidates.some((name) =>
+        CREDENTIAL_KEYS.has(name) || COMPACT_KEYS.has(name.replaceAll("_", "")) || /_(?:token|key)$/.test(name) &&
+        CREDENTIAL_KEYS.has(name.replace(/_(?:token|key)$/, "")))) return true;
     return /[A-Za-z]/.test(normalized) && MIXED_CONFUSABLE.test(normalized) &&
         COMPACT_KEYS.has(credentialSkeleton(normalized));
 }

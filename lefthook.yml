@@ -10,3 +10,5 @@ pre-commit:
       run: npm run lint
     type-check:
       run: npm run type-check
+    format:
+      run: npm run format:check

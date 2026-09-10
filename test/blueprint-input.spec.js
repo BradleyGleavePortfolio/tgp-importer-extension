@@ -90,14 +90,22 @@ describe("normalizeCaptureSnapshot — accepted structural evidence", () => {
             .toBe(JSON.stringify(normalizeCaptureSnapshot([b, a])));
     });
 
-    it("keeps mixed safe origins separate for same-origin downstream clustering", () => {
-        const result = normalizeCaptureSnapshot([
-            entry({ url: "https://one.example/api/items" }),
-            entry({ url: "https://two.example/api/items" }),
-        ]);
+    it.each([
+        ["different port", "https://coach.example:8443/api/items"],
+        ["subdomain", "https://api.coach.example/api/items"],
+        ["cross-origin redirect target", "https://login.example/redirected/items"],
+        ["third-party JSON response", "https://telemetry.vendor.example/api/items"],
+    ])("excludes a %s outside the first trusted capture origin", (_label, url) => {
+        const result = normalizeCaptureSnapshot([entry(), entry({ url })]);
+        expect(result.observations).toHaveLength(1);
+        expect(result.observations[0].origin).toBe("https://coach.example");
+        expect(result.excluded).toEqual([{ reason: "origin_mismatch", count: 1 }]);
+    });
+
+    it("accepts multiple paths on exactly the same origin", () => {
+        const result = normalizeCaptureSnapshot([entry(), entry({ url: "https://coach.example/other" })]);
+        expect(result.observations).toHaveLength(2);
         expect(result.excluded).toEqual([]);
-        expect(result.observations.map((item) => item.origin))
-            .toEqual(["https://one.example", "https://two.example"]);
     });
 });
 
@@ -181,6 +189,8 @@ describe("normalizeCaptureSnapshot — fail-closed entry validation", () => {
     it.each([
         "accessToken", "refreshToken", "auth_token", "client_secret", "sessionId",
         "session_token", "jwt", "x-api-key", "private_key", "password_hash", "credit_card",
+        "X-CSRF-Token", "X-XSRF-TOKEN", "X-Access-Token", "X-Refresh-Token", "X-OAuth-Token",
+        "X-Session-Token", "X-Id-Token", "X-Authorization", "authorization_token", "oauth2_token",
     ])("rejects raw credential alias %s", (key) => {
         const result = normalizeCaptureSnapshot([entry({
             responseBody: JSON.stringify({ [key]: "raw-secret" }),

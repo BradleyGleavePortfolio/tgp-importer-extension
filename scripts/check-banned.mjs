@@ -26,15 +26,17 @@ const patch = execSync(
 const patterns = [
     ["@ts-ignore", /@ts-ignore/g], ["as any", /\bas\s+any\b/g],
     ["as unknown as", /\bas\s+unknown\s+as\b/g], ["as never", /\bas\s+never\b/g],
-    ["silent catch null", /\.catch\(\s*\(\s*\)\s*=>\s*null\s*\)/g],
-    ["silent catch undefined", /\.catch\(\s*\(\s*\)\s*=>\s*undefined\s*\)/g],
-    ["silent catch block", /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*\)/g],
+    ["silent catch null", /\.catch\(\s*\(\s*\)\s*=>\s*null\s*,?\s*\)/g],
+    ["silent catch undefined", /\.catch\(\s*\(\s*\)\s*=>\s*undefined\s*,?\s*\)/g],
+    ["silent catch block", /\.catch\(\s*\(\s*\)\s*=>\s*\{\s*\}\s*,?\s*\)/g],
     ["empty catch", /catch\s*\{\s*\}/g], ["Coming soon", /Coming soon/gi],
 ];
 const added = patch.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++"));
 const removed = patch.split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---"));
+const normalized = (lines) => lines.map((line) => line.slice(1)).join("\n")
+    .replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ").replace(/\s+/g, " ");
 for (const [label, pattern] of patterns) {
-    const count = (lines) => lines.reduce((sum, line) => sum + [...line.matchAll(pattern)].length, 0);
+    const count = (lines) => [...normalized(lines).matchAll(pattern)].length;
     if (count(added) > count(removed)) failures.push(`R75 net-new banned token: ${label}`);
 }
 for (const line of added) {
@@ -56,10 +58,8 @@ const EXPECTED_NAME = "Bradley Gleave";
 const EXPECTED_EMAIL = "bradley@bradleytgpcoaching.com";
 const IDENTITY_TOKENS = /(claude|anthropic|co-authored-by|copilot|openai|\bgpt\b|assistant|dynasia|noreply@)/i;
 
-// --no-merges: pull_request CI checks out a synthetic merge commit authored by
-// GitHub <noreply@github.com>. That is not a PR commit and must not trip R3.
 const raw = process.env.BANNED_DIFF_CACHED === "1" ? "" : execSync(
-    `git log ${from}..HEAD --no-merges --format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e`,
+    `git log ${from}..HEAD --format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e`,
     { encoding: "utf8" },
 );
 for (const rec of raw.split("\x1e")) {

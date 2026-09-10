@@ -91,11 +91,14 @@ describe("CaptureBuffer byte accounting", () => {
         expect(new CaptureBuffer(Infinity).maxBytes).toBe(DEFAULT_MAX_BYTES);
     });
 
-    it("preserves object references, not copies", () => {
+    it("retains an immutable snapshot rather than the caller's object reference", () => {
         const buf = new CaptureBuffer(1024);
-        const obj = { k: 1 };
+        const obj = { nested: { k: 1 } };
         buf.push(obj);
-        expect(buf.snapshot()[0]).toBe(obj);
+        obj.nested.k = 99;
+        expect(buf.snapshot()[0]).toEqual({ nested: { k: 1 } });
+        expect(Object.isFrozen(buf.snapshot()[0].nested)).toBe(true);
+        expect(() => { buf.snapshot()[0].nested.k = 7; }).toThrow();
     });
 });
 
@@ -131,6 +134,28 @@ describe("byteSizeOf", () => {
         } finally {
             globalThis.TextEncoder = Original;
         }
+    });
+
+    it.each([
+        ["JSON escape expansion", { body: "\0".repeat(200) }],
+        ["sparse array length", { body: new Array(1_000_000) }],
+        ["UTF-8 expansion", { body: "€".repeat(80) }],
+    ])("rejects %s before complete encoding", (_label, entry) => {
+        const Original = globalThis.TextEncoder;
+        globalThis.TextEncoder = class { encode() { throw new Error("unexpected encoding"); } };
+        try {
+            const buf = new CaptureBuffer(64);
+            expect(() => buf.push(entry)).not.toThrow();
+            expect(buf.snapshot()).toEqual([]);
+        } finally { globalThis.TextEncoder = Original; }
+    });
+
+    it("accepts a multibyte entry at its exact UTF-8 cap and rejects one byte below", () => {
+        const entry = { body: "€€" }, size = byteSizeOf(entry);
+        const exact = new CaptureBuffer(size), short = new CaptureBuffer(size - 1);
+        exact.push(entry); short.push(entry);
+        expect(exact.snapshot()).toEqual([entry]);
+        expect(short.snapshot()).toEqual([]);
     });
 
     it("counts multi-byte characters by their encoded byte length", () => {
