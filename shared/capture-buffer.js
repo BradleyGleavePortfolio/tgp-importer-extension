@@ -92,13 +92,16 @@ class CaptureBuffer {
 
   push(entry) {
     const held = encodedSnapshot(entry);
-    if (!held || held.size > this.maxBytes) return;
+    if (!held || held.size > this.maxBytes) return null;
     this.entries.push(held);
     this.totalBytes += held.size;
+    let evicted = 0;
     while (this.totalBytes > this.maxBytes) {
       const oldest = this.entries.shift();
       this.totalBytes -= oldest.size;
+      evicted += 1;
     }
+    return { evicted };
   }
 
   snapshot() {

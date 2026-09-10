@@ -24,7 +24,7 @@ describe("capture lifecycle cleanup", () => {
     await flush();
     expect(mock.listenerCount()).toBe(0);
     expect(mock.calls.detach).toContainEqual({ target: { tabId: 50 } });
-    expect(await stopCapture(50)).toEqual([]);
+    expect((await stopCapture(50)).entries).toEqual([]);
   });
 
   it("releases the session without a redundant detach when Chrome detaches it", async () => {
@@ -34,7 +34,7 @@ describe("capture lifecycle cleanup", () => {
     expect(mock.listenerCount()).toBe(0);
     // Chrome already detached — the onDetach path must not re-issue detach.
     expect(mock.calls.detach).toEqual([]);
-    expect(await stopCapture(51)).toEqual([]);
+    expect((await stopCapture(51)).entries).toEqual([]);
   });
 
   it("ignores a detach event that carries no numeric tabId", async () => {
@@ -53,8 +53,8 @@ describe("capture lifecycle cleanup", () => {
     mock.emitSuspend();
     await flush();
     expect(mock.listenerCount()).toBe(0);
-    expect(await stopCapture(60)).toEqual([]);
-    expect(await stopCapture(61)).toEqual([]);
+    expect((await stopCapture(60)).entries).toEqual([]);
+    expect((await stopCapture(61)).entries).toEqual([]);
   });
 
   it("tab-close cleanup drains an in-flight finalizer before releasing", async () => {
@@ -69,19 +69,44 @@ describe("capture lifecycle cleanup", () => {
     await attachDebugger(70);
     mock.emit({ tabId: 70 }, "Network.requestWillBeSent", {
       requestId: "x",
-      request: { url: "https://x.co/a.json", method: "GET", headers: {} },
+      request: {
+        url: "https://app.truecoach.co/a.json",
+        method: "GET",
+        headers: {},
+      },
     });
     mock.emit({ tabId: 70 }, "Network.responseReceived", {
       requestId: "x",
       response: { mimeType: "application/json", status: 200 },
     });
     mock.emit({ tabId: 70 }, "Network.loadingFinished", { requestId: "x" });
+    mock.emit({ tabId: 70 }, "Network.requestWillBeSent", {
+      requestId: "foreign",
+      request: {
+        url: "https://telemetry.vendor.invalid/collect",
+        method: "GET",
+        headers: { Authorization: "Bearer not-retained" },
+      },
+    });
     mock.emitTabRemoved(70);
     // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     resolveBody({ body: "{}", base64Encoded: false });
     await flush();
     expect(mock.listenerCount()).toBe(0);
-    expect(await stopCapture(70)).toEqual([]);
+    expect((await stopCapture(70)).entries).toEqual([]);
+
+    mock.onCommand("Network.getResponseBody", () => ({
+      body: "{}",
+      base64Encoded: false,
+    }));
+    await attachDebugger(70);
+    const fresh = await stopCapture(70);
+    expect(fresh).toMatchObject({
+      entries: [],
+      incomplete: false,
+      degraded: false,
+      excluded: [],
+    });
   });
 
   it("cleanup for an untracked tab is a harmless no-op", async () => {
