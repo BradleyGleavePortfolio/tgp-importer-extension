@@ -223,7 +223,6 @@ function normalizePagination(p, stepId) {
     );
   }
   const style = p.style === "cursor" ? "cursor" : "page";
-  // `param` is the query key the engine writes the page/cursor value to.
   if (!isAbsent(p.param) && !isNonEmptyString(p.param)) {
     throw new Error(
       `blueprint step "${stepId}": pagination param must be a non-empty string`,
