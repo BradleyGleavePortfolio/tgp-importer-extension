@@ -624,6 +624,55 @@ describe("banned-token gate source coverage", () => {
     expect(output.stdout).toContain("callback:values.forEach[0;_]");
   });
 
+  it("rejects a duplicate-path transfer when surrounding statements swap", () => {
+    const before = [
+      "declare const values: unknown[];",
+      "declare const payload: unknown;",
+      "values.some(() => { console.info('teal'); return payload as any; });",
+      "values.some(() => { console.info('gold'); return payload; });",
+    ].join("\n");
+    const after = [
+      "declare const values: unknown[];",
+      "declare const payload: unknown;",
+      "values.some(() => { console.info('gold'); return payload as any; });",
+      "values.some(() => { console.info('teal'); return payload; });",
+    ].join("\n");
+    const output = mutation("src/duplicate-transfer.ts", after, before);
+    expect(output.status).toBe(1);
+    expect(output.stdout).toContain("R75 net-new banned token: as any");
+  });
+
+  it("preserves a duplicate-path finding when complete callbacks reorder", () => {
+    const amber = [
+      "values.every((value) => {",
+      "  console.info('amber');",
+      "  return value as any;",
+      "});",
+    ];
+    const violet = [
+      "values.every((value) => {",
+      "  console.info('violet');",
+      "  return Boolean(value);",
+      "});",
+    ];
+    const declaration = "declare const values: unknown[];";
+    const before = [declaration, ...amber, ...violet].join("\n");
+    const after = [declaration, ...violet, ...amber].join("\n");
+    expect(mutation("src/duplicate-reorder.ts", after, before).status).toBe(0);
+  });
+
+  it("rejects a new finding in a third duplicate-path callback", () => {
+    const before = [
+      "declare const values: unknown[];",
+      "values.some((value) => Boolean(value));",
+      "values.some((value) => Boolean(value));",
+    ].join("\n");
+    const after = [before, "values.some((value) => value as any);"].join("\n");
+    const output = mutation("src/duplicate-third.ts", after, before);
+    expect(output.status).toBe(1);
+    expect(output.stdout).toContain("R75 net-new banned token: as any");
+  });
+
   it("does not collide duplicate and nested function names", () => {
     const before = [
       "declare const value: unknown;",

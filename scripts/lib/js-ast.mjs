@@ -305,6 +305,14 @@ function scopeName(node, ids) {
     if (ids.has(current)) return ids.get(current);
   return "<module>";
 }
+function scopeContent(node, ids, file) {
+  for (let current = node; current; current = current.parent)
+    if (ids.has(current)) {
+      const body = isFunction(current) ? current.body : current;
+      return body?.getText(file).replace(/\s+/g, " ").trim() ?? "";
+    }
+  return file.getText().replace(/\s+/g, " ").trim();
+}
 export function bannedNodes(source, path = "diff.ts") {
   const file = parseSource(source, path),
     { ids, counts } = scopeIds(file),
@@ -315,6 +323,7 @@ export function bannedNodes(source, path = "diff.ts") {
       label,
       scope,
       scopeInstances: counts.get(scope) ?? 1,
+      scopeBody: scopeContent(node, ids, file),
       text: text.replace(/\s+/g, " ").trim(),
       line: file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1,
     });

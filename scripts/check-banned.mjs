@@ -100,6 +100,19 @@ function oldLineFor(newLine, hunks) {
   }
   return newLine - delta;
 }
+function inPureHunk(line, hunks, side) {
+  return hunks.some((hunk) => {
+    const hunkStart = hunk[`${side}Start`],
+      count = hunk[`${side}Count`],
+      otherCount = hunk[`${side === "old" ? "new" : "old"}Count`];
+    return (
+      count > 0 &&
+      otherCount === 0 &&
+      line >= hunkStart &&
+      line < hunkStart + count
+    );
+  });
+}
 for (const { oldPath, newPath } of files) {
   const before = bannedNodes(content(cached ? "HEAD" : from, oldPath), oldPath);
   const after = bannedNodes(content(cached ? "" : "HEAD", newPath), newPath);
@@ -113,8 +126,8 @@ for (const { oldPath, newPath } of files) {
   }
   for (const finding of after) {
     // Scope path + the finding's own normalized source is its semantic ID.
-    // Diff correspondence disambiguates duplicate structural paths without
-    // making mutable sibling ordinals or callback bodies part of that ID.
+    // Full-body multiset correspondence disambiguates duplicate structural
+    // paths across moves without making mutable sibling ordinals part of IDs.
     const key = `${finding.label}\0${finding.scope}\0${finding.text}`;
     const entries = available.get(key) ?? [],
       oldLine = oldLineFor(finding.line, hunks),
@@ -123,7 +136,13 @@ for (const { oldPath, newPath } of files) {
         entries.every((entry) => entry.scopeInstances === 1),
       match = uniqueScope
         ? entries.findIndex(() => true)
-        : entries.findIndex((entry) => entry.line === oldLine);
+        : entries.findIndex(
+            (entry) =>
+              entry.scopeBody === finding.scopeBody &&
+              (entry.line === oldLine ||
+                (inPureHunk(entry.line, hunks, "old") &&
+                  inPureHunk(finding.line, hunks, "new"))),
+          );
     if (match >= 0) entries.splice(match, 1);
     else
       failures.push(
