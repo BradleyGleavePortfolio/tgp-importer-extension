@@ -1,0 +1,32 @@
+name: CodeQL
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "23 5 * * 3"
+
+permissions:
+  actions: read
+  contents: read
+  security-events: write
+
+jobs:
+  codeql:
+    name: codeql
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: javascript-typescript
+          queries: security-and-quality
+      - uses: github/codeql-action/analyze@v4
+        with:
+          # This private-repo plan cannot enable GitHub code-scanning uploads.
+          # Keep analysis blocking by checking the generated SARIF locally.
+          upload: never
+          output: codeql-results
+      - name: Block CodeQL error/warning findings
+        run: node scripts/check-codeql-sarif.mjs codeql-results

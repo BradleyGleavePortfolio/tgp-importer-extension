@@ -1,0 +1,22 @@
+{
+  "compilerOptions": {
+    "allowJs": true,
+    "checkJs": false,
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "noEmit": true,
+    "skipLibCheck": true,
+    "target": "ES2022"
+  },
+  "include": [
+    "*.js",
+    "*.d.ts",
+    "content/**/*.js",
+    "extractors/**/*.js",
+    "popup/**/*.js",
+    "shared/**/*.js",
+    "scripts/**/*.mjs",
+    "test/**/*.js"
+  ],
+  "exclude": ["node_modules"]
+}

@@ -48,34 +48,40 @@ let refreshInFlight = null;
 // they apply atomically relative to each other; a rejected transition never
 // breaks the chain for the next.
 let stateLock = Promise.resolve();
+/** @template T @param {() => Promise<T>} work @returns {Promise<T>} */
 function withStateLock(work) {
-    const run = stateLock.then(work, work);
-    stateLock = run.then(() => undefined, () => undefined);
-    return run;
+  const run = stateLock.then(work, work);
+  stateLock = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
 function readString(record, key) {
-    return typeof record === "object" && record !== null && typeof record[key] === "string"
-        ? record[key]
-        : null;
+  return typeof record === "object" &&
+    record !== null &&
+    typeof record[key] === "string"
+    ? record[key]
+    : null;
 }
 function isNonEmptyString(value) {
-    return typeof value === "string" && value.length > 0;
+  return typeof value === "string" && value.length > 0;
 }
 
 async function readRefreshToken() {
-    const stored = await chrome.storage.session.get(REFRESH_TOKEN_KEY);
-    return readString(stored, REFRESH_TOKEN_KEY);
+  const stored = await chrome.storage.session.get(REFRESH_TOKEN_KEY);
+  return readString(stored, REFRESH_TOKEN_KEY);
 }
 
 // Whether a session is recoverable without re-pairing: the access token is in
 // memory, or a refresh token is persisted. Returns ONLY a boolean — never token
 // material — so it is safe to answer to the popup for routing/observability.
 export async function hasActiveSession() {
-    if (isNonEmptyString(accessTokenInMemory)) {
-        return true;
-    }
-    return (await readRefreshToken()) !== null;
+  if (isNonEmptyString(accessTokenInMemory)) {
+    return true;
+  }
+  return (await readRefreshToken()) !== null;
 }
 
 // Drop all token state (logout-style cleanup / uninstall). This does NOT call
@@ -83,11 +89,11 @@ export async function hasActiveSession() {
 // /auth/extension/logout is a backend dependency), so this clears LOCAL state
 // only and makes no revocation guarantee.
 export function clearTokens() {
-    return withStateLock(async () => {
-        stateEpoch += 1;
-        accessTokenInMemory = undefined;
-        await chrome.storage.session.remove(REFRESH_TOKEN_KEY);
-    });
+  return withStateLock(async () => {
+    stateEpoch += 1;
+    accessTokenInMemory = undefined;
+    await chrome.storage.session.remove(REFRESH_TOKEN_KEY);
+  });
 }
 
 // The one authoritative "no session -> session" transition. Persists the
@@ -97,20 +103,19 @@ export function clearTokens() {
 // ingest status snapshot. Malformed input is rejected before the lock, so it
 // cannot clobber an existing session.
 export function establishSession(accessToken, refreshToken) {
-    if (!isNonEmptyString(accessToken) || !isNonEmptyString(refreshToken)) {
-        return Promise.resolve({ ok: false, error: "invalid_token_payload" });
+  if (!isNonEmptyString(accessToken) || !isNonEmptyString(refreshToken)) {
+    return Promise.resolve({ ok: false, error: "invalid_token_payload" });
+  }
+  return withStateLock(async () => {
+    try {
+      await chrome.storage.session.set({ [REFRESH_TOKEN_KEY]: refreshToken });
+    } catch {
+      return { ok: false, error: "session_persist_failed" };
     }
-    return withStateLock(async () => {
-        try {
-            await chrome.storage.session.set({ [REFRESH_TOKEN_KEY]: refreshToken });
-        }
-        catch {
-            return { ok: false, error: "session_persist_failed" };
-        }
-        stateEpoch += 1;
-        accessTokenInMemory = accessToken;
-        return { ok: true };
-    });
+    stateEpoch += 1;
+    accessTokenInMemory = accessToken;
+    return { ok: true };
+  });
 }
 
 // Mint a fresh access token from the stored refresh token. Returns null when no
@@ -124,86 +129,85 @@ export function establishSession(accessToken, refreshToken) {
 // token — the prior session state is preserved and the caller fails closed,
 // exactly as establishSession does (no asymmetric wipe / no torn pair).
 export async function refreshAccessToken() {
-    if (refreshInFlight !== null) {
-        return refreshInFlight;
-    }
-    refreshInFlight = refreshAccessTokenOnce().finally(() => {
-        refreshInFlight = null;
-    });
+  if (refreshInFlight !== null) {
     return refreshInFlight;
+  }
+  refreshInFlight = refreshAccessTokenOnce().finally(() => {
+    refreshInFlight = null;
+  });
+  return refreshInFlight;
 }
 
 async function refreshAccessTokenOnce() {
-    const snapshot = await withStateLock(async () => ({
-        token: await readRefreshToken(),
-        epoch: stateEpoch,
-    }));
-    if (snapshot.token === null) {
-        return null;
-    }
+  const snapshot = await withStateLock(async () => ({
+    token: await readRefreshToken(),
+    epoch: stateEpoch,
+  }));
+  if (snapshot.token === null) {
+    return null;
+  }
 
-    let res;
-    try {
-        res = await fetchWithTimeout(fetch, REFRESH_ENDPOINT, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ refresh_token: snapshot.token }),
-        });
-    }
-    catch (err) {
-        logNetworkEvent(isTimeout(err) ? "refresh_timeout" : "refresh_network_error");
-        return null;
-    }
-    if (!res.ok) {
-        return null;
-    }
-
-    let body;
-    try {
-        body = await res.json();
-    }
-    catch {
-        logNetworkEvent("refresh_body_parse_error");
-        return null;
-    }
-    const next = readString(body, "access_token");
-    if (next === null) {
-        return null;
-    }
-    const rotated = readString(body, "refresh_token");
-
-    // Commit under the lock. If the epoch moved (a logout or a newer establish
-    // ran while we were on the network) discard the result — never resurrect a
-    // cleared session, never clobber a newer one.
-    return withStateLock(async () => {
-        if (snapshot.epoch !== stateEpoch) {
-            return null;
-        }
-        if (rotated !== null) {
-            try {
-                await chrome.storage.session.set({ [REFRESH_TOKEN_KEY]: rotated });
-            }
-            catch {
-                logNetworkEvent("refresh_rotation_persist_failed");
-                return null;
-            }
-            stateEpoch += 1;
-        }
-        accessTokenInMemory = next;
-        return next;
+  let res;
+  try {
+    res = await fetchWithTimeout(fetch, REFRESH_ENDPOINT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh_token: snapshot.token }),
     });
+  } catch (err) {
+    logNetworkEvent(
+      isTimeout(err) ? "refresh_timeout" : "refresh_network_error",
+    );
+    return null;
+  }
+  if (!res.ok) {
+    return null;
+  }
+
+  let body;
+  try {
+    body = await res.json();
+  } catch {
+    logNetworkEvent("refresh_body_parse_error");
+    return null;
+  }
+  const next = readString(body, "access_token");
+  if (next === null) {
+    return null;
+  }
+  const rotated = readString(body, "refresh_token");
+
+  // Commit under the lock. If the epoch moved (a logout or a newer establish
+  // ran while we were on the network) discard the result — never resurrect a
+  // cleared session, never clobber a newer one.
+  return withStateLock(async () => {
+    if (snapshot.epoch !== stateEpoch) {
+      return null;
+    }
+    if (rotated !== null) {
+      try {
+        await chrome.storage.session.set({ [REFRESH_TOKEN_KEY]: rotated });
+      } catch {
+        logNetworkEvent("refresh_rotation_persist_failed");
+        return null;
+      }
+      stateEpoch += 1;
+    }
+    accessTokenInMemory = next;
+    return next;
+  });
 }
 
 // Return a usable access token, minting one from the refresh token if the
 // in-memory copy is absent (cold service-worker wake). Throws "no_session" when
 // no session exists so callers fail closed.
 export async function getAccessToken() {
-    if (isNonEmptyString(accessTokenInMemory)) {
-        return accessTokenInMemory;
-    }
-    const minted = await refreshAccessToken();
-    if (minted === null) {
-        throw new Error("no_session");
-    }
-    return minted;
+  if (isNonEmptyString(accessTokenInMemory)) {
+    return accessTokenInMemory;
+  }
+  const minted = await refreshAccessToken();
+  if (minted === null) {
+    throw new Error("no_session");
+  }
+  return minted;
 }
