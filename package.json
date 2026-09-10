@@ -13,7 +13,7 @@
     "check:production-preflight": "node scripts/check-deploy-readiness.mjs",
     "check:hooks": "node scripts/check-hook-config.mjs",
     "lint": "eslint --max-warnings=0 --config scripts/eslint.config.mjs .",
-    "format:check": "prettier --check \"*.js\" \"content/**/*.js\" \"extractors/**/*.js\" \"popup/**/*.js\" \"shared/**/*.js\" \"test/**/*.js\" \"scripts/**/*.mjs\" package.json jsconfig.json lefthook.yml",
+    "format:check": "node scripts/check-format.mjs",
     "type-check": "tsc -p jsconfig.json",
     "prepare": "lefthook install",
     "gates": "npm run check:banned && npm run check:loc && npm run check:flags && npm run check:ratio && npm run check:fixtures && npm run check:production-preflight && npm run check:hooks && npm run lint && npm run type-check && npm run format:check"

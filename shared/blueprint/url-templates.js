@@ -56,15 +56,14 @@ export function inferUrlTemplates(observations, options) {
         rejected.set("observation_limit", rows.length - maxObservations), rows.length = maxObservations;
     const coarse = grouped(rows, (row) => JSON.stringify([row.origin, row.method, row.segments.map(structural)])), clusters = [];
     for (const group of coarse.values()) {
-        const dynamic = new Set(group[0].segments.flatMap((_segment, index) => {
-            const values = [...new Set(group.map((row) => row.segments[index]))];
+        const dynamicFor = (partition) => new Set(partition[0].segments.flatMap((_segment, index) => {
+            const values = [...new Set(partition.map((row) => row.segments[index]))];
             const months = index > 0 && group.every((row) => YEAR.test(row.segments[index - 1])) &&
                 values.every((value) => INTEGER.test(value) && Number(value) >= 1 && Number(value) <= 12);
             return values.length >= minDistinct && !months && values.every((value) => candidateKind(value)) ? [index] : [];
         }));
-        const partitions = grouped(group, (row) => JSON.stringify(row.segments.filter((_segment, index) => !dynamic.has(index))));
-        for (const partition of partitions.values()) {
-            const dynamicSegments = dynamic.size, cluster = {
+        let partitions = [group], count; do { count = partitions.length; partitions = partitions.flatMap((partition) => { const dynamic = dynamicFor(partition); return [...grouped(partition, (row) => JSON.stringify(row.segments.filter((_segment, index) => !dynamic.has(index)))).values()]; }); } while (partitions.length > count);
+        for (const partition of partitions) { const dynamic = dynamicFor(partition), dynamicSegments = dynamic.size, cluster = {
                 origin: partition[0].origin, method: partition[0].method,
                 pathPattern: "/" + partition[0].segments.map((segment, index) =>
                     dynamic.has(index) ? ":id" : literal(segment)).join("/"),

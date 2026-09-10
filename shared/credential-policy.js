@@ -3,9 +3,9 @@ session_token session_id sid jsessionid phpsessid csrf_token xsrf_token client_s
 access_key access_key_id password_hash token jwt api_key x_api_key x_auth_token authorization proxy_authorization
 cookie set_cookie password passwd pwd passcode secret api_secret credit_card card_number cc_number credit_card_number
 card_pan primary_account_number cvv cvc card_cvv card_cvc card_security_code security_code card_expiry expiry_month
-expiry_year routing_number account_number payment_token passphrase otp pin cookies auth session pan key`.split(/\s+/));
+expiry_year routing_number account_number payment_token passphrase otp pin cookies auth session pan key credential signature sig`.split(/\s+/));
 const COMPACT_KEYS = new Set([...CREDENTIAL_KEYS].map((key) => key.replaceAll("_", "")));
-const SUFFIXES = `security_token api_key secret_key access_token refresh_token oauth_token csrf_token xsrf_token id_token session_token authorization token secret key`.split(/\s+/).map((key) => key.replaceAll("_", ""));
+const SUFFIXES = `security_token api_key secret_key access_token refresh_token oauth_token csrf_token xsrf_token id_token session_token authorization credential signature token secret sig`.split(/\s+/).map((key) => key.replaceAll("_", ""));
 const BEARER = /\bBearer\s+[A-Za-z0-9._~+/-]+/gi, BASIC = /\bBasic\s+[A-Za-z0-9+/]+={0,2}(?![A-Za-z0-9+/=])/gi;
 const JWT = /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;
 const CONFUSABLE_GROUPS = [["a", "ΑАαа"], ["b", "ΒВβ"], ["c", "ϹСϲс"], ["d", "Ꭰԁԃ"], ["e", "ΕЕеҽ"], ["g", "Ԍԍ"], ["h", "ΗНһ"], ["i", "ΙІі"], ["j", "Јј"], ["k", "ΚКκк"],
@@ -25,14 +25,12 @@ function isCredentialKey(key) {
         ascii = normalized.normalize("NFKD").replace(/[\p{M}\p{Default_Ignorable_Code_Point}]/gu, "");
     const compact = canonical.replaceAll("_", "");
     if (/^[\x00-\x7F]*$/.test(ascii) && (COMPACT_KEYS.has(compact) ||
-        SUFFIXES.some((suffix) => compact.length > suffix.length && compact.endsWith(suffix)))) return true;
+        SUFFIXES.some((suffix) => compact.length > suffix.length && compact.endsWith(suffix)) ||
+        canonical.endsWith("_key"))) return true;
     return /[A-Za-z]/.test(normalized) && MIXED_CONFUSABLE.test(normalized) &&
         COMPACT_KEYS.has(credentialSkeleton(normalized));
 }
-function isCredentialValue(key, value) { if (!isCredentialKey(key)) return false;
-    const compact = canonicalCredentialKey(key).replaceAll("_", "");
-    if (!new Set(["auth", "session", "pan"]).has(compact)) return true;
-    return typeof value === "string" && value.length >= 8 && !/\s/.test(value) && /[^A-Za-z]/.test(value); }
+function isCredentialValue(key, _value) { return isCredentialKey(key); }
 function redactCredentialText(value) {
     if (typeof value !== "string") return value; const normalized = value.normalize("NFKC");
     const redacted = normalized.replace(BEARER, REDACTION).replace(BASIC, REDACTION).replace(JWT, REDACTION);

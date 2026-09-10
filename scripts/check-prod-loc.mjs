@@ -15,11 +15,13 @@ const base = resolveBase();
 const { prod } = diffLineStats(base);
 
 process.stdout.write(
-    `prod LOC (base=${base}) — prod_added=${prod.added} prod_removed=${prod.removed} cap=${CAP}\n`,
+  `prod LOC (base=${base}) — prod_added=${prod.added} prod_removed=${prod.removed} cap=${CAP}\n`,
 );
 
 if (prod.added > CAP) {
-    process.stdout.write(`FAIL: added production JS ${prod.added} exceeds the per-PR cap of ${CAP}\n`);
-    process.exit(1);
+  process.stdout.write(
+    `FAIL: added production JS ${prod.added} exceeds the per-PR cap of ${CAP}\n`,
+  );
+  process.exit(1);
 }
 process.stdout.write("OK: added production JS is within the per-PR cap\n");

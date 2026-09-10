@@ -1,13 +1,14 @@
 import { compareText } from "./order.js";
 const DEFAULTS = Object.freeze({ maxDepth: 3, maxCollection: 100, maxVariants: 16, maxNodes: 5000, maxObservations: 1000 }),
     HARD = Object.freeze({ maxDepth: 16, maxCollection: 200, maxVariants: 32, maxNodes: 20000, maxObservations: 1000 });
+const SAFE_SCHEMA_KEYS = new Set("active address age client clients count created_at data deep email enabled id items meta name nested next notes page phone profile records results safe self status total type updated_at value".split(" "));
 function kindOf(value) { if (value === null) return "null"; if (Array.isArray(value)) return "array";
     const type = typeof value;
     return type === "object" || type === "string" || type === "boolean" || (type === "number" && Number.isFinite(value)) ? type : "unsupported"; }
 function limit(options, key) { const raw = options?.[key];
     return Number.isInteger(raw) && raw >= (key === "maxDepth" ? 0 : 1) ? Math.min(raw, HARD[key]) : DEFAULTS[key]; }
 function keyToken(key) {
-    if (/^[a-z]{1,32}$/.test(key) && key !== "constructor") return key;
+    if (SAFE_SCHEMA_KEYS.has(key)) return key;
     let hash = 0xcbf29ce484222325n; for (const char of key)
         hash = BigInt.asUintN(64, (hash ^ BigInt(char.codePointAt(0))) * 0x100000001b3n);
     return `#${hash.toString(16).padStart(16, "0")}`; }

@@ -69,7 +69,7 @@ class CaptureBuffer {
         if (!fitsCheapBound(entry, this.maxBytes)) return;
         const size = byteSizeOf(entry);
         if (size === null || size > this.maxBytes) return;
-        let held; try { held = freezeTree(JSON.parse(JSON.stringify(entry))); } catch { return; }
+        const held = freezeTree(JSON.parse(JSON.stringify(entry)));
         this.entries.push({ entry: held, size });
         this.totalBytes += size;
         while (this.totalBytes > this.maxBytes && this.entries.length > 0) {

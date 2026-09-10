@@ -23,58 +23,64 @@ export const CONFORMANCE_ALPHA_ORIGIN = "https://conformance-alpha.test";
 
 // Cursor descriptor shared by every child family: the next cursor rides the
 // `after` query param and is located at `paging.after` in the response body.
-const CURSOR = { style: "cursor", param: "after", nextPath: ["paging", "after"] };
+const CURSOR = {
+  style: "cursor",
+  param: "after",
+  nextPath: ["paging", "after"],
+};
 
 export function conformanceAlphaBlueprint() {
-    return {
-        platform: "conformance_alpha",
-        apiBase: CONFORMANCE_ALPHA_ORIGIN,
-        rateLimitMs: 0,
-        headers: { Accept: "application/json" },
-        steps: [
-            {
-                // Un-paginated coach roster; collect ids for the three fan-outs.
-                id: "coaches",
-                entityType: "coaches",
-                template: "/v2/coaches",
-                itemsPath: ["coaches"],
-                idField: "id",
-                collectAs: "coachIds",
-            },
-            {
-                id: "members",
-                entityType: "members",
-                template: "/v2/coaches/:coach_id/members",
-                forEach: "coachIds",
-                itemsPath: ["members"],
-                idField: "id",
-                pagination: { ...CURSOR },
-            },
-            {
-                id: "routines",
-                entityType: "routines",
-                template: "/v2/coaches/:coach_id/routines",
-                forEach: "coachIds",
-                itemsPath: ["routines"],
-                idField: "id",
-                pagination: { ...CURSOR },
-            },
-            {
-                id: "activity-log",
-                entityType: "activity-log",
-                template: "/v2/coaches/:coach_id/activity-log",
-                forEach: "coachIds",
-                itemsPath: ["events"],
-                idField: "id",
-                pagination: { ...CURSOR },
-            },
-        ],
-    };
+  return {
+    platform: "conformance_alpha",
+    apiBase: CONFORMANCE_ALPHA_ORIGIN,
+    rateLimitMs: 0,
+    headers: { Accept: "application/json" },
+    steps: [
+      {
+        // Un-paginated coach roster; collect ids for the three fan-outs.
+        id: "coaches",
+        entityType: "coaches",
+        template: "/v2/coaches",
+        itemsPath: ["coaches"],
+        idField: "id",
+        collectAs: "coachIds",
+      },
+      {
+        id: "members",
+        entityType: "members",
+        template: "/v2/coaches/:coach_id/members",
+        forEach: "coachIds",
+        itemsPath: ["members"],
+        idField: "id",
+        pagination: { ...CURSOR },
+      },
+      {
+        id: "routines",
+        entityType: "routines",
+        template: "/v2/coaches/:coach_id/routines",
+        forEach: "coachIds",
+        itemsPath: ["routines"],
+        idField: "id",
+        pagination: { ...CURSOR },
+      },
+      {
+        id: "activity-log",
+        entityType: "activity-log",
+        template: "/v2/coaches/:coach_id/activity-log",
+        forEach: "coachIds",
+        itemsPath: ["events"],
+        idField: "id",
+        pagination: { ...CURSOR },
+      },
+    ],
+  };
 }
 
 export function loadConformanceFixture() {
-    const path = fileURLToPath(new URL("../fixtures/conformance/conformance-alpha.json", import.meta.url));
-    return JSON.parse(readFileSync(path, "utf8"));
+  const path = fileURLToPath(
+    new URL("../fixtures/conformance/conformance-alpha.json", import.meta.url),
+  );
+  return JSON.parse(readFileSync(path, "utf8"));
 }
 
 // Deterministic fetchJson over the recorded fixture. The engine builds an absolute
@@ -83,17 +89,17 @@ export function loadConformanceFixture() {
 // Every request is recorded in `calls` for accounting assertions. An unrouted URL
 // throws (a missing fixture entry is a test bug, never a silent empty page).
 export function makeFixtureFetch(fixture) {
-    const calls = [];
-    async function fetchJson(url, init) {
-        const u = new URL(url);
-        const after = u.searchParams.get("after");
-        const key = after === null ? u.pathname : `${u.pathname}?after=${after}`;
-        calls.push({ url, key, method: init.method, headers: init.headers });
-        const body = fixture.responses[key];
-        if (body === undefined) {
-            throw new Error(`conformance fixture has no response for "${key}"`);
-        }
-        return body;
+  const calls = [];
+  async function fetchJson(url, init) {
+    const u = new URL(url);
+    const after = u.searchParams.get("after");
+    const key = after === null ? u.pathname : `${u.pathname}?after=${after}`;
+    calls.push({ url, key, method: init.method, headers: init.headers });
+    const body = fixture.responses[key];
+    if (body === undefined) {
+      throw new Error(`conformance fixture has no response for "${key}"`);
     }
-    return { fetchJson, calls };
+    return body;
+  }
+  return { fetchJson, calls };
 }

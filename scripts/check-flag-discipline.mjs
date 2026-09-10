@@ -15,21 +15,29 @@ import { readFileSync } from "node:fs";
 const PROTOCOL = "shared/protocol.js";
 const src = readFileSync(PROTOCOL, "utf8");
 
-const match = src.match(/export\s+const\s+PAIRING_ENABLED\s*=\s*(true|false)\s*;/);
+const match = src.match(
+  /export\s+const\s+PAIRING_ENABLED\s*=\s*(true|false)\s*;/,
+);
 if (!match) {
-    process.stdout.write(`FAIL: ${PROTOCOL} must declare "export const PAIRING_ENABLED = <boolean literal>;"\n`);
-    process.exit(1);
+  process.stdout.write(
+    `FAIL: ${PROTOCOL} must declare "export const PAIRING_ENABLED = <boolean literal>;"\n`,
+  );
+  process.exit(1);
 }
 
 const value = match[1];
-process.stdout.write(`flag discipline — PAIRING_ENABLED=${value} (sole auth path)\n`);
+process.stdout.write(
+  `flag discipline — PAIRING_ENABLED=${value} (sole auth path)\n`,
+);
 
 if (value !== "true") {
-    process.stdout.write(
-        "FAIL: PAIRING_ENABLED is the ONLY auth path and its backend contract is merged; " +
-        "shipping it false is a dark-merged auth dead-end (R109). Set it true, or roll it " +
-        "back in lockstep with guarding the redeem call.\n",
-    );
-    process.exit(1);
+  process.stdout.write(
+    "FAIL: PAIRING_ENABLED is the ONLY auth path and its backend contract is merged; " +
+      "shipping it false is a dark-merged auth dead-end (R109). Set it true, or roll it " +
+      "back in lockstep with guarding the redeem call.\n",
+  );
+  process.exit(1);
 }
-process.stdout.write("OK: sole auth path is enabled — no dark-merged dead-end\n");
+process.stdout.write(
+  "OK: sole auth path is enabled — no dark-merged dead-end\n",
+);
