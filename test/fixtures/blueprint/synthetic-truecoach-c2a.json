@@ -1,0 +1,38 @@
+[
+  {
+    "url": "https://app.synthetic-coach.invalid/proxy/api/v2/clients/101?page=1&access_token=<redacted>",
+    "method": "GET",
+    "statusCode": 200,
+    "capturedAt": "2026-09-09T20:00:00.000Z",
+    "requestHeaders": {
+      "Accept": "application/json",
+      "Authorization": "<redacted>",
+      "X-Vendor-Api-Key-v2": "<redacted>"
+    },
+    "responseBody": "{\"id\":101,\"name\":\"Fixture Athlete Alpha\",\"email\":\"alpha@example.invalid\",\"access_token\":\"[REDACTED]\",\"profile\":{\"active\":true}}"
+  },
+  {
+    "url": "https://app.synthetic-coach.invalid/proxy/api/v2/clients/102?page=2&access_token=<redacted>",
+    "method": "GET",
+    "statusCode": 200,
+    "capturedAt": "2026-09-09T20:00:01.000Z",
+    "requestHeaders": {
+      "Accept": "application/json",
+      "Authorization": "<redacted>",
+      "X-Vendor-Api-Key-v2": "<redacted>"
+    },
+    "responseBody": "{\"email\":\"beta@example.invalid\",\"profile\":{\"active\":false},\"name\":\"Fixture Athlete Beta\",\"id\":102,\"access_token\":\"[REDACTED]\"}"
+  },
+  {
+    "url": "https://app.synthetic-coach.invalid/proxy/api/v2/clients/103?page=3&access_token=<redacted>",
+    "method": "GET",
+    "statusCode": 200,
+    "capturedAt": "2026-09-09T20:00:02.000Z",
+    "requestHeaders": {
+      "Accept": "application/json",
+      "Authorization": "<redacted>",
+      "X-Vendor-Api-Key-v2": "<redacted>"
+    },
+    "responseBody": "{\"name\":\"Fixture Athlete Gamma\",\"id\":103,\"access_token\":\"[REDACTED]\",\"profile\":{\"active\":true},\"email\":\"gamma@example.invalid\"}"
+  }
+]
