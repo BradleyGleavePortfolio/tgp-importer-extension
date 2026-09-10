@@ -6,7 +6,6 @@
 // the background worker (the single session owner); this file only wires the
 // DOM and swaps to the status view once a session exists.
 import { redeemPairingCode } from "../shared/pairing.js";
-import { PAIRING_ENABLED } from "../shared/protocol.js";
 
 function el(id) {
     const node = document.getElementById(id);
@@ -36,15 +35,6 @@ chrome.runtime.sendMessage({ kind: "request_session_state" }, (response) => {
         window.location.replace("popup.html");
     }
 });
-
-// PAIRING_ENABLED ships ON for the v0.3 RC (its backend contract is merged —
-// shared/protocol.js). This guard is retained so that if the flag is ever
-// flipped off in lockstep with a backend rollback, the coach sees an honest
-// "not available yet" state rather than a form that fires at a dead endpoint.
-if (!PAIRING_ENABLED) {
-    disableSubmit(true);
-    showError("Pairing isn't available yet — it unlocks once the TGP backend ships pairing.");
-}
 
 el("pair-form").addEventListener("submit", (event) => {
     event.preventDefault();

@@ -5,8 +5,7 @@ cookie set_cookie password passwd pwd passcode secret api_secret credit_card car
 card_pan primary_account_number cvv cvc card_cvv card_cvc card_security_code security_code card_expiry expiry_month
 expiry_year routing_number account_number payment_token passphrase otp pin cookies`.split(/\s+/));
 const COMPACT_KEYS = new Set([...CREDENTIAL_KEYS].map((key) => key.replaceAll("_", "")));
-const BEARER = /\bBearer\s+[A-Za-z0-9._~+/-]+/gi;
-const BASIC = /\bBasic\s+[A-Za-z0-9+/]+={0,2}(?![A-Za-z0-9+/=])/gi;
+const BEARER = /\bBearer\s+[A-Za-z0-9._~+/-]+/gi, BASIC = /\bBasic\s+[A-Za-z0-9+/]+={0,2}(?![A-Za-z0-9+/=])/gi;
 const JWT = /\beyJ[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g;
 // UTS #39-style skeleton for the Greek/Cyrillic characters confusable with
 // Latin credential aliases. Single-script international keys remain ordinary.
