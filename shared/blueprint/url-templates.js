@@ -114,6 +114,9 @@ function supportedKeys(value) {
     ),
   ].sort(compareText);
 }
+function rowKey(row) {
+  return JSON.stringify([row.origin, row.method, row.segments, row.queryKeys]);
+}
 function grouped(values, keyFor) {
   const out = new Map();
   for (const value of values) {
@@ -149,8 +152,10 @@ export function inferUrlTemplates(observations, options) {
     maxObservations = option(options, "maxObservations", 1000),
     maxSegments = option(options, "maxSegments", 32),
     rejected = new Map(),
+    excludedRefs = [],
+    refsFor = new Map(),
     rows = [];
-  for (const observation of observations) {
+  for (const [index, observation] of observations.entries()) {
     const segments = splitPath(observation?.path, maxSegments);
     if (
       typeof observation?.origin !== "string" ||
@@ -162,18 +167,23 @@ export function inferUrlTemplates(observations, options) {
         "invalid_observation",
         (rejected.get("invalid_observation") ?? 0) + 1,
       );
+      excludedRefs.push({ ref: index, reason: "invalid_observation" });
     } else
       rows.push({
         origin: observation.origin,
         method: observation.method,
         segments,
         queryKeys: supportedKeys(observation.queryKeys),
+        index,
       });
   }
-  rows.sort((a, b) => compareText(JSON.stringify(a), JSON.stringify(b)));
-  if (rows.length > maxObservations)
+  rows.sort((a, b) => compareText(rowKey(a), rowKey(b)) || a.index - b.index);
+  if (rows.length > maxObservations) {
+    for (const row of rows.slice(maxObservations))
+      excludedRefs.push({ ref: row.index, reason: "observation_limit" });
     (rejected.set("observation_limit", rows.length - maxObservations),
       (rows.length = maxObservations));
+  }
   const coarse = grouped(rows, (row) =>
       JSON.stringify([row.origin, row.method, row.segments.map(structural)]),
     ),
@@ -238,15 +248,31 @@ export function inferUrlTemplates(observations, options) {
         };
       if (!cluster.replayCompatible)
         cluster.reason = "multiple_dynamic_segments";
+      refsFor.set(
+        cluster,
+        partition.map((row) => row.index).sort((a, b) => a - b),
+      );
       clusters.push(cluster);
     }
   }
   clusters.sort((a, b) => compareText(JSON.stringify(a), JSON.stringify(b)));
-  return {
+  const result = {
     clusters,
     excluded: [...rejected]
       .sort(([a], [b]) => compareText(a, b))
       .map(([reason, count]) => ({ reason, count })),
   };
+  if (options?.membership === true)
+    result.membership = {
+      observationCount: observations.length,
+      clusters: clusters.map((cluster) => ({
+        origin: cluster.origin,
+        method: cluster.method,
+        pathPattern: cluster.pathPattern,
+        refs: refsFor.get(cluster) ?? [],
+      })),
+      excluded: excludedRefs.sort((a, b) => a.ref - b.ref),
+    };
+  return result;
 }
 export { candidateKind, SUPPORTED_QUERY_KEYS, HARD as URL_HARD_LIMITS };

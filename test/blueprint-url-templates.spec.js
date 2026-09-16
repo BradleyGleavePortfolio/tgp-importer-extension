@@ -447,3 +447,73 @@ describe("inferUrlTemplates — hostile and bounded input", () => {
     expect(JSON.stringify(result)).not.toContain(secret);
   });
 });
+
+describe("inferUrlTemplates — membership option compatibility", () => {
+  const rows = [
+    ...[101, 102, 103].map((id) => observation(`/clients/${id}`)),
+    ...[1, 2, 3].map((id) => observation(`/coaches/${id}/workouts`)),
+    observation("/clients/104", { method: "POST" }),
+    observation("/clients", { queryKeys: ["page"] }),
+  ];
+
+  it.each([
+    ["defaults", undefined],
+    ["a capped snapshot", { maxObservations: 4 }],
+    ["a lower distinct-value floor", { minDistinct: 2 }],
+  ])("leaves clusters and exclusions unchanged with %s", (_label, options) => {
+    const plain = inferUrlTemplates(rows, options);
+    const withMembership = inferUrlTemplates(rows, {
+      ...options,
+      membership: true,
+    });
+    expect(withMembership.clusters).toEqual(plain.clusters);
+    expect(withMembership.excluded).toEqual(plain.excluded);
+    expect(Object.hasOwn(plain, "membership")).toBe(false);
+    expect(withMembership.clusters.map(Object.keys)).toEqual(
+      plain.clusters.map(Object.keys),
+    );
+  });
+
+  it.each([
+    ["a non-boolean opt-in value", { membership: "yes" }],
+    ["an explicit false", { membership: false }],
+  ])("does not emit membership for %s", (_label, options) => {
+    expect(Object.hasOwn(inferUrlTemplates(rows, options), "membership")).toBe(
+      false,
+    );
+  });
+
+  it("omits membership when the whole snapshot is rejected", () => {
+    expect(
+      Object.hasOwn(
+        inferUrlTemplates("nope", { membership: true }),
+        "membership",
+      ),
+    ).toBe(false);
+    const tooMany = Array.from({ length: 1001 }, () =>
+      observation("/clients/101"),
+    );
+    expect(
+      Object.hasOwn(
+        inferUrlTemplates(tooMany, { membership: true }),
+        "membership",
+      ),
+    ).toBe(false);
+  });
+
+  it("keeps cluster ordering deterministic under shuffled input", () => {
+    const shuffled = [
+      rows[6],
+      rows[2],
+      rows[5],
+      rows[0],
+      rows[7],
+      rows[4],
+      rows[1],
+      rows[3],
+    ];
+    expect(inferUrlTemplates(shuffled).clusters).toEqual(
+      inferUrlTemplates(rows).clusters,
+    );
+  });
+});
