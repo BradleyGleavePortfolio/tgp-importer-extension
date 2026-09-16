@@ -230,9 +230,14 @@ function normalizePagination(p, stepId) {
   }
   if (style === "page") {
     const param = isAbsent(p.param) ? "page" : p.param;
-    if (!isAbsent(p.start) && !Number.isInteger(p.start)) {
+    // Number.isInteger(2 ** 53) is TRUE, yet 2 ** 53 + 1 === 2 ** 53: such a
+    // start can never advance, so the walk would re-request one URL forever (or
+    // stall after one step) and still look finished. Only SAFE integers are
+    // executable, so the unsafe ones fail closed here instead of manufacturing a
+    // traversal that cannot progress.
+    if (!isAbsent(p.start) && !Number.isSafeInteger(p.start)) {
       throw new Error(
-        `blueprint step "${stepId}": page pagination start must be an integer`,
+        `blueprint step "${stepId}": page pagination start must be an integer in the safe range`,
       );
     }
     const start = isAbsent(p.start) ? 1 : p.start;
@@ -242,17 +247,23 @@ function normalizePagination(p, stepId) {
   // locates the next-cursor token in the response body. An absent, empty, or
   // malformed nextPath ⇒ the engine cannot advance (an empty path reads the whole
   // body, never a token) — caught here rather than looping forever.
+  //
+  // Validate the DENSE SNAPSHOT that execution will actually use, not the caller
+  // array: Array.prototype.every SKIPS holes, so `Array(1)` (length 1, no
+  // elements) used to pass and then spread to `[undefined]` — an unreadable path
+  // the engine walked one page with before reporting success.
+  const nextPath = Array.isArray(p.nextPath) ? [...p.nextPath] : null;
   if (
-    !Array.isArray(p.nextPath) ||
-    p.nextPath.length === 0 ||
-    !p.nextPath.every(isNonEmptyString)
+    nextPath === null ||
+    nextPath.length === 0 ||
+    !nextPath.every(isNonEmptyString)
   ) {
     throw new Error(
       `blueprint step "${stepId}": cursor pagination requires a non-empty nextPath string[]`,
     );
   }
   const param = isAbsent(p.param) ? "cursor" : p.param;
-  return { style, param, nextPath: [...p.nextPath] };
+  return { style, param, nextPath };
 }
 
 function normalizeStep(step, seenIds) {

@@ -250,7 +250,12 @@ export async function runReplay(options) {
         truncated = true;
         return;
       }
-      const query = {};
+      // NULL-PROTOTYPE map: a plain `{}` inherits the `__proto__` setter, so
+      // `query["__proto__"] = v` created NO own property and Object.entries
+      // dropped the key — the same URL then repeated and the visited-URL guard
+      // reported success. Every param name the normalizer accepts must survive
+      // into the request exactly as accepted.
+      const query = Object.create(null);
       if (pag !== null && pag.style === "page") {
         query[pag.param] = pageParam;
       }
@@ -259,7 +264,11 @@ export async function runReplay(options) {
       }
       const url = buildUrl(bp.apiBase, path, query);
       if (visited.has(url)) {
-        return; // duplicate page / cursor cycle within this context — stop
+        // A repeated URL means traversal STOPPED WITHOUT PROOF of exhaustion
+        // (cursor cycle or a page param that cannot advance); it is a bound we
+        // hit, never evidence the list ended, so it must not read as complete.
+        truncated = true;
+        return;
       }
       visited.add(url);
       totalPages += 1;
@@ -334,6 +343,12 @@ export async function runReplay(options) {
       if (pag.style === "page") {
         if (items.length === 0) {
           return; // empty page => end of list
+        }
+        // A safe start can still reach the safe maximum mid-walk; +1 would not
+        // move, so stop honestly rather than re-request the same page.
+        if (!Number.isSafeInteger(pageParam + 1)) {
+          truncated = true;
+          return;
         }
         pageParam += 1;
         continue;

@@ -198,9 +198,12 @@ describe("runReplay — cursor pagination", () => {
 });
 
 describe("runReplay — cursor cycle guard", () => {
-  it("stops when a cursor points back to an already-visited URL", async () => {
+  it("stops on a repeated URL and reports it as truncated, not complete", async () => {
     // The server keeps handing back the SAME next cursor forever; the engine's
     // per-context visited-URL set must break the loop rather than crawl forever.
+    // A-01/A-02/A-03 (Lens A + B): halting on a repeated URL is a BOUND we hit,
+    // never proof the list ended, so the outcome must not read as an ordinary
+    // completion — it is truncated/partial so a caller can tell the difference.
     const fetchJson = vi.fn(async () => ({
       items: [{ id: "x" }],
       meta: { next: "STUCK" },
@@ -221,7 +224,9 @@ describe("runReplay — cursor cycle guard", () => {
       },
     ]);
     const result = await run({ blueprint, fetchJson, emit });
-    expect(result.status).toBe("complete");
+    expect(result.status).toBe("partial");
+    expect(result.truncated).toBe(true);
+    expect(result.degraded).toBe(false);
     // page 1 (no cursor) + page 2 (cursor=STUCK); page 3 URL repeats -> halt.
     expect(fetchJson).toHaveBeenCalledTimes(2);
     // Same id across both pages is emitted exactly once (idempotency).
@@ -1224,5 +1229,256 @@ describe("runReplay — honest terminal status", () => {
     expect(result.status).toBe("partial");
     expect(result.degraded).toBe(true);
     expect(emitted.map((e) => e.sourceId)).toEqual(["ok"]);
+  });
+});
+
+// A-02 / B2: the per-request query was a PLAIN object, so `query["__proto__"] = 1`
+// hit the inherited setter, created no own property, and Object.entries dropped
+// the key. Every page then requested the SAME parameterless URL, the visited-URL
+// guard fired, and the run reported complete after one real page. Unusual but
+// legal param names are accepted by the normalizer, so they must reach the URL.
+describe("runReplay — pagination param names that collide with Object.prototype", () => {
+  for (const param of ["__proto__", "constructor", "toString", "valueOf"]) {
+    it(`walks page mode to a real empty-page terminal with param "${param}"`, async () => {
+      const urls = [];
+      const pages = {
+        1: { items: [{ id: "a" }] },
+        2: { items: [{ id: "b" }] },
+        3: { items: [] },
+      };
+      const fetchJson = vi.fn(async (url) => {
+        urls.push(url);
+        const value = new URL(url).searchParams.get(param);
+        if (value === null)
+          throw new Error(`param ${param} missing from ${url}`);
+        return pages[value] ?? { items: [] };
+      });
+      const { emitted, emit } = makeCollector();
+      const blueprint = bp([
+        {
+          id: "s",
+          entityType: "t",
+          template: "/t",
+          itemsPath: ["items"],
+          idField: "id",
+          pagination: { style: "page", param, start: 1 },
+        },
+      ]);
+      const result = await run({ blueprint, fetchJson, emit });
+      const encoded = encodeURIComponent(param);
+      expect(urls).toEqual([
+        `${API}/t?${encoded}=1`,
+        `${API}/t?${encoded}=2`,
+        `${API}/t?${encoded}=3`,
+      ]);
+      expect(result.status).toBe("complete");
+      expect(result.truncated).toBe(false);
+      expect(result.degraded).toBe(false);
+      expect(result.pages).toBe(3);
+      expect(emitted.map((e) => e.sourceId)).toEqual(["a", "b"]);
+    });
+  }
+
+  it("carries a __proto__ CURSOR token into the URL until the cursor runs out", async () => {
+    const urls = [];
+    const bodies = {
+      start: { items: [{ id: "1" }], meta: { next: "C1" } },
+      C1: { items: [{ id: "2" }], meta: { next: "C2" } },
+      C2: { items: [{ id: "3" }], meta: {} },
+    };
+    const fetchJson = vi.fn(async (url) => {
+      urls.push(url);
+      const token = new URL(url).searchParams.get("__proto__");
+      return bodies[token ?? "start"];
+    });
+    const { emitted, emit } = makeCollector();
+    const blueprint = bp([
+      {
+        id: "feed",
+        entityType: "post",
+        template: "/feed",
+        itemsPath: ["items"],
+        idField: "id",
+        pagination: {
+          style: "cursor",
+          param: "__proto__",
+          nextPath: ["meta", "next"],
+        },
+      },
+    ]);
+    const result = await run({ blueprint, fetchJson, emit });
+    expect(urls).toEqual([
+      `${API}/feed`,
+      `${API}/feed?__proto__=C1`,
+      `${API}/feed?__proto__=C2`,
+    ]);
+    expect(result.status).toBe("complete");
+    expect(result.truncated).toBe(false);
+    expect(emitted.map((e) => e.sourceId)).toEqual(["1", "2", "3"]);
+  });
+
+  it("leaves Object.prototype unpolluted by a __proto__ page param", async () => {
+    const fetchJson = vi.fn(async (url) =>
+      new URL(url).searchParams.get("__proto__") === "1"
+        ? { items: [{ id: "a" }] }
+        : { items: [] },
+    );
+    const { emit } = makeCollector();
+    const blueprint = bp([
+      {
+        id: "s",
+        entityType: "t",
+        template: "/t",
+        itemsPath: ["items"],
+        idField: "id",
+        pagination: { style: "page", param: "__proto__", start: 1 },
+      },
+    ]);
+    await run({ blueprint, fetchJson, emit });
+    const probe = {};
+    expect(Object.getPrototypeOf(probe)).toBe(Object.prototype);
+    expect(Object.prototype.hasOwnProperty.call(Object.prototype, "1")).toBe(
+      false,
+    );
+    expect(probe.polluted).toBeUndefined();
+  });
+});
+
+// A-03 / B3: an unsafe start cannot advance, and even a SAFE maximal start stops
+// advancing after one step. Neither may be reported as an ordinary completion.
+describe("runReplay — page starts at and beyond the safe-integer boundary", () => {
+  it("rejects an unsafe start before issuing a single request", async () => {
+    const fetchJson = vi.fn();
+    const blueprint = bp([
+      {
+        id: "s",
+        entityType: "t",
+        template: "/t",
+        itemsPath: ["items"],
+        idField: "id",
+        pagination: { style: "page", param: "page", start: 2 ** 53 },
+      },
+    ]);
+    await expect(
+      run({ blueprint, fetchJson, emit: async () => {} }),
+    ).rejects.toThrow(
+      /page pagination start must be an integer in the safe range/,
+    );
+    expect(fetchJson).not.toHaveBeenCalled();
+  });
+
+  it("reports partial/truncated when MAX_SAFE_INTEGER cannot advance", async () => {
+    const urls = [];
+    const fetchJson = vi.fn(async (url) => {
+      urls.push(url);
+      return { items: [{ id: "only" }] }; // never empty: only overflow can stop it
+    });
+    const { emitted, emit } = makeCollector();
+    const blueprint = bp([
+      {
+        id: "s",
+        entityType: "t",
+        template: "/t",
+        itemsPath: ["items"],
+        idField: "id",
+        pagination: {
+          style: "page",
+          param: "page",
+          start: Number.MAX_SAFE_INTEGER,
+        },
+      },
+    ]);
+    const result = await run({ blueprint, fetchJson, emit });
+    expect(urls).toEqual([`${API}/t?page=${Number.MAX_SAFE_INTEGER}`]);
+    expect(fetchJson).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("partial");
+    expect(result.truncated).toBe(true);
+    expect(result.degraded).toBe(false);
+    expect(emitted.map((e) => e.sourceId)).toEqual(["only"]);
+  });
+
+  it("still ends normally at MAX_SAFE_INTEGER when the page is genuinely empty", async () => {
+    const fetchJson = vi.fn(async () => ({ items: [] }));
+    const { emit } = makeCollector();
+    const blueprint = bp([
+      {
+        id: "s",
+        entityType: "t",
+        template: "/t",
+        itemsPath: ["items"],
+        idField: "id",
+        pagination: {
+          style: "page",
+          param: "page",
+          start: Number.MAX_SAFE_INTEGER,
+        },
+      },
+    ]);
+    const result = await run({ blueprint, fetchJson, emit });
+    expect(fetchJson).toHaveBeenCalledTimes(1);
+    expect(result.status).toBe("empty"); // clean walk, zero entities
+    expect(result.truncated).toBe(false);
+  });
+
+  it("keeps ordinary zero and negative starts advancing by one", async () => {
+    for (const start of [0, -2]) {
+      const urls = [];
+      const fetchJson = vi.fn(async (url) => {
+        urls.push(url);
+        const page = Number(new URL(url).searchParams.get("page"));
+        return page < start + 2
+          ? { items: [{ id: `p${page}` }] }
+          : { items: [] };
+      });
+      const { emitted, emit } = makeCollector();
+      const blueprint = bp([
+        {
+          id: "s",
+          entityType: "t",
+          template: "/t",
+          itemsPath: ["items"],
+          idField: "id",
+          pagination: { style: "page", param: "page", start },
+        },
+      ]);
+      const result = await run({ blueprint, fetchJson, emit });
+      expect(urls).toEqual([
+        `${API}/t?page=${start}`,
+        `${API}/t?page=${start + 1}`,
+        `${API}/t?page=${start + 2}`,
+      ]);
+      expect(result.status).toBe("complete");
+      expect(result.truncated).toBe(false);
+      expect(emitted.map((e) => e.sourceId)).toEqual([
+        `p${start}`,
+        `p${start + 1}`,
+      ]);
+    }
+  });
+});
+
+// A-01 / B1 at the execution boundary: a sparse cursor path must never reach the
+// network, even when an earlier step in the same blueprint is perfectly valid.
+describe("runReplay — sparse cursor nextPath never reaches the network", () => {
+  it("throws at normalization with zero fetches", async () => {
+    const fetchJson = vi.fn();
+    const nextPath = ["meta", "next"];
+    delete nextPath[0];
+    const blueprint = bp([
+      {
+        id: "feed",
+        entityType: "post",
+        template: "/feed",
+        itemsPath: ["items"],
+        idField: "id",
+        pagination: { style: "cursor", param: "cursor", nextPath },
+      },
+    ]);
+    await expect(
+      run({ blueprint, fetchJson, emit: async () => {} }),
+    ).rejects.toThrow(
+      /cursor pagination requires a non-empty nextPath string\[\]/,
+    );
+    expect(fetchJson).not.toHaveBeenCalled();
   });
 });

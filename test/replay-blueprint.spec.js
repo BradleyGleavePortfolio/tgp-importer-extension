@@ -1408,3 +1408,153 @@ describe("runReplay — malformed pagination fails before any request", () => {
     expect(fetchJson).not.toHaveBeenCalled();
   });
 });
+
+// A-01 / B1: `{ style: "cursor", nextPath: Array(1) }` used to be ACCEPTED —
+// Array.prototype.every skips holes, so a positive-length all-holes path passed
+// validation, `[...nextPath]` then produced `[undefined]`, and the engine walked
+// one real page and called the result complete. Every EFFECTIVE position of the
+// path (holes included) must be validated, and the validated value must be the
+// same dense snapshot that is returned.
+describe("normalizeBlueprint — pagination: sparse cursor nextPath fails closed", () => {
+  const sparsePaths = () => {
+    const allHoles = Array(1);
+    const allHolesLong = Array(3);
+    const holeAtEnd = ["meta"];
+    holeAtEnd.length = 2;
+    const holeAtStart = Array(2);
+    holeAtStart[1] = "next";
+    const holeInMiddle = ["meta", "mid", "next"];
+    delete holeInMiddle[1];
+    return { allHoles, allHolesLong, holeAtEnd, holeAtStart, holeInMiddle };
+  };
+
+  it("rejects every sparse nextPath shape instead of walking one page", () => {
+    for (const [label, nextPath] of Object.entries(sparsePaths())) {
+      expect(
+        () => normalizeBlueprint(paginated({ style: "cursor", nextPath })),
+        label,
+      ).toThrow(/cursor pagination requires a non-empty nextPath string\[\]/);
+    }
+  });
+
+  it("does not mutate or densify the rejected caller array", () => {
+    const { holeInMiddle } = sparsePaths();
+    expect(() =>
+      normalizeBlueprint(
+        paginated({ style: "cursor", nextPath: holeInMiddle }),
+      ),
+    ).toThrow();
+    expect(1 in holeInMiddle).toBe(false);
+    expect(holeInMiddle.length).toBe(3);
+    expect(holeInMiddle[0]).toBe("meta");
+  });
+
+  it("rejects a sparse cursor path in a LATER step before any request", async () => {
+    const fetchJson = vi.fn();
+    const blueprint = base({
+      steps: [
+        {
+          id: "first",
+          entityType: "t",
+          template: "/t",
+          itemsPath: ["items"],
+          idField: "id",
+        },
+        {
+          id: "second",
+          entityType: "t",
+          template: "/u",
+          itemsPath: ["items"],
+          idField: "id",
+          pagination: { style: "cursor", param: "cursor", nextPath: Array(2) },
+        },
+      ],
+    });
+    await expect(
+      runReplay({
+        blueprint,
+        allowedOrigins: ["https://api.test"],
+        fetchJson,
+        emit: async () => {},
+      }),
+    ).rejects.toThrow(
+      /cursor pagination requires a non-empty nextPath string\[\]/,
+    );
+    expect(fetchJson).not.toHaveBeenCalled();
+  });
+});
+
+// A-03 / B3: Number.isInteger(2 ** 53) is true, but 2 ** 53 + 1 === 2 ** 53, so
+// such a start can never advance; the walk repeated one URL and reported
+// complete. Unsafe starts must be rejected at the boundary while every ordinary
+// start (negative, zero, positive, and the safe maximum itself) is preserved.
+describe("normalizeBlueprint — pagination: unsafe page starts fail closed", () => {
+  it("rejects integer-valued starts outside the safe range", () => {
+    for (const start of [
+      2 ** 53,
+      2 ** 53 + 2,
+      -(2 ** 53),
+      Number.MAX_SAFE_INTEGER + 10,
+      Number.MIN_SAFE_INTEGER - 10,
+      1e300,
+    ]) {
+      expect(() =>
+        normalizeBlueprint(paginated({ style: "page", start })),
+      ).toThrow(/page pagination start must be an integer/);
+    }
+  });
+
+  it("preserves the safe-range boundaries and ordinary starts byte-exact", () => {
+    for (const start of [
+      Number.MAX_SAFE_INTEGER,
+      Number.MIN_SAFE_INTEGER,
+      -1,
+      0,
+      1,
+      42,
+    ]) {
+      expect(
+        normalizeBlueprint(paginated({ style: "page", param: "page", start }))
+          .steps[0].pagination,
+      ).toEqual({ style: "page", param: "page", start });
+    }
+  });
+});
+
+// Normalization must be a fixed point: feeding a normalized descriptor back in
+// returns the same descriptor. The sparse-path defect broke exactly this — the
+// accepted value could not survive a second pass.
+describe("normalizeBlueprint — pagination: normalization is idempotent", () => {
+  it("re-normalizes its own output to an identical descriptor", () => {
+    for (const p of [
+      {},
+      { style: "page", param: "page#frag", start: 0 },
+      { style: "page", param: "__proto__", start: -3 },
+      { style: "page", start: Number.MAX_SAFE_INTEGER },
+      { style: "cursor", param: "after", nextPath: ["meta", "paging", "next"] },
+      { style: "cursor", param: "__proto__", nextPath: ["next"] },
+    ]) {
+      const once = normalizeBlueprint(paginated(p)).steps[0].pagination;
+      const twice = normalizeBlueprint(paginated(once)).steps[0].pagination;
+      expect(twice).toEqual(once);
+      expect(twice.nextPath ?? null).not.toBe(once.nextPath ?? undefined);
+    }
+  });
+
+  it("accepts frozen descriptors and frozen nextPath arrays without mutating them", () => {
+    const nextPath = Object.freeze(["meta", "next"]);
+    const pag = Object.freeze({ style: "cursor", param: "after", nextPath });
+    const out = normalizeBlueprint(paginated(pag)).steps[0].pagination;
+    expect(out).toEqual({
+      style: "cursor",
+      param: "after",
+      nextPath: ["meta", "next"],
+    });
+    expect(out.nextPath).not.toBe(nextPath);
+    expect(nextPath).toEqual(["meta", "next"]);
+    const frozenPage = Object.freeze({ style: "page", param: "p", start: 0 });
+    expect(
+      normalizeBlueprint(paginated(frozenPage)).steps[0].pagination,
+    ).toEqual({ style: "page", param: "p", start: 0 });
+  });
+});
