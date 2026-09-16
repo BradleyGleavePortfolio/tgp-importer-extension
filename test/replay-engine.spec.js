@@ -1318,12 +1318,13 @@ describe("runReplay — pagination param names that collide with Object.prototyp
   });
 
   it("leaves Object.prototype unpolluted by a __proto__ page param", async () => {
+    const before = Object.getOwnPropertyDescriptors(Object.prototype);
     const fetchJson = vi.fn(async (url) =>
       new URL(url).searchParams.get("__proto__") === "1"
         ? { items: [{ id: "a" }] }
         : { items: [] },
     );
-    const { emit } = makeCollector();
+    const { emit, emitted } = makeCollector();
     const blueprint = bp([
       {
         id: "s",
@@ -1334,13 +1335,14 @@ describe("runReplay — pagination param names that collide with Object.prototyp
         pagination: { style: "page", param: "__proto__", start: 1 },
       },
     ]);
-    await run({ blueprint, fetchJson, emit });
-    const probe = {};
-    expect(Object.getPrototypeOf(probe)).toBe(Object.prototype);
-    expect(Object.prototype.hasOwnProperty.call(Object.prototype, "1")).toBe(
-      false,
-    );
-    expect(probe.polluted).toBeUndefined();
+    const result = await run({ blueprint, fetchJson, emit });
+    expect(result.status).toBe("complete");
+    expect(fetchJson.mock.calls.map(([url]) => url)).toEqual([
+      `${API}/t?__proto__=1`,
+      `${API}/t?__proto__=2`,
+    ]);
+    expect(emitted.map((e) => e.sourceId)).toEqual(["a"]);
+    expect(Object.getOwnPropertyDescriptors(Object.prototype)).toEqual(before);
   });
 });
 
@@ -1420,40 +1422,36 @@ describe("runReplay — page starts at and beyond the safe-integer boundary", ()
     expect(result.truncated).toBe(false);
   });
 
-  it("keeps ordinary zero and negative starts advancing by one", async () => {
-    for (const start of [0, -2]) {
-      const urls = [];
-      const fetchJson = vi.fn(async (url) => {
-        urls.push(url);
-        const page = Number(new URL(url).searchParams.get("page"));
-        return page < start + 2
-          ? { items: [{ id: `p${page}` }] }
-          : { items: [] };
-      });
-      const { emitted, emit } = makeCollector();
-      const blueprint = bp([
-        {
-          id: "s",
-          entityType: "t",
-          template: "/t",
-          itemsPath: ["items"],
-          idField: "id",
-          pagination: { style: "page", param: "page", start },
-        },
-      ]);
-      const result = await run({ blueprint, fetchJson, emit });
-      expect(urls).toEqual([
-        `${API}/t?page=${start}`,
-        `${API}/t?page=${start + 1}`,
-        `${API}/t?page=${start + 2}`,
-      ]);
-      expect(result.status).toBe("complete");
-      expect(result.truncated).toBe(false);
-      expect(emitted.map((e) => e.sourceId)).toEqual([
-        `p${start}`,
-        `p${start + 1}`,
-      ]);
-    }
+  it.each([0, -2])("keeps start %i advancing by one", async (start) => {
+    const urls = [];
+    const fetchJson = vi.fn(async (url) => {
+      urls.push(url);
+      const page = Number(new URL(url).searchParams.get("page"));
+      return page < start + 2 ? { items: [{ id: `p${page}` }] } : { items: [] };
+    });
+    const { emitted, emit } = makeCollector();
+    const blueprint = bp([
+      {
+        id: "s",
+        entityType: "t",
+        template: "/t",
+        itemsPath: ["items"],
+        idField: "id",
+        pagination: { style: "page", param: "page", start },
+      },
+    ]);
+    const result = await run({ blueprint, fetchJson, emit });
+    expect(urls).toEqual([
+      `${API}/t?page=${start}`,
+      `${API}/t?page=${start + 1}`,
+      `${API}/t?page=${start + 2}`,
+    ]);
+    expect(result.status).toBe("complete");
+    expect(result.truncated).toBe(false);
+    expect(emitted.map((e) => e.sourceId)).toEqual([
+      `p${start}`,
+      `p${start + 1}`,
+    ]);
   });
 });
 

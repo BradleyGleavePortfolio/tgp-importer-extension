@@ -95,15 +95,16 @@ describe("normalizeBlueprint — defaults", () => {
     );
   });
 
-  it("falls back to [] when itemsPath contains a non-string entry", () => {
-    const bp = normalizeBlueprint(
-      base({
-        steps: [
-          { id: "s", entityType: "t", template: "/t", itemsPath: ["a", 2] },
-        ],
-      }),
-    );
-    expect(bp.steps[0].itemsPath).toEqual([]);
+  it("rejects itemsPath containing a non-string entry instead of silently using the root", () => {
+    expect(() =>
+      normalizeBlueprint(
+        base({
+          steps: [
+            { id: "s", entityType: "t", template: "/t", itemsPath: ["a", 2] },
+          ],
+        }),
+      ),
+    ).toThrow(/itemsPath must be a string\[\] of non-empty strings/);
   });
 
   it("round-trips collectAs and forEach through normalization", () => {
@@ -1262,18 +1263,21 @@ describe("normalizeBlueprint — pagination: absent fields keep defaults", () =>
       start: 1,
     });
   });
-  it("treats explicit null/undefined page fields as absent", () => {
-    for (const p of [
+  it.each(
+    [
       { style: null, param: null, start: null },
       { style: undefined, param: undefined, start: undefined },
-    ]) {
+    ].map((value, index) => [index, value]),
+  )(
+    "treats explicit null/undefined page fields as absent (case %i: %j)",
+    (_index, p) => {
       expect(normalizeBlueprint(paginated(p)).steps[0].pagination).toEqual({
         style: "page",
         param: "page",
         start: 1,
       });
-    }
-  });
+    },
+  );
   it("defaults only the absent field of a partly specified descriptor", () => {
     expect(
       normalizeBlueprint(paginated({ param: "offset" })).steps[0].pagination,
@@ -1286,8 +1290,8 @@ describe("normalizeBlueprint — pagination: absent fields keep defaults", () =>
 });
 
 describe("normalizeBlueprint — pagination: explicit malformed fails closed", () => {
-  it("rejects an explicitly unknown style instead of coercing it to page", () => {
-    for (const style of [
+  it.each(
+    [
       "offset",
       "Page",
       "PAGE",
@@ -1297,45 +1301,39 @@ describe("normalizeBlueprint — pagination: explicit malformed fails closed", (
       true,
       ["page"],
       { style: "page" },
-    ]) {
+    ].map((value, index) => [index, value]),
+  )(
+    "rejects an explicitly unknown style instead of coercing it to page (case %i: %j)",
+    (_index, style) => {
       expect(() => normalizeBlueprint(paginated({ style }))).toThrow(
         /pagination style must be "page" or "cursor"/,
       );
-    }
-  });
-  it("rejects an explicitly empty or non-string param for either style", () => {
-    for (const param of ["", 0, 5, true, [], {}]) {
-      expect(() =>
-        normalizeBlueprint(paginated({ style: "page", param })),
-      ).toThrow(/pagination param must be a non-empty string/);
-      expect(() =>
-        normalizeBlueprint(
-          paginated({ style: "cursor", param, nextPath: ["next"] }),
-        ),
-      ).toThrow(/pagination param must be a non-empty string/);
-    }
-  });
-  it("rejects an explicitly non-integer page start", () => {
-    for (const start of [
-      1.5,
-      -0.5,
-      "2",
-      "",
-      true,
-      NaN,
-      Infinity,
-      -Infinity,
-      1e400,
-      [1],
-      {},
-    ]) {
+    },
+  );
+  for (const style of ["page", "cursor"]) {
+    it.each(["", 0, 5, true, [], {}].map((param, index) => [index, param]))(
+      `rejects malformed ${style} param (case %i: %j)`,
+      (_index, param) => {
+        expect(() =>
+          normalizeBlueprint(paginated({ style, param, nextPath: ["next"] })),
+        ).toThrow(/pagination param must be a non-empty string/);
+      },
+    );
+  }
+  it.each(
+    [1.5, -0.5, "2", "", true, NaN, Infinity, -Infinity, 1e400, [1], {}].map(
+      (value, index) => [index, value],
+    ),
+  )(
+    "rejects an explicitly non-integer page start (case %i: %j)",
+    (_index, start) => {
       expect(() =>
         normalizeBlueprint(paginated({ style: "page", start })),
       ).toThrow(/page pagination start must be an integer/);
-    }
-  });
-  it("rejects an empty or malformed cursor nextPath", () => {
-    for (const nextPath of [
+    },
+  );
+  it.each(
+    [
       [],
       [""],
       ["meta", ""],
@@ -1345,12 +1343,15 @@ describe("normalizeBlueprint — pagination: explicit malformed fails closed", (
       "meta",
       {},
       7,
-    ]) {
+    ].map((value, index) => [index, value]),
+  )(
+    "rejects an empty or malformed cursor nextPath (case %i: %j)",
+    (_index, nextPath) => {
       expect(() =>
         normalizeBlueprint(paginated({ style: "cursor", nextPath })),
       ).toThrow(/cursor pagination requires a non-empty nextPath string\[\]/);
-    }
-  });
+    },
+  );
   it("rejects a malformed field inherited from a prototype (no silent default)", () => {
     const proto = { style: "offset" };
     expect(() => normalizeBlueprint(paginated(Object.create(proto)))).toThrow(
@@ -1365,14 +1366,15 @@ describe("normalizeBlueprint — pagination: explicit malformed fails closed", (
 });
 
 describe("normalizeBlueprint — pagination: valid descriptors preserved", () => {
-  it("keeps every currently valid page descriptor byte-exact", () => {
-    for (const start of [0, 1, 2, -3, 1000000]) {
+  it.each([0, 1, 2, -3, 1000000].map((value, index) => [index, value]))(
+    "keeps every currently valid page descriptor byte-exact (case %i: %j)",
+    (_index, start) => {
       expect(
         normalizeBlueprint(paginated({ style: "page", param: "p", start }))
           .steps[0].pagination,
       ).toEqual({ style: "page", param: "p", start });
-    }
-  });
+    },
+  );
   it("keeps a valid cursor descriptor byte-exact and still copies nextPath", () => {
     const nextPath = ["meta", "paging", "next"];
     const pag = normalizeBlueprint(
@@ -1428,14 +1430,14 @@ describe("normalizeBlueprint — pagination: sparse cursor nextPath fails closed
     return { allHoles, allHolesLong, holeAtEnd, holeAtStart, holeInMiddle };
   };
 
-  it("rejects every sparse nextPath shape instead of walking one page", () => {
-    for (const [label, nextPath] of Object.entries(sparsePaths())) {
-      expect(
-        () => normalizeBlueprint(paginated({ style: "cursor", nextPath })),
-        label,
+  it.each(Object.entries(sparsePaths()))(
+    "rejects sparse nextPath %s instead of walking one page",
+    (_label, nextPath) => {
+      expect(() =>
+        normalizeBlueprint(paginated({ style: "cursor", nextPath })),
       ).toThrow(/cursor pagination requires a non-empty nextPath string\[\]/);
-    }
-  });
+    },
+  );
 
   it("does not mutate or densify the rejected caller array", () => {
     const { holeInMiddle } = sparsePaths();
@@ -1489,57 +1491,63 @@ describe("normalizeBlueprint — pagination: sparse cursor nextPath fails closed
 // complete. Unsafe starts must be rejected at the boundary while every ordinary
 // start (negative, zero, positive, and the safe maximum itself) is preserved.
 describe("normalizeBlueprint — pagination: unsafe page starts fail closed", () => {
-  it("rejects integer-valued starts outside the safe range", () => {
-    for (const start of [
+  it.each(
+    [
       2 ** 53,
       2 ** 53 + 2,
       -(2 ** 53),
       Number.MAX_SAFE_INTEGER + 10,
       Number.MIN_SAFE_INTEGER - 10,
       1e300,
-    ]) {
+    ].map((value, index) => [index, value]),
+  )(
+    "rejects integer-valued starts outside the safe range (case %i: %j)",
+    (_index, start) => {
       expect(() =>
         normalizeBlueprint(paginated({ style: "page", start })),
       ).toThrow(/page pagination start must be an integer/);
-    }
-  });
+    },
+  );
 
-  it("preserves the safe-range boundaries and ordinary starts byte-exact", () => {
-    for (const start of [
-      Number.MAX_SAFE_INTEGER,
-      Number.MIN_SAFE_INTEGER,
-      -1,
-      0,
-      1,
-      42,
-    ]) {
+  it.each(
+    [Number.MAX_SAFE_INTEGER, Number.MIN_SAFE_INTEGER, -1, 0, 1, 42].map(
+      (value, index) => [index, value],
+    ),
+  )(
+    "preserves the safe-range boundaries and ordinary starts byte-exact (case %i: %j)",
+    (_index, start) => {
       expect(
         normalizeBlueprint(paginated({ style: "page", param: "page", start }))
           .steps[0].pagination,
       ).toEqual({ style: "page", param: "page", start });
-    }
-  });
+    },
+  );
 });
 
 // Normalization must be a fixed point: feeding a normalized descriptor back in
 // returns the same descriptor. The sparse-path defect broke exactly this — the
 // accepted value could not survive a second pass.
 describe("normalizeBlueprint — pagination: normalization is idempotent", () => {
-  it("re-normalizes its own output to an identical descriptor", () => {
-    for (const p of [
+  it.each(
+    [
       {},
       { style: "page", param: "page#frag", start: 0 },
       { style: "page", param: "__proto__", start: -3 },
       { style: "page", start: Number.MAX_SAFE_INTEGER },
       { style: "cursor", param: "after", nextPath: ["meta", "paging", "next"] },
       { style: "cursor", param: "__proto__", nextPath: ["next"] },
-    ]) {
+    ].map((value, index) => [index, value]),
+  )(
+    "re-normalizes its own output to an identical descriptor (case %i: %j)",
+    (_index, p) => {
       const once = normalizeBlueprint(paginated(p)).steps[0].pagination;
       const twice = normalizeBlueprint(paginated(once)).steps[0].pagination;
       expect(twice).toEqual(once);
-      expect(twice.nextPath ?? null).not.toBe(once.nextPath ?? undefined);
-    }
-  });
+      if (once.style === "cursor") {
+        expect(twice.nextPath).not.toBe(once.nextPath);
+      }
+    },
+  );
 
   it("accepts frozen descriptors and frozen nextPath arrays without mutating them", () => {
     const nextPath = Object.freeze(["meta", "next"]);
