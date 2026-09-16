@@ -121,15 +121,46 @@ describe("membership provenance emission", () => {
 
   it("is capture-order invariant when starting from a normalized snapshot", () => {
     const entries = [
-      { url: `${ORIGIN}/clients/101`, method: "GET", status: 200 },
-      { url: `${ORIGIN}/clients/102?page=2`, method: "GET", status: 200 },
-      { url: `${ORIGIN}/clients/103`, method: "GET", status: 200 },
-      { url: `${ORIGIN}/workouts/9`, method: "GET", status: 200 },
+      {
+        url: `${ORIGIN}/clients/101`,
+        method: "GET",
+        statusCode: 200,
+        responseBody: "{}",
+      },
+      {
+        url: `${ORIGIN}/clients/102?page=2`,
+        method: "GET",
+        statusCode: 200,
+        responseBody: "{}",
+      },
+      {
+        url: `${ORIGIN}/clients/103`,
+        method: "GET",
+        statusCode: 200,
+        responseBody: "{}",
+      },
+      {
+        url: `${ORIGIN}/workouts/9`,
+        method: "GET",
+        statusCode: 200,
+        responseBody: "{}",
+      },
     ];
     const forward = normalizeCaptureSnapshot(entries).observations;
     const reversed = normalizeCaptureSnapshot(
       [...entries].reverse(),
     ).observations;
+    expect(forward).toHaveLength(4);
+    expect(reversed).toHaveLength(4);
+    expect(derive(forward).membership.clusters).toHaveLength(2);
+    expect(
+      validateObservationMembership(forward, derive(forward).membership)
+        .reasons,
+    ).toEqual([]);
+    expect(
+      validateObservationMembership(reversed, derive(reversed).membership)
+        .reasons,
+    ).toEqual([]);
     expect(derive(reversed).membership).toEqual(derive(forward).membership);
   });
 
@@ -208,13 +239,13 @@ describe("validateObservationMembership", () => {
     [
       "an oversized pathPattern",
       (membership) => {
-        membership.clusters[0].pathPattern = "/" + "x".repeat(5000);
+        membership.clusters[0].pathPattern = "/" + "x".repeat(36865);
       },
     ],
     [
       "an oversized origin",
       (membership) => {
-        membership.clusters[0].origin = "https://" + "x".repeat(3000);
+        membership.clusters[0].origin = "https://" + "x".repeat(4097);
       },
     ],
     [
@@ -274,7 +305,7 @@ describe("validateObservationMembership", () => {
     expect(outcome.reasons).toEqual(["reference_budget"]);
   });
 
-  it("reads each claimed field exactly once and seals what it checked", () => {
+  it("rejects active claimed fields without invoking their getters", () => {
     const { membership } = derive(MIXED);
     const truthful = [...membership.clusters[0].refs];
     let reads = 0;
@@ -283,9 +314,9 @@ describe("validateObservationMembership", () => {
       enumerable: true,
     });
     const outcome = validateObservationMembership(MIXED, membership);
-    expect(reads).toBe(1);
-    expect(outcome.valid).toBe(true);
-    expect(outcome.membership.clusters[0].refs).toEqual(truthful);
+    expect(reads).toBe(0);
+    expect(outcome.reasons).toEqual(["malformed_membership"]);
+    expect(outcome.membership).toBeNull();
   });
 
   it("fails closed when a refs accessor supplies forged references", () => {
@@ -598,14 +629,24 @@ describe("validateObservationMembership", () => {
   });
 
   it("reports membership as unavailable when clustering rejects the snapshot", () => {
-    const rows = Array.from({ length: 6 }, (_, index) =>
-      observation(`/clients/${index + 100}`),
-    );
-    const { membership } = derive(rows);
-    const outcome = validateObservationMembership(rows, membership, {
-      maxSegments: 1,
-    });
-    expect(outcome.valid).toBe(false);
+    const path = "/" + Array(16).fill("!".repeat(250)).join("/");
+    const rows = normalizeCaptureSnapshot(
+      Array.from({ length: 262 }, () => ({
+        url: ORIGIN + path,
+        method: "GET",
+        statusCode: 200,
+        responseBody: "{}",
+      })),
+    ).observations;
+    expect(rows).toHaveLength(262);
+    const result = inferUrlTemplates(rows, { membership: true });
+    expect(result.excluded).toEqual([
+      { reason: "path_byte_limit", count: 262 },
+    ]);
+    expect(result.membership).toBeUndefined();
+    const outcome = validateObservationMembership(rows, result.membership);
+    expect(outcome.reasons).toEqual(["membership_unavailable"]);
+    expect(outcome.membership).toBeNull();
   });
 });
 

@@ -1,4 +1,11 @@
 import { compareText } from "./order.js";
+import {
+  arrayLength,
+  indices,
+  observationRows,
+  inferenceOptions,
+  URL_TEXT_LIMITS,
+} from "./snapshot.js";
 const SUPPORTED_QUERY_KEYS = new Set([
   "after",
   "before",
@@ -60,10 +67,12 @@ function splitPath(path, maxSegments) {
     const decoded = encoded.map((part) =>
       decodeURIComponent(part).normalize("NFC"),
     );
-    return decoded.some(
-      (part) =>
-        part.length > 256 || /@|^(?:<redacted>|\[redacted\])$/i.test(part),
-    )
+    return decoded.map(literal).join("/").length + 1 >
+      URL_TEXT_LIMITS.pathPattern ||
+      decoded.some(
+        (part) =>
+          part.length > 256 || /@|^(?:<redacted>|\[redacted\])$/i.test(part),
+      )
       ? null
       : decoded;
   } catch {
@@ -108,6 +117,7 @@ function supportedKeys(value) {
         .filter(
           (key) =>
             typeof key === "string" &&
+            key.length <= 64 &&
             SUPPORTED_QUERY_KEYS.has(key.toLowerCase()),
         )
         .map((key) => key.toLowerCase()),
@@ -128,16 +138,25 @@ function grouped(values, keyFor) {
   return out;
 }
 export function inferUrlTemplates(observations, options) {
-  if (!Array.isArray(observations))
+  try {
+    const length = arrayLength(observations);
+    if (length > HARD.maxObservations)
+      return {
+        clusters: [],
+        excluded: [{ reason: "observation_limit", count: length }],
+      };
+    return inferSnapshot(
+      observationRows(indices(observations, length, true)),
+      inferenceOptions(options),
+    );
+  } catch {
     return {
       clusters: [],
       excluded: [{ reason: "invalid_observations", count: 1 }],
     };
-  if (observations.length > HARD.maxObservations)
-    return {
-      clusters: [],
-      excluded: [{ reason: "observation_limit", count: observations.length }],
-    };
+  }
+}
+function inferSnapshot(observations, options) {
   if (
     observations.reduce(
       (n, item) => n + (typeof item?.path === "string" ? item.path.length : 0),
@@ -155,10 +174,12 @@ export function inferUrlTemplates(observations, options) {
     excludedRefs = [],
     refsFor = new Map(),
     rows = [];
-  for (const [index, observation] of observations.entries()) {
+  for (let index = 0; index < observations.length; index++) {
+    const observation = observations[index];
     const segments = splitPath(observation?.path, maxSegments);
     if (
       typeof observation?.origin !== "string" ||
+      observation.origin.length > URL_TEXT_LIMITS.origin ||
       !safeOrigin(observation.origin) ||
       !["GET", "HEAD"].includes(observation?.method) ||
       segments === null

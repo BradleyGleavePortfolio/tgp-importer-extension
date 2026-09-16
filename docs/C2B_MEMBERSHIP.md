@@ -16,8 +16,10 @@ const result = inferUrlTemplates(observations, { membership: true });
 (same contract as before: `{origin, path, queryKeys, method, ...}`).
 
 - Without `membership: true` (including `membership: false` or any non-boolean
-  value) the returned object is **byte-identical to the previous behaviour**:
-  `{clusters, excluded}` only, with no extra key. Existing callers are unaffected.
+  value) the returned shape remains `{clusters, excluded}` with no extra key.
+  For inert data within the text limits below, clustering and exclusions retain
+  the previous byte-level behaviour. Active objects and inherited fields are
+  deliberately not part of that compatibility contract.
 - With `membership: true`, one additional key is added:
 
 ```js
@@ -58,8 +60,13 @@ result.membership = {
 - **Deterministic ordering.** `membership.clusters` follows the canonical cluster
   order; `refs` and `excluded` are ascending. Clustering itself is unchanged: row
   ordering, dynamic-segment grouping, partitioning and deterministic truncation
-  behave exactly as before (verified by a 2400-case differential run against the
-  pre-change module).
+  retain the previous algorithm. The committed
+  `test/blueprint-membership-parity.spec.js` provides a reproducible check against
+  pre-membership commit `0111be661922234d670bbf23e23d270eec1b4a4e`: 500 seeded
+  snapshots across ten option sets, including holes, invalid rows, Unicode,
+  calendar partitions and truncation. It also checks exact positional coverage
+  and validator acceptance. Run `npx vitest run test/blueprint-membership-parity.spec.js`;
+  the pinned commit must be available in local Git history (no network fetch).
 - **Capture-order invariance.** When the input comes from
   `normalizeCaptureSnapshot` (which canonically sorts observations), reordering
   the raw capture produces identical membership. For a hand-built, unsorted
@@ -70,8 +77,15 @@ result.membership = {
   rows dropped by the 1000-observation ceiling / `maxObservations` option.
 - **Snapshot-level rejection.** If the whole snapshot is refused
   (`invalid_observations`, `observation_limit`, `path_byte_limit`), no
-  `membership` key is emitted at all; validation then reports
-  `membership_unavailable`.
+  `membership` key is emitted at all. Validation first reports
+  `invalid_observations` for unreadable input/options, or `observation_limit` for
+  more than 1000 slots. For an otherwise readable snapshot whose re-derivation
+  refuses the aggregate path budget, an undefined membership reports exactly
+  `membership_unavailable`. Undefined evidence on a derivable snapshot, or any
+  null/malformed claim, reports `malformed_membership`. A structurally valid
+  supplied claim also reports `membership_unavailable` if re-derivation fails.
+  Per-row rejection (including `maxSegments`) still emits membership and is not
+  snapshot-level unavailability.
 
 ## Consumer API — `shared/blueprint/membership.js`
 
@@ -89,8 +103,10 @@ const outcome = validateObservationMembership(observations, membership, options)
 - `options` must be the **same options** used for derivation (e.g. `minDistinct`,
   `maxObservations`); otherwise re-derivation legitimately disagrees.
 - Authority is the clustering algorithm itself: validation re-derives membership
-  through `inferUrlTemplates(observations, {...options, membership: true})`. There
-  is no second regex or path rematcher anywhere in this slice.
+  through `inferUrlTemplates` on an inert own-data copy of the checked physical
+  observation positions and known options, with membership enabled. There is no
+  second regex or path rematcher. Caller `entries`, iterators, `reduce`, `filter`
+  and other methods never provide authority or coverage.
 - Validation is structural **and** semantic. It is not a count check: swapping
   reference sets between two equal-sized clusters is rejected.
 - `reasons` is a sorted, de-duplicated list drawn only from
@@ -101,7 +117,8 @@ const outcome = validateObservationMembership(observations, membership, options)
 
 | code | meaning |
 | --- | --- |
-| `invalid_observations` | observations argument is not an array |
+| `invalid_observations` | observations is not an array, or input/options cannot be copied as own data (including accessors or throwing/revoked proxies) |
+| `invalid_observation` | a supporting reference points at a non-record observation, rather than an origin/method mismatch |
 | `observation_limit` | more than 1000 observations supplied |
 | `malformed_membership` | wrong shape, holes/sparse arrays, oversized strings or reference lists, duplicate cluster keys |
 | `stale_observation_count` | membership was derived from a differently sized snapshot |
@@ -114,7 +131,7 @@ const outcome = validateObservationMembership(observations, membership, options)
 | `forged_reference` | claim contains support the algorithm does not produce |
 | `cluster_missing` / `cluster_unknown` | authoritative cluster absent, or invented cluster present |
 | `excluded_mismatch` | exclusion evidence rewritten, dropped or invented |
-| `membership_unavailable` | clustering refused the snapshot, so nothing is attributable |
+| `membership_unavailable` | bounded re-derivation refused the readable snapshot; see rejection precedence above |
 
 ### Validated capability
 
@@ -134,7 +151,12 @@ snapshot whose length or element identity changed after validation (replaced,
 removed, appended or reordered observations), and for an unknown or non-matching
 cluster key (`{origin, method, pathPattern}`). Unvalidated or forged membership
 therefore cannot be turned into evidence, and mutating the caller's own membership
-objects after validation cannot affect the sealed copy.
+objects after validation cannot affect the sealed copy. Selector fields must be
+own primitive strings within the same text limits; accessors, BigInt, coercion
+objects and throwing/revoked proxies yield `null`, never raw exceptions. The
+inert selector key is captured before checking positions, and the returned
+array is constructed from exactly that checked positional copy, not later reads
+of caller indices.
 
 **Documented limitation:** the capability binds array positions and object
 identity, not the internal contents of each observation. Deep mutation of an
@@ -143,22 +165,42 @@ observations are expected to be treated as immutable normalized capture data.
 
 ## Bounds
 
-All work is bounded by the existing ceilings: 1000 observations, 1000 references,
-1000 membership cluster entries, ≤2048-char origin/method and ≤4096-char pattern
-strings, ≤64-char exclusion reasons. Anything unrepresentable fails closed with a
-sanitized reason rather than a partial verdict.
+Module-controlled work uses fixed ceilings: 1000 physical observation slots,
+1000 claimed references, and 1000 entries per membership array. The shared
+`URL_TEXT_LIMITS` enforces origins of at most 4096 characters, methods of at most
+4 characters (the producer still accepts only GET/HEAD), and canonical patterns
+of at most 36864 characters. Exclusion reasons are at most 64 characters.
 
-Bounds are enforced **before** work is done, not after:
+The producer retains its 4096-character path, 32-segment and 256-character
+encoded/decoded segment ceilings, and 1 MiB aggregate path-character budget
+(the historical diagnostic is named `path_byte_limit`). Percent-encoding can
+expand a valid path beyond 4096 characters: a 4016-character normalized path of
+`!` segments becomes a 12016-character pattern. The explicit output ceiling is
+also checked before grouping; over-limit origins or canonical paths become
+`invalid_observation` exclusions, not unrepresentable emitted membership.
+Query-key copies are limited to 64 slots and recognized key text is checked at
+64 characters before case conversion. No raw body/header data is traversed.
 
-- a claimed `refs` array is length-checked on the caller's object before any copy
-  or traversal, so an oversized or sparse claim (e.g. length 5,000,000) is refused
-  without reading a single entry;
-- the aggregate reference total is accumulated while materializing, so a claim of
-  1000 clusters × 1000 references aborts with `reference_budget` after roughly one
-  budget's worth of copying instead of a million reads;
-- every claimed field is read exactly once, so an accessor cannot present one
-  value to validation and another to a consumer;
-- re-derivation runs only after the cheap structural checks pass.
+- Every consumed caller field, length and numeric slot is inspected once via an
+  own-property descriptor. Accessors are rejected without invoking their getters;
+  inherited fields do not carry authority. Null-prototype data records work.
+- Membership arrays require an own data property at every index; inherited or
+  sparse indices are malformed. Observation holes become invalid excluded rows,
+  never inherited observations.
+- Array lengths are captured and checked before copying. Oversized claims are
+  refused without inspecting an index. Aggregate reference lengths are charged
+  before each refs copy; a 1000-by-1000 claim stops before its second refs copy.
+  `checked.references` is the charged claim total, including a rejected charge,
+  not a count of valid references or getter calls.
+- Re-derivation follows cheap claim checks, except an undefined claim requires
+  bounded inference to distinguish absence from genuine unavailability.
+
+**Hostile-proxy limitation:** JavaScript provides no portable way to recognize
+all proxies or preempt arbitrary code inside a descriptor trap. The module bounds
+its own operations and does not dispatch caller iterators/getters/methods; a
+proxy can still execute code during `getOwnPropertyDescriptor`. Thrown traps are
+sanitized, but trap CPU time and proxy lies cannot be made trustworthy here.
+Use inert normalized data; this is not a sandbox for arbitrary JavaScript.
 
 ## Out of scope
 

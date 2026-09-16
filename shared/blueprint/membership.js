@@ -1,4 +1,13 @@
 import { compareText } from "./order.js";
+import {
+  record,
+  data,
+  arrayLength,
+  indices,
+  observationRows,
+  inferenceOptions,
+  URL_TEXT_LIMITS,
+} from "./snapshot.js";
 import { inferUrlTemplates, URL_HARD_LIMITS } from "./url-templates.js";
 // Sanitized vocabulary: diagnostics name a failure class, never an observed value.
 const MEMBERSHIP_REASON_CODES = Object.freeze([
@@ -7,6 +16,7 @@ const MEMBERSHIP_REASON_CODES = Object.freeze([
   "duplicate_reference",
   "excluded_mismatch",
   "forged_reference",
+  "invalid_observation",
   "invalid_observations",
   "malformed_membership",
   "membership_unavailable",
@@ -19,45 +29,21 @@ const MEMBERSHIP_REASON_CODES = Object.freeze([
   "stale_observation_count",
   "support_omitted",
 ]);
-const BUDGET = URL_HARD_LIMITS.maxObservations,
-  MAX_ORIGIN = 2048,
-  MAX_PATTERN = 4096;
-// Every membership this module validated, bound to the snapshot positions it
-// actually checked. A caller cannot forge the capability, the frozen copy removes
-// read-time races, and a snapshot mutated afterwards no longer matches.
+const BUDGET = URL_HARD_LIMITS.maxObservations;
 const validated = new WeakMap();
-function isRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
+function clusterFields(entry) {
+  if (!record(entry)) throw new TypeError("non_record");
+  const copy = { origin: "", method: "", pathPattern: "" };
+  for (const key of ["origin", "method", "pathPattern"]) {
+    const value = data(entry, key, true);
+    if (typeof value !== "string" || value.length > URL_TEXT_LIMITS[key])
+      throw new TypeError("invalid_key");
+    copy[key] = value;
+  }
+  return copy;
 }
 function clusterKey(entry) {
   return JSON.stringify([entry.origin, entry.method, entry.pathPattern]);
-}
-function clusterShaped(entry) {
-  return (
-    typeof entry.origin === "string" &&
-    entry.origin.length <= MAX_ORIGIN &&
-    typeof entry.method === "string" &&
-    entry.method.length <= MAX_ORIGIN &&
-    typeof entry.pathPattern === "string" &&
-    entry.pathPattern.length <= MAX_PATTERN
-  );
-}
-// Length is checked on the caller's array before any copy, so an oversized or
-// sparse claim is refused without traversing a single entry.
-function boundedRefs(claimed) {
-  return Array.isArray(claimed) &&
-    claimed.length > 0 &&
-    claimed.length <= BUDGET
-    ? claimed.length
-    : null;
-}
-function excludedShaped(entry) {
-  return (
-    isRecord(entry) &&
-    Number.isInteger(entry.ref) &&
-    typeof entry.reason === "string" &&
-    entry.reason.length <= 64
-  );
 }
 function excludedKey(entry) {
   return `${entry.ref}:${entry.reason}`;
@@ -65,36 +51,17 @@ function excludedKey(entry) {
 function differs(left, right) {
   return left.size !== right.size || [...left].some((key) => !right.has(key));
 }
-function sealed(membership, observations) {
-  const positions = Object.freeze([...observations]),
-    copy = Object.freeze({
-      observationCount: membership.observationCount,
-      clusters: Object.freeze(
-        membership.clusters.map((entry) =>
-          Object.freeze({
-            origin: entry.origin,
-            method: entry.method,
-            pathPattern: entry.pathPattern,
-            refs: Object.freeze([...entry.refs]),
-          }),
-        ),
-      ),
-      excluded: Object.freeze(
-        membership.excluded.map((entry) =>
-          Object.freeze({ ref: entry.ref, reason: entry.reason }),
-        ),
-      ),
-    });
-  validated.set(copy, { source: observations, positions });
-  return copy;
-}
-function sameSnapshot(binding, observations) {
-  return (
-    binding !== undefined &&
-    binding.source === observations &&
-    binding.positions.length === observations.length &&
-    binding.positions.every((value, index) => value === observations[index])
-  );
+function sealed(membership, source, positions) {
+  for (const entry of membership.clusters) {
+    Object.freeze(entry.refs);
+    Object.freeze(entry);
+  }
+  membership.excluded.forEach(Object.freeze);
+  Object.freeze(membership.clusters);
+  Object.freeze(membership.excluded);
+  Object.freeze(membership);
+  validated.set(membership, { source, positions: Object.freeze(positions) });
+  return membership;
 }
 export function validateObservationMembership(
   observations,
@@ -109,131 +76,150 @@ export function validateObservationMembership(
     checked: { clusters, references },
     membership: reasons.size === 0 ? sealedMembership : null,
   });
-  if (!Array.isArray(observations))
-    return (reasons.add("invalid_observations"), done());
-  if (observations.length > BUDGET)
-    return (reasons.add("observation_limit"), done());
-  if (
-    !isRecord(membership) ||
-    !Array.isArray(membership.clusters) ||
-    !Array.isArray(membership.excluded) ||
-    membership.clusters.length > BUDGET ||
-    membership.excluded.length > BUDGET
-  )
-    return (reasons.add("malformed_membership"), done());
-  if (membership.observationCount !== observations.length)
-    return (reasons.add("stale_observation_count"), done());
-  // Materialize incrementally, bound first: holes become undefined, accessors are
-  // read once, and the aggregate budget aborts before later claims are copied.
-  const clusters = [],
-    excluded = [];
-  for (const entry of Array.from(membership.clusters)) {
-    if (!isRecord(entry)) return (reasons.add("malformed_membership"), done());
-    const claimed = entry.refs,
-      claimedLength = boundedRefs(claimed);
-    if (claimedLength === null)
-      return (reasons.add("malformed_membership"), done());
-    references += claimedLength;
-    if (references > BUDGET) return (reasons.add("reference_budget"), done());
-    const snapshot = {
-      origin: entry.origin,
-      method: entry.method,
-      pathPattern: entry.pathPattern,
-      refs: Array.from(claimed),
-    };
-    if (!clusterShaped(snapshot))
-      return (reasons.add("malformed_membership"), done());
-    clusters.push(snapshot);
-  }
-  for (const entry of Array.from(membership.excluded)) {
-    if (!isRecord(entry)) return (reasons.add("malformed_membership"), done());
-    const snapshot = { ref: entry.ref, reason: entry.reason };
-    if (!excludedShaped(snapshot))
-      return (reasons.add("malformed_membership"), done());
-    references += 1;
-    if (references > BUDGET) return (reasons.add("reference_budget"), done());
-    excluded.push(snapshot);
-  }
-  const owners = new Map();
-  for (const entry of clusters) {
-    const seen = new Set();
-    for (const ref of entry.refs) {
-      if (!Number.isInteger(ref) || ref < 0 || ref >= observations.length) {
+  let failure = "invalid_observations";
+  try {
+    const length = arrayLength(observations);
+    if (length > BUDGET) return (reasons.add("observation_limit"), done());
+    const positions = indices(observations, length, true),
+      rows = observationRows(positions),
+      settings = inferenceOptions(options);
+    settings.membership = true;
+    failure = "malformed_membership";
+    if (membership === undefined) {
+      reasons.add(
+        inferUrlTemplates(rows, settings).membership
+          ? "malformed_membership"
+          : "membership_unavailable",
+      );
+      return done();
+    }
+    if (!record(membership)) return (reasons.add(failure), done());
+    const count = data(membership, "observationCount", true),
+      claimedClusters = data(membership, "clusters", true),
+      claimedExcluded = data(membership, "excluded", true),
+      clusterCount = arrayLength(claimedClusters),
+      excludedCount = arrayLength(claimedExcluded);
+    if (clusterCount > BUDGET || excludedCount > BUDGET)
+      return (reasons.add(failure), done());
+    if (count !== length)
+      return (reasons.add("stale_observation_count"), done());
+    const clusters = [],
+      excluded = [];
+    for (let index = 0; index < clusterCount; index++) {
+      const entry = data(claimedClusters, index, true),
+        claimed = data(entry, "refs", true),
+        claimedLength = arrayLength(claimed);
+      if (claimedLength === 0 || claimedLength > BUDGET)
+        return (reasons.add(failure), done());
+      references += claimedLength;
+      if (references > BUDGET) return (reasons.add("reference_budget"), done());
+      clusters.push({
+        ...clusterFields(entry),
+        refs: indices(claimed, claimedLength),
+      });
+    }
+    for (let index = 0; index < excludedCount; index++) {
+      references++;
+      if (references > BUDGET) return (reasons.add("reference_budget"), done());
+      const entry = data(claimedExcluded, index, true);
+      if (!record(entry)) return (reasons.add(failure), done());
+      const ref = data(entry, "ref", true),
+        reason = data(entry, "reason", true);
+      if (
+        !Number.isInteger(ref) ||
+        typeof reason !== "string" ||
+        reason.length > 64
+      )
+        return (reasons.add(failure), done());
+      excluded.push({ ref, reason });
+    }
+    const owners = new Map();
+    for (const entry of clusters) {
+      const seen = new Set();
+      for (const ref of entry.refs) {
+        if (!Number.isInteger(ref) || ref < 0 || ref >= length) {
+          reasons.add("reference_out_of_range");
+          continue;
+        }
+        if (seen.has(ref)) reasons.add("duplicate_reference");
+        else if (owners.has(ref)) reasons.add("reference_conflict");
+        seen.add(ref);
+        owners.set(ref, clusterKey(entry));
+        const observation = rows[ref];
+        if (observation === null || observation === undefined) {
+          reasons.add("invalid_observation");
+          continue;
+        }
+        if (observation.origin !== entry.origin) reasons.add("origin_mismatch");
+        if (observation.method !== entry.method) reasons.add("method_mismatch");
+      }
+    }
+    for (const entry of excluded) {
+      if (entry.ref < 0 || entry.ref >= length)
         reasons.add("reference_out_of_range");
+      else if (owners.has(entry.ref)) reasons.add("reference_conflict");
+      else owners.set(entry.ref, "excluded");
+    }
+    // Authority is the clustering algorithm itself, never a second path matcher.
+    const authoritative = inferUrlTemplates(rows, settings).membership;
+    if (!authoritative) return (reasons.add("membership_unavailable"), done());
+    const provided = new Map(
+      clusters.map((entry) => [clusterKey(entry), entry.refs]),
+    );
+    if (provided.size !== clusters.length) reasons.add("malformed_membership");
+    for (const entry of authoritative.clusters) {
+      const key = clusterKey(entry),
+        claimed = provided.get(key);
+      if (claimed === undefined) {
+        reasons.add("cluster_missing");
         continue;
       }
-      if (seen.has(ref)) reasons.add("duplicate_reference");
-      else if (owners.has(ref)) reasons.add("reference_conflict");
-      seen.add(ref);
-      owners.set(ref, clusterKey(entry));
-      const observation = observations[ref];
-      if (!isRecord(observation) || observation.origin !== entry.origin)
-        reasons.add("origin_mismatch");
-      if (!isRecord(observation) || observation.method !== entry.method)
-        reasons.add("method_mismatch");
+      provided.delete(key);
+      const truth = new Set(entry.refs),
+        given = new Set(claimed);
+      if ([...truth].some((ref) => !given.has(ref)))
+        reasons.add("support_omitted");
+      if ([...given].some((ref) => !truth.has(ref)))
+        reasons.add("forged_reference");
     }
-  }
-  for (const entry of excluded) {
-    if (entry.ref < 0 || entry.ref >= observations.length)
-      reasons.add("reference_out_of_range");
-    else if (owners.has(entry.ref)) reasons.add("reference_conflict");
-    else owners.set(entry.ref, "excluded");
-  }
-  // Authority is the clustering algorithm itself, never a second path matcher.
-  const authoritative = inferUrlTemplates(observations, {
-    ...options,
-    membership: true,
-  }).membership;
-  if (!authoritative) return (reasons.add("membership_unavailable"), done());
-  const provided = new Map(
-    clusters.map((entry) => [clusterKey(entry), entry.refs]),
-  );
-  if (provided.size !== clusters.length) reasons.add("malformed_membership");
-  for (const entry of authoritative.clusters) {
-    const key = clusterKey(entry),
-      claimed = provided.get(key);
-    if (claimed === undefined) {
-      reasons.add("cluster_missing");
-      continue;
-    }
-    provided.delete(key);
-    const truth = new Set(entry.refs),
-      given = new Set(claimed);
-    if ([...truth].some((ref) => !given.has(ref)))
-      reasons.add("support_omitted");
-    if ([...given].some((ref) => !truth.has(ref)))
-      reasons.add("forged_reference");
-  }
-  if (provided.size > 0) reasons.add("cluster_unknown");
-  if (
-    differs(
-      new Set(authoritative.excluded.map(excludedKey)),
-      new Set(excluded.map(excludedKey)),
+    if (provided.size > 0) reasons.add("cluster_unknown");
+    if (
+      differs(
+        new Set(authoritative.excluded.map(excludedKey)),
+        new Set(excluded.map(excludedKey)),
+      )
     )
-  )
-    reasons.add("excluded_mismatch");
-  return done(
-    clusters.length,
-    reasons.size === 0 ? sealed(authoritative, observations) : null,
-  );
+      reasons.add("excluded_mismatch");
+    return done(
+      clusters.length,
+      reasons.size === 0
+        ? sealed(authoritative, observations, positions)
+        : null,
+    );
+  } catch {
+    return (reasons.add(failure), done());
+  }
 }
 // Consumers join through the validated capability only; unvalidated or
 // mismatched snapshots yield null rather than unproven attribution.
 export function selectClusterObservations(observations, membership, cluster) {
-  if (
-    !Array.isArray(observations) ||
-    !isRecord(membership) ||
-    !isRecord(cluster) ||
-    !sameSnapshot(validated.get(membership), observations)
-  )
-    return null;
-  const wanted = clusterKey(cluster),
-    entry = membership.clusters.find(
+  try {
+    const wanted = clusterKey(clusterFields(cluster)),
+      binding = validated.get(membership);
+    if (!binding || binding.source !== observations) return null;
+    const length = arrayLength(observations);
+    if (length !== binding.positions.length) return null;
+    const positions = indices(observations, length, true);
+    if (positions.some((value, index) => value !== binding.positions[index]))
+      return null;
+    const entry = membership.clusters.find(
       (candidate) => clusterKey(candidate) === wanted,
     );
-  if (!entry) return null;
-  return entry.refs.some((ref) => ref >= observations.length)
-    ? null
-    : Object.freeze(entry.refs.map((ref) => observations[ref]));
+    return entry
+      ? Object.freeze(entry.refs.map((ref) => positions[ref]))
+      : null;
+  } catch {
+    return null;
+  }
 }
 export { MEMBERSHIP_REASON_CODES };
