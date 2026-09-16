@@ -175,9 +175,15 @@ The producer retains its 4096-character path, 32-segment and 256-character
 encoded/decoded segment ceilings, and 1 MiB aggregate path-character budget
 (the historical diagnostic is named `path_byte_limit`). Percent-encoding can
 expand a valid path beyond 4096 characters: a 4016-character normalized path of
-`!` segments becomes a 12016-character pattern. The explicit output ceiling is
-also checked before grouping; over-limit origins or canonical paths become
-`invalid_observation` exclusions, not unrepresentable emitted membership.
+`!` segments becomes a 12016-character pattern. The literal canonical path
+ceiling is checked before grouping, and the actual emitted pattern ceiling is
+checked after dynamic substitutions. NFC expansion followed by replacing a
+one- or two-character integer with `:id` can exceed the ceiling even when the
+literal path fits. Every row in an over-limit partition becomes an
+`invalid_observation` exclusion; no unrepresentable cluster is emitted. Static
+patterns exactly at the ceiling remain accepted without reserving unused
+substitution space. Over-limit origins or literal canonical paths remain
+per-row `invalid_observation` exclusions.
 Query-key copies are limited to 64 slots and recognized key text is checked at
 64 characters before case conversion. No raw body/header data is traversed.
 
@@ -192,6 +198,11 @@ Query-key copies are limited to 64 slots and recognized key text is checked at
   before each refs copy; a 1000-by-1000 claim stops before its second refs copy.
   `checked.references` is the charged claim total, including a rejected charge,
   not a count of valid references or getter calls.
+- A whole-batch `invalid_observations` producer diagnostic uses the successfully
+  captured physical observation count, including zero for an empty array with
+  invalid options. The fallback count is one only when a valid array length
+  cannot be captured. Snapshot failure emits no membership; diagnostic counting
+  never rereads a caller length or invokes an accessor.
 - Re-derivation follows cheap claim checks, except an undefined claim requires
   bounded inference to distinguish absence from genuine unavailability.
 

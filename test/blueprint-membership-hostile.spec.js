@@ -238,7 +238,7 @@ describe("physical observation authority", () => {
       const result = inferUrlTemplates(rows, { membership: true });
       expect(reads()).toBe(0);
       expect(result.excluded).toEqual([
-        { reason: "invalid_observations", count: 1 },
+        { reason: "invalid_observations", count: 3 },
       ]);
       expect(result.membership).toBeUndefined();
     },
@@ -478,7 +478,7 @@ it("sanitizes throwing own descriptor traps at every API boundary", () => {
     },
   });
   expect(inferUrlTemplates(rows).excluded).toEqual([
-    { reason: "invalid_observations", count: 1 },
+    { reason: "invalid_observations", count: 3 },
   ]);
   expect(validateObservationMembership(rows, claim).reasons).toEqual([
     "invalid_observations",
@@ -489,7 +489,7 @@ it("rejects observation index accessors and option getters without invoking them
   const { rows, claim } = setup();
   const reads = accessor(rows, "0", rows[0]);
   expect(inferUrlTemplates(rows).excluded).toEqual([
-    { reason: "invalid_observations", count: 1 },
+    { reason: "invalid_observations", count: 3 },
   ]);
   expect(validateObservationMembership(rows, claim).reasons).toEqual([
     "invalid_observations",
@@ -498,7 +498,7 @@ it("rejects observation index accessors and option getters without invoking them
   const options = {};
   const optionReads = accessor(options, "maxObservations", 3);
   expect(inferUrlTemplates(rowsFor(), options).excluded).toEqual([
-    { reason: "invalid_observations", count: 1 },
+    { reason: "invalid_observations", count: 3 },
   ]);
   expect(optionReads()).toBe(0);
 });

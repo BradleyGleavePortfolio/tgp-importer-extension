@@ -138,8 +138,9 @@ function grouped(values, keyFor) {
   return out;
 }
 export function inferUrlTemplates(observations, options) {
+  let length = 1;
   try {
-    const length = arrayLength(observations);
+    length = arrayLength(observations);
     if (length > HARD.maxObservations)
       return {
         clusters: [],
@@ -152,7 +153,7 @@ export function inferUrlTemplates(observations, options) {
   } catch {
     return {
       clusters: [],
-      excluded: [{ reason: "invalid_observations", count: 1 }],
+      excluded: [{ reason: "invalid_observations", count: length }],
     };
   }
 }
@@ -267,6 +268,15 @@ function inferSnapshot(observations, options) {
           ].sort(compareText),
           observations: partition.length,
         };
+      if (cluster.pathPattern.length > URL_TEXT_LIMITS.pathPattern) {
+        rejected.set(
+          "invalid_observation",
+          (rejected.get("invalid_observation") ?? 0) + partition.length,
+        );
+        for (const row of partition)
+          excludedRefs.push({ ref: row.index, reason: "invalid_observation" });
+        continue;
+      }
       if (!cluster.replayCompatible)
         cluster.reason = "multiple_dynamic_segments";
       refsFor.set(
