@@ -324,10 +324,17 @@ function normalizeStep(step, seenIds) {
       `blueprint step "${step.id}": method "${method}" is not a safe method (GET|HEAD)`,
     );
   }
-  const itemsPath =
-    Array.isArray(step.itemsPath) && step.itemsPath.every(isNonEmptyString)
+  // Validate the dense snapshot: every() alone skips holes and silently loses data.
+  const itemsPath = isAbsent(step.itemsPath)
+    ? []
+    : Array.isArray(step.itemsPath)
       ? [...step.itemsPath]
-      : [];
+      : null;
+  if (itemsPath === null || !itemsPath.every(isNonEmptyString)) {
+    throw new Error(
+      `blueprint step "${step.id}": itemsPath must be a string[] of non-empty strings`,
+    );
+  }
   const idField = isNonEmptyString(step.idField) ? step.idField : "id";
   const forEach = isNonEmptyString(step.forEach) ? step.forEach : null;
   // A :param placeholder is a colon + a name from [A-Za-z0-9_] (digit-led names
@@ -402,7 +409,8 @@ export function normalizeBlueprint(bp, opts) {
     throw new Error("blueprint.steps must be a non-empty array");
   }
   const seenIds = new Set();
-  const steps = bp.steps.map((s) => normalizeStep(s, seenIds));
+  // Densify so missing steps reach the contract validator rather than raw property access.
+  const steps = [...bp.steps].map((s) => normalizeStep(s, seenIds));
   // Every forEach must reference a set produced by an EARLIER step's collectAs,
   // so fan-out can never depend on ids that are never collected.
   const produced = new Set();

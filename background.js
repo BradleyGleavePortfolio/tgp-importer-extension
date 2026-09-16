@@ -720,7 +720,16 @@ function terminalDetail(result) {
 function partialDetail(result) {
   const parts = [];
   if (result.degraded === true) parts.push("some pages were skipped");
-  if (result.truncated === true) parts.push("reached the import safety limit");
+  if (result.truncated === true) {
+    // Preserve budget copy for older results, but never label a traversal defect a budget.
+    const reasons = result.truncationReasons ?? ["budget"];
+    if (reasons.includes("budget"))
+      parts.push("reached the import safety limit");
+    if (reasons.includes("pagination_cycle"))
+      parts.push("source pagination repeated a page");
+    if (reasons.includes("page_ceiling"))
+      parts.push("pagination reached the safe page-number ceiling");
+  }
   const why = parts.length > 0 ? parts.join("; ") : "incomplete";
   return `partial import (${why}) — ${result.entities} record(s) imported`;
 }

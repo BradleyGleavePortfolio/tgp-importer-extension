@@ -133,7 +133,7 @@ export async function runReplay(options) {
   const stepPages = bp.steps.map(() => 0); // pages fetched per step (aggregate)
   let totalPages = 0;
   let totalEntities = 0;
-  let truncated = false; // a budget / per-step page cap cut the walk short
+  const truncationReasons = new Set(); // static categories only; bounded across contexts
   let entityBudgetExceeded = false;
   let degraded = false; // at least one page was skipped (malformed / retries exhausted)
   let lastSkipStatus = null; // status/category of the last skipped page (diagnostic only, no body)
@@ -247,7 +247,7 @@ export async function runReplay(options) {
         !pageBudgetLeft() ||
         stepPages[stepIndex] >= budgets.maxPagesPerStep
       ) {
-        truncated = true;
+        truncationReasons.add("budget");
         return;
       }
       // NULL-PROTOTYPE map: a plain `{}` inherits the `__proto__` setter, so
@@ -267,7 +267,7 @@ export async function runReplay(options) {
         // A repeated URL means traversal STOPPED WITHOUT PROOF of exhaustion
         // (cursor cycle or a page param that cannot advance); it is a bound we
         // hit, never evidence the list ended, so it must not read as complete.
-        truncated = true;
+        truncationReasons.add("pagination_cycle");
         return;
       }
       visited.add(url);
@@ -306,7 +306,7 @@ export async function runReplay(options) {
         }
         if (batch.length >= remainingEntities) {
           entityBudgetExceeded = true;
-          truncated = true;
+          truncationReasons.add("budget");
           break;
         }
         emitted.add(key);
@@ -347,7 +347,7 @@ export async function runReplay(options) {
         // A safe start can still reach the safe maximum mid-walk; +1 would not
         // move, so stop honestly rather than re-request the same page.
         if (!Number.isSafeInteger(pageParam + 1)) {
-          truncated = true;
+          truncationReasons.add("page_ceiling");
           return;
         }
         pageParam += 1;
@@ -378,7 +378,7 @@ export async function runReplay(options) {
         for (const id of ids) {
           await runContext(step, i, id);
           if (!pageBudgetLeft()) {
-            truncated = true;
+            truncationReasons.add("budget");
             break;
           }
           if (entityBudgetExceeded) {
@@ -399,7 +399,8 @@ export async function runReplay(options) {
         pages: totalPages,
         entities: totalEntities,
         counts: entityCounts(),
-        truncated,
+        truncated: truncationReasons.size > 0,
+        truncationReasons: [...truncationReasons],
         degraded,
         lastSkipStatus,
       };
@@ -407,7 +408,7 @@ export async function runReplay(options) {
     throw err;
   }
 
-  // Honest terminal status: a skipped page or a budget-truncated walk is NOT an
+  // Honest terminal status: a skipped page or any truncated walk is NOT an
   // ordinary "complete". If pages were skipped and nothing was emitted at all the
   // run could not produce data (failed); if it degraded or was truncated but still
   // emitted something it is partial.
@@ -416,6 +417,7 @@ export async function runReplay(options) {
   // "complete": nothing looks wrong, but the likely cause is blueprint drift, and
   // "import complete, 0 records" is indistinguishable from "you have no clients".
   // "empty" forces that distinction to be verified instead of swallowed.
+  const truncated = truncationReasons.size > 0;
   let status;
   if (degraded && totalEntities === 0) {
     status = "failed";
@@ -432,6 +434,7 @@ export async function runReplay(options) {
     entities: totalEntities,
     counts: entityCounts(),
     truncated,
+    truncationReasons: [...truncationReasons],
     degraded,
     lastSkipStatus,
   };
