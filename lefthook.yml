@@ -2,6 +2,8 @@ min_version: 2.1.12
 pre-commit:
   parallel: true
   commands:
+    secrets:
+      run: bash scripts/secrets-scan.sh staged
     banned:
       run: BANNED_DIFF_CACHED=1 npm run check:banned
     deploy-readiness:

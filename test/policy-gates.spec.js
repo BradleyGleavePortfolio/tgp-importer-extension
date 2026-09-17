@@ -817,6 +817,32 @@ describe("banned-token gate source coverage", () => {
 });
 
 describe("pre-commit hook semantic validation", () => {
+  it.each(["skip", "only", "glob", "files", "exclude"])(
+    "rejects a secrets command with conditional %s configuration",
+    (option) => {
+      const root = temp();
+      put(
+        root,
+        "lefthook.yml",
+        [
+          "min_version: 2.1.12",
+          "pre-commit:",
+          "  commands:",
+          "    secrets:",
+          "      run: bash scripts/secrets-scan.sh staged",
+          `      ${option}: true`,
+        ].join("\n"),
+      );
+      const output = spawnSync(
+        process.execPath,
+        [join(repo, "scripts/check-hook-config.mjs")],
+        { cwd: root, encoding: "utf8" },
+      );
+      expect(output.status).toBe(1);
+      expect(output.stdout).toContain("unconditional secrets command");
+    },
+  );
+
   it("rejects required command text hidden in comments", () => {
     const root = temp();
     put(
@@ -833,6 +859,7 @@ describe("pre-commit hook semantic validation", () => {
         "      # npm run lint",
         "      # npm run type-check",
         "      # npm run format:check",
+        "      # bash scripts/secrets-scan.sh staged",
       ].join("\n"),
     );
     const output = spawnSync(
@@ -845,6 +872,7 @@ describe("pre-commit hook semantic validation", () => {
     );
     expect(output.status).toBe(1);
     expect(output.stdout).toContain("banned");
+    expect(output.stdout).toContain("secrets");
   });
 
   it("rejects a semantic error in test JavaScript through both entrypoints", () => {
@@ -902,6 +930,8 @@ describe("pre-commit hook semantic validation", () => {
         "min_version: 2.1.12",
         "pre-commit:",
         "  commands:",
+        "    secrets:",
+        "      run: bash scripts/secrets-scan.sh staged",
         "    banned:",
         "      run: BANNED_DIFF_CACHED=1 npm run check:banned",
         "    deploy-readiness:",
