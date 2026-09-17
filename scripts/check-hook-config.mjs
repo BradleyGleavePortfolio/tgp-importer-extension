@@ -16,6 +16,7 @@ try {
   manifest = {};
 }
 const required = {
+  secrets: "bash scripts/secrets-scan.sh staged",
   banned: "BANNED_DIFF_CACHED=1 npm run check:banned",
   "deploy-readiness": "npm run check:production-preflight",
   lint: "npm run lint",
@@ -26,6 +27,14 @@ const commands = config?.["pre-commit"]?.commands;
 const missing = Object.entries(required)
   .filter(([name, run]) => !commands || commands[name]?.run !== run)
   .map(([name]) => name);
+const secrets = commands?.secrets;
+if (
+  secrets &&
+  ["skip", "only", "glob", "files", "exclude"].some((key) =>
+    Object.hasOwn(secrets, key),
+  )
+)
+  missing.push("unconditional secrets command");
 if (config?.min_version !== "2.1.12") missing.unshift("min_version");
 if (manifest.scripts?.["format:check"] !== "node scripts/check-format.mjs")
   missing.push("format command");

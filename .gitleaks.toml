@@ -1,0 +1,38 @@
+title = "Importer R110 — upstream rules, no blanket exclusions"
+
+[extend]
+useDefault = true
+
+# Parent-reviewed synthetic constructions; see docs/SECRETS_SCANNING.md.
+# Hex escapes keep complete token-shaped strings out of configuration/log diffs.
+[[allowlists]]
+description = "Synthetic fixture header NAME, never its value"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^test/blueprint-c2a-fixture\.spec\.js$''']
+regexTarget = "secret"
+regexes = ['''^\x58\x2d\x56\x65\x6e\x64\x6f\x72\x2d\x41\x70\x69\x2d\x4b\x65\x79\x2d\x76\x32$''']
+
+[[allowlists]]
+description = "Exact HS256-shaped test constant with invalid 12-byte signature"
+targetRules = ["jwt"]
+condition = "AND"
+paths = ['''^test/(ingest-settlement|ingest-complete-contract|replay-truecoach-e2e|start-import)\.spec\.js$''']
+regexTarget = "secret"
+regexes = ['''^\x65\x79\x4a\x68\x62\x47\x63\x69\x4f\x69\x4a\x49\x55\x7a\x49\x31\x4e\x69\x4a\x39\x2e\x65\x79\x4a\x7a\x64\x57\x49\x69\x4f\x69\x4a\x6a\x62\x32\x46\x6a\x61\x43\x4a\x39\x2e\x73\x31\x67\x2d\x6e\x61\x74\x75\x72\x65\x5f\x54\x4f\x4b\x45\x4e$''']
+
+[[allowlists]]
+description = "Exact collector test constant with invalid 11-byte HS256 signature"
+targetRules = ["jwt"]
+condition = "AND"
+paths = ['''^test/content-collector\.spec\.js$''']
+regexTarget = "secret"
+regexes = ['''^\x65\x79\x4a\x68\x62\x47\x63\x69\x4f\x69\x4a\x49\x55\x7a\x49\x31\x4e\x69\x4a\x39\x2e\x65\x79\x4a\x7a\x64\x57\x49\x69\x4f\x69\x4a\x6a\x62\x32\x46\x6a\x61\x43\x4a\x39\x2e\x73\x31\x67\x2d\x6e\x61\x74\x75\x72\x65\x5f\x41\x5a\x30\x39$''']
+
+[[allowlists]]
+description = "Exact hardening test constant with invalid base64url signature length"
+targetRules = ["jwt"]
+condition = "AND"
+paths = ['''^test/start-import-hardening\.spec\.js$''']
+regexTarget = "secret"
+regexes = ['''^\x65\x79\x4a\x68\x62\x47\x63\x69\x4f\x69\x4a\x49\x55\x7a\x49\x31\x4e\x69\x4a\x39\x2e\x65\x79\x4a\x7a\x64\x57\x49\x69\x4f\x69\x4a\x6a\x62\x32\x46\x6a\x61\x43\x4a\x39\x2e\x73\x31\x67\x2d\x6e\x61\x74\x75\x72\x65\x5f\x53\x45\x43\x52\x45\x54$''']
