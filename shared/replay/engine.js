@@ -27,6 +27,7 @@ import {
   normalizeBlueprint,
   extractItems,
   readPath,
+  isQueryString,
   PARAM_NAME_CHARS,
 } from "./blueprint.js";
 import { isTimeout } from "../net.js";
@@ -127,7 +128,7 @@ export async function runReplay(options) {
   const bp = normalizeBlueprint(blueprint, { allowedOrigins });
   const { budgets } = bp;
 
-  const idSets = new Map(); // collectAs -> ordered unique id[]
+  const idSets = new Map(); // collectAs -> insertion-ordered Set of unique IDs
   const emitted = new Set(); // (step, context, sourceId) tuple (idempotency)
   const progress = bp.steps.map((s) => ({ entityType: s.entityType, sent: 0 }));
   const stepPages = bp.steps.map(() => 0); // pages fetched per step (aggregate)
@@ -164,7 +165,7 @@ export async function runReplay(options) {
     lastRequestAt = now();
   }
 
-  // One request with bounded retry. Returns the parsed body, or null when the
+  // One request with bounded retry. Returns { body }, or null when the
   // page should be skipped (malformed or retries exhausted). Throws AuthLost /
   // Abort to stop the whole run.
   async function fetchPage(url, method, headers) {
@@ -174,12 +175,13 @@ export async function runReplay(options) {
       }
       await pace();
       try {
-        return await fetchJson(url, {
+        const body = await fetchJson(url, {
           method,
           headers,
           signal,
           timeoutMs: budgets.requestTimeoutMs,
         });
+        return { body };
       } catch (err) {
         if (isAuthLost(err)) {
           throw err; // fail closed — never continue after auth loss
@@ -214,7 +216,7 @@ export async function runReplay(options) {
     if (existing) {
       return existing;
     }
-    const created = [];
+    const created = new Set();
     idSets.set(name, created);
     return created;
   }
@@ -223,7 +225,6 @@ export async function runReplay(options) {
   // step). ctxLabel discriminates the context in dedupe keys and synthetic ids.
   async function runContext(step, stepIndex, id) {
     const collect = step.collectAs !== null ? nextIdSet(step.collectAs) : null;
-    const collectSeen = collect !== null ? new Set(collect) : null;
     // Effective request headers: blueprint-level defaults, then step headers
     // override per key. This is DATA-only; the trusted source-fetch layer still
     // applies the bearer Authorization LAST, so a step can override any
@@ -250,11 +251,7 @@ export async function runReplay(options) {
         truncationReasons.add("budget");
         return;
       }
-      // NULL-PROTOTYPE map: a plain `{}` inherits the `__proto__` setter, so
-      // `query["__proto__"] = v` created NO own property and Object.entries
-      // dropped the key — the same URL then repeated and the visited-URL guard
-      // reported success. Every param name the normalizer accepts must survive
-      // into the request exactly as accepted.
+      // A null prototype preserves query names such as "__proto__".
       const query = Object.create(null);
       if (pag !== null && pag.style === "page") {
         query[pag.param] = pageParam;
@@ -264,9 +261,7 @@ export async function runReplay(options) {
       }
       const url = buildUrl(bp.apiBase, path, query);
       if (visited.has(url)) {
-        // A repeated URL means traversal STOPPED WITHOUT PROOF of exhaustion
-        // (cursor cycle or a page param that cannot advance); it is a bound we
-        // hit, never evidence the list ended, so it must not read as complete.
+        // A repeated URL bounds traversal but does not prove exhaustion.
         truncationReasons.add("pagination_cycle");
         return;
       }
@@ -276,11 +271,18 @@ export async function runReplay(options) {
       const thisPage = pageOrdinal;
       pageOrdinal += 1;
 
-      const body = await fetchPage(url, step.method, headers);
-      if (body === null) {
+      const page = await fetchPage(url, step.method, headers);
+      if (page === null) {
         degraded = true; // a page was skipped — the walk is no longer whole
+        return;
       }
-      const items = body === null ? [] : extractItems(body, step.itemsPath);
+      const { body } = page;
+      const items = extractItems(body, step.itemsPath);
+      if (items === null) {
+        degraded = true;
+        lastSkipStatus = "malformed";
+        return;
+      }
 
       const capturedAt = new Date(now()).toISOString();
       const batch = [];
@@ -316,14 +318,8 @@ export async function runReplay(options) {
           capturedAt,
           payload: item,
         });
-        if (
-          collect !== null &&
-          rawId !== undefined &&
-          rawId !== null &&
-          !collectSeen.has(sourceId)
-        ) {
-          collectSeen.add(sourceId);
-          collect.push(sourceId);
+        if (collect !== null && rawId !== undefined && rawId !== null) {
+          collect.add(sourceId);
         }
       }
       if (batch.length > 0) {
@@ -344,8 +340,7 @@ export async function runReplay(options) {
         if (items.length === 0) {
           return; // empty page => end of list
         }
-        // A safe start can still reach the safe maximum mid-walk; +1 would not
-        // move, so stop honestly rather than re-request the same page.
+        // Beyond the safe range, exact unit progression is not guaranteed.
         if (!Number.isSafeInteger(pageParam + 1)) {
           truncationReasons.add("page_ceiling");
           return;
@@ -354,10 +349,18 @@ export async function runReplay(options) {
         continue;
       }
       // cursor
-      const nextCursor =
-        body === null ? undefined : readPath(body, pag.nextPath);
-      if (typeof nextCursor !== "string" || nextCursor.length === 0) {
+      const nextCursor = readPath(body, pag.nextPath);
+      if (
+        nextCursor === undefined ||
+        nextCursor === null ||
+        nextCursor === ""
+      ) {
         return; // no further cursor => end of list
+      }
+      if (!isQueryString(nextCursor)) {
+        degraded = true;
+        lastSkipStatus = "malformed";
+        return;
       }
       cursor = nextCursor;
     }
@@ -376,11 +379,11 @@ export async function runReplay(options) {
         // its own iteration mid-walk (the normalizer also rejects it).
         const ids = [...(idSets.get(step.forEach) ?? [])];
         for (const id of ids) {
-          await runContext(step, i, id);
-          if (!pageBudgetLeft()) {
+          if (!pageBudgetLeft() || stepPages[i] >= budgets.maxPagesPerStep) {
             truncationReasons.add("budget");
             break;
           }
+          await runContext(step, i, id);
           if (entityBudgetExceeded) {
             break;
           }

@@ -151,6 +151,14 @@ function isNonEmptyString(v) {
   return typeof v === "string" && v.length > 0;
 }
 
+// URLSearchParams replaces lone surrogates; accepted query text must round-trip.
+export function isQueryString(value) {
+  return (
+    typeof value === "string" &&
+    new URLSearchParams({ value }).get("value") === value
+  );
+}
+
 // Normalize an optional headers descriptor to a plain Record<string,string>.
 // Absent (undefined/null) => {}. A present value MUST be a plain object whose
 // every key AND value is a non-empty string; anything else fails closed. Headers
@@ -200,12 +208,7 @@ function normalizeHeaders(h, label) {
   return out;
 }
 
-// An ABSENT pagination field means "the producer had nothing to say" and keeps the
-// documented default. A PRESENT but malformed field means the producer emitted
-// something this contract cannot execute; since descriptors are inferred from
-// UNTRUSTED capture (PR-C2), coercing it (unknown style ⇒ `page`, empty param ⇒
-// "page", fractional start ⇒ 1) would manufacture runnable traversal nobody proved.
-// So: absent defaults; present-but-invalid throws before replay ever sees the step.
+// Absent traversal fields default; explicitly malformed fields fail before I/O.
 const isAbsent = (v) => v === undefined || v === null;
 
 function normalizePagination(p, stepId) {
@@ -223,18 +226,17 @@ function normalizePagination(p, stepId) {
     );
   }
   const style = p.style === "cursor" ? "cursor" : "page";
-  if (!isAbsent(p.param) && !isNonEmptyString(p.param)) {
+  if (
+    !isAbsent(p.param) &&
+    (!isNonEmptyString(p.param) || !isQueryString(p.param))
+  ) {
     throw new Error(
-      `blueprint step "${stepId}": pagination param must be a non-empty string`,
+      `blueprint step "${stepId}": pagination param must be a non-empty string that round-trips through URLSearchParams`,
     );
   }
   if (style === "page") {
     const param = isAbsent(p.param) ? "page" : p.param;
-    // Number.isInteger(2 ** 53) is TRUE, yet 2 ** 53 + 1 === 2 ** 53: such a
-    // start can never advance, so the walk would re-request one URL forever (or
-    // stall after one step) and still look finished. Only SAFE integers are
-    // executable, so the unsafe ones fail closed here instead of manufacturing a
-    // traversal that cannot progress.
+    // Exact unit progression requires safe integers, including zero and negatives.
     if (!isAbsent(p.start) && !Number.isSafeInteger(p.start)) {
       throw new Error(
         `blueprint step "${stepId}": page pagination start must be an integer in the safe range`,
@@ -243,15 +245,7 @@ function normalizePagination(p, stepId) {
     const start = isAbsent(p.start) ? 1 : p.start;
     return { style, param, start };
   }
-  // cursor: `param` carries the next cursor on the query string; `nextPath`
-  // locates the next-cursor token in the response body. An absent, empty, or
-  // malformed nextPath ⇒ the engine cannot advance (an empty path reads the whole
-  // body, never a token) — caught here rather than looping forever.
-  //
-  // Validate the DENSE SNAPSHOT that execution will actually use, not the caller
-  // array: Array.prototype.every SKIPS holes, so `Array(1)` (length 1, no
-  // elements) used to pass and then spread to `[undefined]` — an unreadable path
-  // the engine walked one page with before reporting success.
+  // Densify before validation: every() skips holes that execution would traverse.
   const nextPath = Array.isArray(p.nextPath) ? [...p.nextPath] : null;
   if (
     nextPath === null ||
@@ -379,10 +373,15 @@ function normalizeBudgets(b) {
   if (!isRecord(b)) {
     throw new Error("blueprint budgets must be an object");
   }
-  const pick = (key) =>
-    Number.isInteger(b[key]) && b[key] > 0 && b[key] <= HARD_BUDGETS[key]
-      ? b[key]
+  const pick = (key) => {
+    const value = b[key];
+    if (!isAbsent(value) && (!Number.isInteger(value) || value <= 0)) {
+      throw new Error(`blueprint budget ${key} must be a positive integer`);
+    }
+    return !isAbsent(value) && value <= HARD_BUDGETS[key]
+      ? value
       : DEFAULT_BUDGETS[key];
+  };
   return {
     maxPages: pick("maxPages"),
     maxPagesPerStep: pick("maxPagesPerStep"),
@@ -453,9 +452,8 @@ export function readPath(value, path) {
   return cur;
 }
 
-// Extract the item array from a list response given itemsPath. Non-arrays yield
-// an empty list (a malformed/shape-shifted page contributes nothing, never throws).
+// null distinguishes malformed list shape from a proven empty array.
 export function extractItems(body, itemsPath) {
   const located = itemsPath.length === 0 ? body : readPath(body, itemsPath);
-  return Array.isArray(located) ? located : [];
+  return Array.isArray(located) ? located : null;
 }

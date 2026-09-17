@@ -69,13 +69,14 @@ describe("normalizeBlueprint — defaults", () => {
     expect(bp.steps[0].method).toBe("HEAD");
   });
 
-  it("clamps invalid budget entries back to the defaults", () => {
-    const bp = normalizeBlueprint(
-      base({ budgets: { maxPages: -5, maxEntities: 0, maxPagesPerStep: 3.5 } }),
-    );
-    expect(bp.budgets.maxPages).toBe(DEFAULT_BUDGETS.maxPages);
-    expect(bp.budgets.maxEntities).toBe(DEFAULT_BUDGETS.maxEntities);
-    expect(bp.budgets.maxPagesPerStep).toBe(DEFAULT_BUDGETS.maxPagesPerStep);
+  it("rejects explicit malformed budget entries instead of widening them", () => {
+    expect(() =>
+      normalizeBlueprint(
+        base({
+          budgets: { maxPages: -5, maxEntities: 0, maxPagesPerStep: 3.5 },
+        }),
+      ),
+    ).toThrow(/blueprint budget/);
   });
 
   it("honours a partial budget override and defaults the rest", () => {
@@ -669,15 +670,13 @@ describe("normalizeBlueprint — budgets + rate + apiBase detail", () => {
         .requestTimeoutMs,
     ).toBe(3000);
   });
-  it("clamps a non-integer or non-positive requestTimeoutMs to the default", () => {
-    expect(
-      normalizeBlueprint(base({ budgets: { requestTimeoutMs: 0 } })).budgets
-        .requestTimeoutMs,
-    ).toBe(DEFAULT_BUDGETS.requestTimeoutMs);
-    expect(
-      normalizeBlueprint(base({ budgets: { requestTimeoutMs: 12.5 } })).budgets
-        .requestTimeoutMs,
-    ).toBe(DEFAULT_BUDGETS.requestTimeoutMs);
+  it("rejects a non-integer or non-positive requestTimeoutMs", () => {
+    expect(() =>
+      normalizeBlueprint(base({ budgets: { requestTimeoutMs: 0 } })),
+    ).toThrow(/blueprint budget requestTimeoutMs/);
+    expect(() =>
+      normalizeBlueprint(base({ budgets: { requestTimeoutMs: 12.5 } })),
+    ).toThrow(/blueprint budget requestTimeoutMs/);
   });
   it("rejects a non-object budgets", () => {
     expect(() => normalizeBlueprint(base({ budgets: 5 }))).toThrow(
@@ -829,20 +828,18 @@ describe("readPath / extractItems", () => {
     expect(readPath({ a: {} }, ["a", "b", "c"])).toBeUndefined();
     expect(readPath({ a: { b: 2 } }, [])).toEqual({ a: { b: 2 } });
   });
-  it("extracts an array at itemsPath and yields [] for non-arrays", () => {
+  it("extracts an array at itemsPath and distinguishes malformed non-arrays", () => {
     expect(extractItems({ items: [1, 2] }, ["items"])).toEqual([1, 2]);
-    expect(extractItems({ items: "nope" }, ["items"])).toEqual([]);
+    expect(extractItems({ items: "nope" }, ["items"])).toBeNull();
     expect(extractItems([1, 2, 3], [])).toEqual([1, 2, 3]);
-    expect(extractItems({ a: 1 }, [])).toEqual([]);
+    expect(extractItems({ a: 1 }, [])).toBeNull();
   });
   it("descends a multi-segment itemsPath", () => {
     expect(extractItems({ data: { rows: [9] } }, ["data", "rows"])).toEqual([
       9,
     ]);
-    expect(extractItems({ data: { rows: null } }, ["data", "rows"])).toEqual(
-      [],
-    );
-    expect(extractItems({ data: {} }, ["data", "rows"])).toEqual([]);
+    expect(extractItems({ data: { rows: null } }, ["data", "rows"])).toBeNull();
+    expect(extractItems({ data: {} }, ["data", "rows"])).toBeNull();
   });
   it("traverses array indices numerically", () => {
     expect(readPath([{ x: 1 }, { x: 2 }], ["1", "x"])).toBe(2);

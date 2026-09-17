@@ -2,6 +2,7 @@ import { afterEach, describe, it, expect, vi } from "vitest";
 import * as originalResolver from "../shared/replay/resolve.js";
 import { runReplay } from "../shared/replay/engine.js";
 import { makeBgMock, installChrome } from "./helpers/background-mock.js";
+import { readFileSync } from "node:fs";
 
 const origin = "https://app.truecoach.co";
 const cases = [
@@ -53,6 +54,26 @@ const body = {
   next: "private-cursor",
 };
 
+const warningCases = [
+  ...cases.map((scenario) => ({ ...scenario, responses: undefined })),
+  {
+    name: "malformed selected array after a saved batch",
+    pagination: { style: "page" },
+    budgets: {},
+    detail: "some pages were skipped",
+    pages: 2,
+    responses: [body, { items: { private: "private-body" } }],
+  },
+  {
+    name: "malformed cursor after a saved batch",
+    pagination: { style: "cursor", nextPath: ["next"] },
+    budgets: {},
+    detail: "some pages were skipped",
+    pages: 1,
+    responses: [{ ...body, next: { private: "private-cursor" } }],
+  },
+];
+
 afterEach(() => {
   vi.doUnmock("../shared/replay/resolve.js");
   vi.unstubAllGlobals();
@@ -83,9 +104,9 @@ describe("truncated replay preserves reason-specific bounded diagnostics", () =>
     },
   );
 
-  it.each(cases)(
+  it.each(warningCases)(
     "settles and broadcasts accurate $name copy through the real engine",
-    async ({ pagination, budgets, detail, pages }) => {
+    async ({ pagination, budgets, detail, pages, ...scenario }) => {
       vi.resetModules();
       vi.doMock("../shared/replay/resolve.js", () => ({
         ...originalResolver,
@@ -105,7 +126,9 @@ describe("truncated replay preserves reason-specific bounded diagnostics", () =>
         }
         if (value.startsWith(`${origin}/clients`)) {
           sourceCalls.push(value);
-          return Response.json(body);
+          return Response.json(
+            scenario.responses?.[sourceCalls.length - 1] ?? body,
+          );
         }
         if (value === "https://api.tgp.coach/api/scout/ingest/complete") {
           completeBodies.push(JSON.parse(init.body));
@@ -135,7 +158,7 @@ describe("truncated replay preserves reason-specific bounded diagnostics", () =>
         },
         { timeout: 3000 },
       );
-      const expected = `partial import (${detail}) — 1 record(s) imported`;
+      const expected = `partial import (${detail}) — 1 record(s) received. Migration is not complete. Contact TGP support with this warning before retrying.`;
       const snapshot = mock.sent
         .filter((m) => m.kind === "status_snapshot")
         .at(-1);
@@ -153,4 +176,27 @@ describe("truncated replay preserves reason-specific bounded diagnostics", () =>
       );
     },
   );
+});
+
+describe("partial-warning message catalog", () => {
+  it("declares English as Chrome's supported locale fallback with real substitutions", () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL("../manifest.json", import.meta.url), "utf8"),
+    );
+    expect(manifest.default_locale).toBe("en");
+    const { chrome } = makeBgMock();
+    const reason = chrome.i18n.getMessage("replay_partial_incomplete");
+    expect(reason).toBe("incomplete");
+    const message = chrome.i18n.getMessage("replay_partial_summary", [
+      reason,
+      "7",
+    ]);
+    expect(message).toContain("7 record(s) received");
+    expect(message).toContain("Migration is not complete.");
+    expect(message).toContain(
+      "Contact TGP support with this warning before retrying.",
+    );
+    expect(message).not.toMatch(/\$(REASONS|COUNT)\$/);
+    expect(chrome.i18n.getMessage("not_a_supported_key")).toBe("");
+  });
 });

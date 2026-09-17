@@ -70,14 +70,15 @@ describe("runReplay — a clean zero-entity walk reports empty, never complete",
     expect(result.entities).toBe(0);
   });
 
-  it("classifies a drifted response shape (itemsPath no longer resolves) as empty", async () => {
-    // The classic drift: the source renamed `items` to `data`. Every request
-    // is a 200, nothing is malformed, and zero entities come out.
+  it("classifies an unresolved itemsPath as malformed, not genuine emptiness", async () => {
+    // Valid JSON is not proof that the selected list still exists.
     const result = await run(
       vi.fn().mockResolvedValue({ data: [{ id: "a" }, { id: "b" }] }),
     );
-    expect(result.status).toBe("empty");
-    expect(result.degraded).toBe(false);
+    expect(result.status).toBe("failed");
+    expect(result.degraded).toBe(true);
+    expect(result.lastSkipStatus).toBe("malformed");
+    expect(result.entities).toBe(0);
     expect(result.truncated).toBe(false);
   });
 

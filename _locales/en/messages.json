@@ -1,0 +1,30 @@
+{
+  "replay_partial_skipped": {
+    "message": "some pages were skipped",
+    "description": "Partial import reason: malformed responses or exhausted request retries."
+  },
+  "replay_partial_budget": {
+    "message": "reached the import safety limit",
+    "description": "Partial import reason: additional work exceeds a configured safety budget."
+  },
+  "replay_partial_pagination_cycle": {
+    "message": "source pagination repeated a page",
+    "description": "Partial import reason: a page URL was repeated before exhaustion was proved."
+  },
+  "replay_partial_page_ceiling": {
+    "message": "pagination reached the safe page-number ceiling",
+    "description": "Partial import reason: the next page number would exceed the safe integer range."
+  },
+  "replay_partial_incomplete": {
+    "message": "incomplete",
+    "description": "Fallback reason when no recognized partial-import category is present."
+  },
+  "replay_partial_summary": {
+    "message": "partial import ($REASONS$) — $COUNT$ record(s) received. Migration is not complete. Contact TGP support with this warning before retrying.",
+    "description": "Bounded warning and recovery guidance; receiving records does not mean native migration is complete.",
+    "placeholders": {
+      "reasons": { "content": "$1", "example": "some pages were skipped" },
+      "count": { "content": "$2", "example": "12" }
+    }
+  }
+}

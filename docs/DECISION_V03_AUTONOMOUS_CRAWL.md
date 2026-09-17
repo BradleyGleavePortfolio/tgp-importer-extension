@@ -4,6 +4,63 @@
 > chain-of-thought. Companion to `docs/AUTO_DISCOVERY.md` (Layers 1–3) and
 > `docs/DESIGN.md` (§2 flow, §9 pipeline, §10 progress).
 
+## 2026-09-17 pagination boundary repair addendum
+
+The sections below preserve the original staged-delivery decision; their
+"this PR" and deferred-work statements describe that historical rung, not this
+repair candidate.
+
+**Goal and decision.** Preserve accepted records while refusing to equate a
+malformed response, repeated cursor, exhausted budget, or unsafe page progression
+with proven exhaustion. Repair the existing normalizer, traversal, and transport
+seams rather than replace the engine or add a parallel scheduler.
+
+- Minimal warning-only changes were rejected: they leave body hangs and repeated
+  fan-out setup intact. A separate body timer was rejected: resetting the deadline
+  after headers widens `requestTimeoutMs`. Selected: one optional response consumer
+  within `fetchWithTimeout`'s original deadline; raw callers still receive their
+  unconsumed Response. Caller cancellation remains active through body consumption.
+- Remove repeated collected-ID copies: insertion-ordered Sets supply collection
+  and deduplication directly. Check both page budgets before the next fan-out
+  context; reaching a cap on the final required context alone is not truncation.
+- Redirects are rejected by native fetch before following any hop. No extra
+  permission or post-redirect credential-leak check substitutes for this boundary.
+- Keep actual source semantics: absent/null/empty-string response cursors mean
+  exhaustion; safe zero and negative page starts remain valid. Other cursor
+  values must be strings that round-trip through URLSearchParams. This rejects
+  lone surrogates without banning valid Unicode, whitespace, or reserved query text.
+
+**Narrow descriptor contract.** Absent/null pagination keeps its defaults; an
+explicit invalid style, empty/non-string/lossy parameter name, unsafe page start,
+or sparse/invalid cursor path fails before I/O. A cursor path must be a nonempty
+dense array of nonempty strings. `itemsPath` may be empty (root-array selection)
+but must be dense and string-valued. These rules do not universally apply to
+legacy `idField`, `collectAs`, `forEach`, method, or cross-style unused fields.
+
+Budget fields absent/null retain defaults. Explicit nonpositive, fractional,
+nonfinite, or wrong-type values throw before I/O instead of widening a restrictive
+input. Positive integral values above each hard ceiling retain the existing
+default fallback; this repair does not redefine that legacy upper-bound policy.
+
+**Response contract.** A selected non-array or missing item path is malformed,
+not an empty array. Valid earlier batches are retained; existing `degraded` and
+`lastSkipStatus: "malformed"` yield `partial`, or `failed` when no records were
+emitted. Actual empty arrays retain the clean `empty`/completion behavior.
+`truncationReasons` is always an array from the replay producer, containing only
+`budget`, `pagination_cycle`, and/or `page_ceiling`; malformed data uses the existing
+degraded channel, not a new truncation category.
+
+**Warning and proof.** Partial warnings use the extension message catalog;
+`default_locale: "en"` supplies Chrome's supported fallback for untranslated
+locales. The generic `incomplete` catalog reason covers a partial result without
+a recognized category, without fabricating a budget reason. Copy reports records
+received, explicitly says migration is not complete, and asks the coach to contact
+TGP support with the warning before retrying. Tests exercise body streaming,
+native local redirect refusal, lossless query roundtrips, malformed responses,
+exact caps, deterministic fan-out work, and real-engine settlement/broadcast.
+`npm test` explicitly rejects empty selections. No native-migration, real-account,
+release-readiness, or independent-audit approval claim is made by this addendum.
+
 ## DECISION
 
 Ship the **pure, site-agnostic contract + lifecycle** of autonomous multi-page

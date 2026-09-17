@@ -4,6 +4,8 @@
 // surface those touch. Storage is backed by plain Maps so a test can inspect
 // exactly what was persisted and where.
 
+import { readFileSync } from "node:fs";
+
 function eventHub() {
   const set = new Set();
   return {
@@ -56,6 +58,23 @@ export function makeBgMock({ session, tab } = {}) {
   const tabMessages = [];
 
   const chrome = {
+    i18n: {
+      getMessage: (key, substitutions = []) => {
+        const catalog = JSON.parse(
+          readFileSync(
+            new URL("../../_locales/en/messages.json", import.meta.url),
+            "utf8",
+          ),
+        );
+        const entry = catalog[key];
+        if (!entry) return "";
+        return entry.message.replace(/\$(\w+)\$/g, (_match, name) => {
+          const position =
+            Number(entry.placeholders[name.toLowerCase()].content.slice(1)) - 1;
+          return substitutions[position];
+        });
+      },
+    },
     runtime: {
       id: "test-extension-id",
       onInstalled: eventHub().api,

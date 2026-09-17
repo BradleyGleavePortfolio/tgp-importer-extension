@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests=false",
     "check:ratio": "node scripts/check-test-ratio.mjs",
     "check:banned": "node scripts/check-banned.mjs",
     "check:loc": "node scripts/check-prod-loc.mjs",

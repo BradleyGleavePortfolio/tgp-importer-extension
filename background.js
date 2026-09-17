@@ -497,32 +497,35 @@ function makeSourceFetch(sourceToken) {
     if (sourceToken.length > 0) {
       headers.Authorization = `Bearer ${sourceToken}`;
     }
-    const res = await fetchWithTimeout(
+    return fetchWithTimeout(
       fetch,
       url,
-      { method, headers, credentials: "include", signal },
+      { method, headers, credentials: "include", redirect: "error", signal },
       timeoutMs,
+      async (res) => {
+        if (res.status === 401 || res.status === 403) {
+          throw new AuthLostError();
+        }
+        if (!res.ok) {
+          const err = new Error(`source ${res.status}`);
+          err.name = "HttpError";
+          err.status = res.status;
+          // Honour the source's pacing hint (bounded at parse time); unparseable
+          // leaves it undefined and the engine falls back to exponential backoff.
+          const hinted = parseRetryAfterMs(readHeader(res, "Retry-After"));
+          if (hinted !== null) err.retryAfterMs = hinted;
+          throw err;
+        }
+        try {
+          return await res.json();
+        } catch (cause) {
+          if (!(cause instanceof SyntaxError)) throw cause;
+          const err = new Error("source_bad_json");
+          err.name = "MalformedResponseError";
+          throw err;
+        }
+      },
     );
-    if (res.status === 401 || res.status === 403) {
-      throw new AuthLostError();
-    }
-    if (!res.ok) {
-      const err = new Error(`source ${res.status}`);
-      err.name = "HttpError";
-      err.status = res.status;
-      // Honour the source's pacing hint (bounded at parse time); unparseable
-      // leaves it undefined and the engine falls back to exponential backoff.
-      const hinted = parseRetryAfterMs(readHeader(res, "Retry-After"));
-      if (hinted !== null) err.retryAfterMs = hinted;
-      throw err;
-    }
-    try {
-      return await res.json();
-    } catch {
-      const err = new Error("source_bad_json");
-      err.name = "MalformedResponseError";
-      throw err;
-    }
   };
 }
 
@@ -719,19 +722,25 @@ function terminalDetail(result) {
 // response body or PII (a 5xx skip stays diagnosable via lastSkipStatus).
 function partialDetail(result) {
   const parts = [];
-  if (result.degraded === true) parts.push("some pages were skipped");
+  if (result.degraded === true)
+    parts.push(chrome.i18n.getMessage("replay_partial_skipped"));
   if (result.truncated === true) {
-    // Preserve budget copy for older results, but never label a traversal defect a budget.
-    const reasons = result.truncationReasons ?? ["budget"];
+    const reasons = result.truncationReasons;
     if (reasons.includes("budget"))
-      parts.push("reached the import safety limit");
+      parts.push(chrome.i18n.getMessage("replay_partial_budget"));
     if (reasons.includes("pagination_cycle"))
-      parts.push("source pagination repeated a page");
+      parts.push(chrome.i18n.getMessage("replay_partial_pagination_cycle"));
     if (reasons.includes("page_ceiling"))
-      parts.push("pagination reached the safe page-number ceiling");
+      parts.push(chrome.i18n.getMessage("replay_partial_page_ceiling"));
   }
-  const why = parts.length > 0 ? parts.join("; ") : "incomplete";
-  return `partial import (${why}) — ${result.entities} record(s) imported`;
+  const why =
+    parts.length > 0
+      ? parts.join("; ")
+      : chrome.i18n.getMessage("replay_partial_incomplete");
+  return chrome.i18n.getMessage("replay_partial_summary", [
+    why,
+    String(result.entities),
+  ]);
 }
 function failDetail(result) {
   if (result.status === "cancelled") return "import cancelled";

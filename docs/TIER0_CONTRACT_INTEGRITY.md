@@ -6,6 +6,35 @@ here is a correctness fix against contracts that already exist on
 `growth-project-backend` `main`. No new capability, no flag flip, no induction,
 no product-gate change.
 
+## 2026-09-17 pagination boundary correction
+
+The original rung below is historical. The current boundary repair additionally
+distinguishes malformed selected arrays and cursor tokens from valid source
+endings, preserves earlier batches, and carries existing malformed/degraded
+outcomes through partial settlement and the localized recovery warning.
+
+The producer always supplies `truncationReasons: []` or a bounded subset of
+`budget | pagination_cycle | page_ceiling`. Consumers do not guess a missing
+budget reason. Malformed response shapes use `lastSkipStatus: "malformed"` and
+`degraded: true`, not a new wire enum. Source JSON syntax errors keep that category;
+body transport errors retain their original retry/abort category. The one source
+request deadline includes headers and JSON-body consumption; native fetch refuses
+redirects before following them. Raw-response users of the shared wrapper retain
+their original unconsumed response contract.
+
+Reaching a page budget is partial only if another context/page actually needs
+fetching. Collected IDs remain unique and insertion-ordered without per-context
+copies of accumulated child IDs. Explicit malformed restrictive budgets fail
+before I/O; absent/null and oversized positive-integral default semantics remain.
+See the dated addendum in `DECISION_V03_AUTONOMOUS_CRAWL.md` for the precise
+descriptor and response contract and regression matrix.
+
+Partial warning copy is in `_locales/en/messages.json`, with Chrome's
+`default_locale` fallback. It reports received records, explicitly denies native
+migration completion, and directs the coach to contact TGP support with the warning
+before retrying. Catalog translation and terminal settlement do not certify
+native promotion, mapping, or migration success.
+
 ## What was broken
 
 | # | Defect | Consequence |
@@ -222,14 +251,10 @@ blueprint inference (PR-C2) merges.
 - **Distinguishing genuine emptiness from drift.** `empty` says "verify this",
   not "this is drift". Actually deciding requires the drift canary, which is a
   capture/induction concern behind the C1 freeze.
-- **Per-entity emptiness.** `empty` is a whole-run test, so a two-step blueprint
-  where one step still returns records and another's `itemsPath` no longer
-  resolves classifies as `complete`/`success` — a partial drift is invisible.
-  One endpoint changing shape is the *more* common drift mode than all of them
-  changing at once, so this is a real remaining gap, not a theoretical one. It is
-  out of scope here because the honest fix is not a stricter terminal test: a
-  step legitimately yielding zero (a coach with no goals set) is indistinguishable
-  from a drifted step without a prior expectation to compare against. That
+- **Per-entity genuine emptiness.** `empty` remains a whole-run test. A missing or
+  non-array `itemsPath` now marks the run malformed/degraded rather than successful.
+  A valid array containing zero records remains indistinguishable from a
+  legitimately empty source without a prior expectation to compare against. That
   expectation is the drift canary's job — a per-entity baseline from the last
   successful run — which is the same C1-gated capture concern above. The counts
   needed to feed it are now on the wire twice — live in `progress[]` and settled
