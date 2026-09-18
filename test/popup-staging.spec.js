@@ -14,6 +14,7 @@ async function render(snapshot) {
       className: "",
       hidden: false,
       children: [],
+      dataset: {},
       appendChild(child) {
         this.children.push(child);
       },
@@ -27,6 +28,7 @@ async function render(snapshot) {
       return nodes.get(id);
     },
     createElement: node,
+    querySelectorAll: () => [],
   };
   vi.stubGlobal("document", doc);
   const mock = makeBgMock();
@@ -51,7 +53,7 @@ describe("staging is not native migration completion", () => {
       "Transfer staged. Migration is not verified.",
     );
     expect(nodes.get("progress-list").children[0].children[1].textContent).toBe(
-      "12 received: 10 new staged, 2 no new row",
+      "12 confirmed received: 10 newly staged, 2 with no new row.",
     );
     expect(nodes.get("error").hidden).toBe(true);
   });
@@ -65,7 +67,9 @@ describe("staging is not native migration completion", () => {
       },
       progress: [{ entityType: "clients", sent: 4, total: 8 }],
     });
-    expect(nodes.get("status").textContent).toBe("ingest_started");
+    expect(nodes.get("status").textContent).toBe(
+      "Transfer status needs checking",
+    );
     expect(nodes.get("progress-list").children[0].children[1].textContent).toBe(
       "4 / 8",
     );

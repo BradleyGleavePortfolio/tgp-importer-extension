@@ -138,6 +138,12 @@ function makeSender(intent, onAuthLost, tally, staging) {
     const body = JSON.stringify(
       makeScoutIngestBody(intent.intentId, entityType, entities),
     );
+    // One serialized batch is outstanding at a time. This count is NOT proof
+    // of rejection: a missing reply may follow a successful server commit.
+    broadcastStatus({
+      ...currentSnapshot,
+      pendingTransfer: { entityType, count: entities.length },
+    });
     const attempt = async (token) =>
       fetchWithTimeout(
         fetch,
@@ -196,6 +202,7 @@ function makeSender(intent, onAuthLost, tally, staging) {
     broadcastStatus({
       ...currentSnapshot,
       staging: Object.fromEntries(staging),
+      pendingTransfer: null,
     });
   };
 }
@@ -343,7 +350,9 @@ function broadcastStatus(snapshot) {
   };
   void chrome.storage.local.set({ [STORAGE_KEYS.snapshot]: currentSnapshot });
   // Best-effort: the popup may be closed, in which case sendMessage rejects.
-  chrome.runtime.sendMessage(currentSnapshot).catch(() => undefined);
+  chrome.runtime
+    .sendMessage({ ...currentSnapshot, workerActive: importInFlight })
+    .catch(() => logNetworkEvent("status_popup_unavailable"));
 }
 
 function broadcastAuthRequired(message) {
@@ -842,7 +851,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return false;
   }
   if (isRequestStatus(message)) {
-    void rehydrateSnapshot().then(() => sendResponse(currentSnapshot));
+    // Live in-memory work wins over an older asynchronous disk write. Worker
+    // liveness is returned, never persisted as evidence that a run is active.
+    const ready = importInFlight ? Promise.resolve() : rehydrateSnapshot();
+    void ready.then(() =>
+      sendResponse({ ...currentSnapshot, workerActive: importInFlight }),
+    );
     return true; // async response
   }
   if (isRequestSessionState(message)) {
