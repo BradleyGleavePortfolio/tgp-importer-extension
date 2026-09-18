@@ -18,6 +18,8 @@ The result appears before technical intent/platform details. Check status is rea
 
 A recorded run disables the popup's Start button so a casual retry cannot replace its result with a new timestamp intent. This is a presentation safeguard, not server fencing. The existing worker entrypoints and backend authority remain unchanged. A supported new-run/resume action depends on the owned server lifecycle contract, not clearing this guard.
 
+Start is also disabled before initialization completes. Only a sufficiently shaped empty status enables it. Failed or missing initial status keeps Start paused and offers the same read-only Check status action. A status reply that was overtaken by a newer accepted snapshot is ignored, rather than replacing that result or unlocking Start. Malformed snapshots are rejected before display/copy state changes; this local ordering guard is not a server revision or durable concurrency contract.
+
 ## Remaining limits
 
 The local snapshot can be lost and is not an authoritative receipt store. Current session-expiry handling clears the visible run and routes to pairing; account-bound result recovery is not solved here. Old snapshots stay readable but cannot synthesize receipt evidence. Source-account binding, staging identity collisions, atomic completion, durable lost-ACK recovery and native destination verification remain dependencies.

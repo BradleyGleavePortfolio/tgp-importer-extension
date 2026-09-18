@@ -4,6 +4,7 @@
 import { outcomeView } from "./outcome.js";
 
 let latestSnapshot = null;
+let snapshotVersion = 0;
 function el(id) {
   const node = document.getElementById(id);
   if (!node) {
@@ -15,7 +16,26 @@ function isSnapshot(value) {
   if (typeof value !== "object" || value === null) {
     return false;
   }
-  return "kind" in value && value.kind === "status_snapshot";
+  return (
+    value.kind === "status_snapshot" &&
+    (value.intent === null ||
+      (typeof value.intent === "object" &&
+        value.intent !== null &&
+        ["intentId", "platform", "status"].every(
+          (key) => typeof value.intent[key] === "string",
+        ))) &&
+    Array.isArray(value.progress) &&
+    value.progress.every(
+      (row) =>
+        row &&
+        typeof row.entityType === "string" &&
+        Number.isSafeInteger(row.sent) &&
+        row.sent >= 0 &&
+        (row.total === undefined ||
+          (Number.isSafeInteger(row.total) && row.total >= 0)),
+    ) &&
+    (value.lastError == null || typeof value.lastError === "string")
+  );
 }
 function renderProgress(snapshot) {
   const list = el("progress-list");
@@ -44,22 +64,29 @@ function renderProgress(snapshot) {
   }
 }
 function render(snapshot) {
+  if (!isSnapshot(snapshot)) throw new Error("status_unavailable");
+  const view = snapshot.intent
+    ? outcomeView(snapshot, chrome.i18n.getMessage)
+    : null;
   latestSnapshot = snapshot;
+  snapshotVersion += 1;
   const empty = el("empty");
   const detail = el("detail");
   const errorBox = el("error");
   const start = el("start-import");
   start.dataset.outcomeLocked = snapshot.intent ? "true" : "false";
   if ("disabled" in start) start.disabled = Boolean(snapshot.intent);
+  el("outcome-actions").hidden = !snapshot.intent;
+  el("copy-summary").hidden = !snapshot.intent;
   if (!snapshot.intent) {
     empty.hidden = false;
+    empty.textContent = chrome.i18n.getMessage("outcome_ready");
     detail.hidden = true;
   } else {
     empty.hidden = true;
     detail.hidden = false;
     el("intent-id").textContent = snapshot.intent.intentId;
     el("platform").textContent = snapshot.intent.platform;
-    const view = outcomeView(snapshot, chrome.i18n.getMessage);
     el("status").textContent = view.title;
     el("outcome-coverage").textContent = view.coverage;
     el("outcome-native").textContent = view.native;
@@ -151,12 +178,15 @@ export function wireStartImport(
 export function wireOutcomeActions(runtime, doc, clipboard, message, receive) {
   const feedback = doc.getElementById("action-feedback");
   doc.getElementById("check-status").addEventListener("click", async () => {
+    const version = snapshotVersion;
     try {
       const snapshot = await runtime.sendMessage({ kind: "request_status" });
+      if (version !== snapshotVersion) return;
       if (!isSnapshot(snapshot)) throw new Error("status_unavailable");
       receive(snapshot);
       feedback.textContent = message("outcome_checked");
     } catch {
+      if (version !== snapshotVersion) return;
       feedback.textContent = message("outcome_check_failed");
     }
   });
@@ -178,6 +208,12 @@ if (
   chrome.runtime &&
   typeof document !== "undefined"
 ) {
+  const start = el("start-import");
+  start.dataset.outcomeLocked = "true";
+  if ("disabled" in start) start.disabled = true;
+  el("empty").textContent = chrome.i18n.getMessage("outcome_loading");
+  el("outcome-actions").hidden = false;
+  el("copy-summary").hidden = true;
   chrome.runtime.onMessage.addListener((message) => {
     if (isSnapshot(message)) {
       render(message);
@@ -195,15 +231,35 @@ if (
     node.textContent = chrome.i18n.getMessage(node.getAttribute("data-i18n"));
   }
   // Route first: with no session the only path forward is the pairing view.
-  chrome.runtime.sendMessage({ kind: "request_session_state" }, (response) => {
+  const bootstrapVersion = snapshotVersion;
+  const unavailable = () => {
+    if (snapshotVersion === bootstrapVersion) {
+      el("empty").textContent = chrome.i18n.getMessage(
+        "outcome_status_unavailable",
+      );
+    }
+  };
+  const initialRequest = (request, receive) => {
+    try {
+      chrome.runtime.sendMessage(request, receive)?.catch(unavailable);
+    } catch {
+      unavailable();
+    }
+  };
+  initialRequest({ kind: "request_session_state" }, (response) => {
     if (isOk(response) && response.hasSession !== true) {
       window.location.replace("pair.html");
       return;
     }
-    chrome.runtime.sendMessage({ kind: "request_status" }, (snapshot) => {
-      if (isSnapshot(snapshot)) {
-        render(snapshot);
-      }
+    if (snapshotVersion !== bootstrapVersion) return;
+    if (!isOk(response)) {
+      unavailable();
+      return;
+    }
+    initialRequest({ kind: "request_status" }, (snapshot) => {
+      if (snapshotVersion !== bootstrapVersion) return;
+      if (isSnapshot(snapshot)) render(snapshot);
+      else unavailable();
     });
   });
 }

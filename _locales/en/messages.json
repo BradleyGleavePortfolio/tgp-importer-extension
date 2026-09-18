@@ -59,6 +59,15 @@
     "message": "TGP importer: local transfer summary (not verified migration)"
   },
   "outcome_check_button": { "message": "Check status" },
+  "outcome_loading": {
+    "message": "Checking previous transfer. Start is paused until status is known. You can check status again if this takes too long."
+  },
+  "outcome_status_unavailable": {
+    "message": "Could not confirm whether a previous transfer exists. Start remains paused. Use Check status to try again without starting a transfer."
+  },
+  "outcome_ready": {
+    "message": "No recorded transfer. Open your source platform to start."
+  },
   "outcome_copy_button": { "message": "Copy summary" },
   "outcome_details": { "message": "Transfer details" },
   "outcome_checked": {

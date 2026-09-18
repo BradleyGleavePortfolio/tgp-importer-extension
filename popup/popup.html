@@ -68,6 +68,9 @@
         gap: 8px;
         margin-top: 12px;
       }
+      .actions[hidden] {
+        display: none;
+      }
       .actions button {
         flex: 1;
         min-height: 44px;
@@ -146,7 +149,9 @@
   </head>
   <body>
     <h1>TGP Importer</h1>
-    <div id="empty">No active import. Start one from TGP.</div>
+    <div id="empty">
+      Checking previous transfer. Start is paused until status is known.
+    </div>
     <div id="detail" hidden>
       <h2 id="status" role="status" aria-live="polite"></h2>
       <div id="progress-list"></div>
@@ -155,19 +160,6 @@
       <p id="outcome-coverage"></p>
       <p id="outcome-native"></p>
       <p id="outcome-guidance"></p>
-      <div class="actions">
-        <button
-          id="check-status"
-          type="button"
-          data-i18n="outcome_check_button"
-        >
-          Check status
-        </button>
-        <button id="copy-summary" type="button" data-i18n="outcome_copy_button">
-          Copy summary
-        </button>
-      </div>
-      <p id="action-feedback" role="status" aria-live="polite"></p>
       <details>
         <summary data-i18n="outcome_details">Transfer details</summary>
         <div class="row">
@@ -178,8 +170,24 @@
         </div>
       </details>
     </div>
+    <div id="outcome-actions" class="actions">
+      <button id="check-status" type="button" data-i18n="outcome_check_button">
+        Check status
+      </button>
+      <button
+        id="copy-summary"
+        type="button"
+        data-i18n="outcome_copy_button"
+        hidden
+      >
+        Copy summary
+      </button>
+    </div>
+    <p id="action-feedback" role="status" aria-live="polite"></p>
     <div id="error" role="alert" hidden></div>
-    <button id="start-import" type="button">Start Import</button>
+    <button id="start-import" type="button" disabled data-outcome-locked="true">
+      Start Import
+    </button>
     <script type="module" src="popup.js"></script>
   </body>
 </html>
