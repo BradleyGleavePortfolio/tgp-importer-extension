@@ -2,8 +2,7 @@
 
 - [ ] Linked plan/brief:
 - [ ] Pure/inert or user-visible scope stated:
-- [ ] Production LOC against the real PR base is ≤400:
-- [ ] Test:source ratio is ≥2.0:
+- [ ] Acceptance criteria, relevant regression/failure tests, and validation scope stated (canonical G08; no universal LOC or test:source quota):
 
 ## Security and readiness
 
