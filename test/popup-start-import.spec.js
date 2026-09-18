@@ -86,6 +86,41 @@ describe("requestStartImport — posts a start_import for the active tab", () =>
 });
 
 describe("wireStartImport — binds the CTA click to a real send", () => {
+  it.each(["lost reply", "not accepted", "malformed reply", "tab lookup"])(
+    "shows safe recovery guidance for %s and allows status inspection",
+    async (mode) => {
+      const btn = fakeButton();
+      const errorBox = { hidden: true, textContent: "" };
+      const doc = {
+        getElementById: (id) => (id === "error" ? errorBox : btn),
+      };
+      const messages = JSON.parse(
+        readFileSync(join(process.cwd(), "_locales/en/messages.json"), "utf8"),
+      );
+      const runtime = {
+        sendMessage: vi.fn(async () => {
+          if (mode === "lost reply") throw new Error("PRIVATE_SOURCE_TOKEN");
+          return mode === "malformed reply" ? undefined : { ok: false };
+        }),
+      };
+      const tabs = {
+        query: vi.fn(async () => {
+          if (mode === "tab lookup") throw new Error("PRIVATE_SOURCE_URL");
+          return [];
+        }),
+      };
+      wireStartImport(runtime, tabs, doc, (key) => messages[key].message);
+      btn.fire("click");
+      await flush();
+      expect(btn.disabled).toBe(false);
+      expect(errorBox.hidden).toBe(false);
+      expect(errorBox.textContent).toBe(
+        "Start was not confirmed. Check the importer status before trying again.",
+      );
+      expect(errorBox.textContent).not.toContain("PRIVATE");
+    },
+  );
+
   it("clicking sends start_import and toggles the button around the send", async () => {
     const btn = fakeButton();
     const doc = fakeDoc(btn);

@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { makeBgMock, installChrome } from "./helpers/background-mock.js";
+import {
+  makeBgMock,
+  installChrome,
+  acceptedIngest,
+} from "./helpers/background-mock.js";
 import { fakePageStore, realSourceTab } from "./helpers/source-tab.js";
 
 // Adversarial, wiring-layer coverage of the start_import HARDENING findings
@@ -96,7 +100,7 @@ describe("start_import — the source bearer never leaks to any surface", () => 
         };
       if (url === INGEST_URL) {
         ingestBodies.push(init.body);
-        return { ok: true, status: 200 };
+        return acceptedIngest(init);
       }
       if (url === COMPLETE_URL) return { ok: true, status: 200 };
       throw new Error(`unrouted fetch ${url}`);
@@ -131,7 +135,7 @@ describe("start_import — completeIngest must be acknowledged (non-2xx != succe
   it("reports ingest_failed and never broadcasts success when complete returns 500", async () => {
     const { mock } = await load({ session: seeded(), tab: withSourceTab() });
     // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
-    global.fetch.mockImplementation(async (url) => {
+    global.fetch.mockImplementation(async (url, init) => {
       if (url === REFRESH_URL)
         return {
           ok: true,
@@ -152,7 +156,7 @@ describe("start_import — completeIngest must be acknowledged (non-2xx != succe
           status: 200,
           json: async () => ({ notes: [{ id: "n1" }] }),
         };
-      if (url === INGEST_URL) return { ok: true, status: 200 };
+      if (url === INGEST_URL) return acceptedIngest(init);
       if (url === COMPLETE_URL) return { ok: false, status: 500 };
       throw new Error(`unrouted fetch ${url}`);
     });
@@ -176,7 +180,7 @@ describe("start_import — a degraded walk surfaces a DISTINCT partial state", (
     const { mock } = await load({ session: seeded(), tab: withSourceTab() });
     let completeCalls = 0;
     // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
-    global.fetch.mockImplementation(async (url) => {
+    global.fetch.mockImplementation(async (url, init) => {
       if (url === REFRESH_URL)
         return {
           ok: true,
@@ -194,7 +198,7 @@ describe("start_import — a degraded walk surfaces a DISTINCT partial state", (
       // Per-client notes page persistently 500s -> retries exhaust -> the page
       // is SKIPPED (degraded) while the client roster still ingested.
       if (url === NOTES_URL) return { ok: false, status: 500 };
-      if (url === INGEST_URL) return { ok: true, status: 200 };
+      if (url === INGEST_URL) return acceptedIngest(init);
       if (url === COMPLETE_URL) {
         completeCalls += 1;
         return { ok: true, status: 200 };

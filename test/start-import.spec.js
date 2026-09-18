@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { makeBgMock, installChrome } from "./helpers/background-mock.js";
+import {
+  makeBgMock,
+  installChrome,
+  acceptedIngest,
+} from "./helpers/background-mock.js";
 import { fakePageStore, realSourceTab } from "./helpers/source-tab.js";
 
 // Router + orchestration coverage of the start_import path in background.js —
@@ -230,7 +234,7 @@ describe("start_import — end-to-end crawl carries the source bearer", () => {
       }
       if (url === INGEST_URL) {
         ingestBodies.push(JSON.parse(init.body));
-        return { ok: true, status: 200 };
+        return acceptedIngest(init);
       }
       if (url === COMPLETE_URL) {
         completeCalls += 1;

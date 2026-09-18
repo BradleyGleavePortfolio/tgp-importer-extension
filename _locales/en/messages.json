@@ -1,4 +1,28 @@
 {
+  "start_import_unconfirmed": {
+    "message": "Start was not confirmed. Check the importer status before trying again.",
+    "description": "A lost or unsuccessful Start reply does not prove that no work ran."
+  },
+  "replay_staging_counts": {
+    "message": "$RECEIVED$ received: $INSERTED$ new staged, $DEDUPED$ no new row",
+    "description": "Backend staging acknowledgements, not verified native records; no-new-row does not prove correct deduplication.",
+    "placeholders": {
+      "received": { "content": "$1", "example": "12" },
+      "inserted": { "content": "$2", "example": "10" },
+      "deduped": { "content": "$3", "example": "2" }
+    }
+  },
+  "replay_notify_staged": {
+    "message": "Records from $PLATFORM$ were staged in TGP. Migration is not verified. Review the importer status.",
+    "description": "Successful receipt is not proof of native records or complete business migration.",
+    "placeholders": {
+      "platform": { "content": "$1", "example": "truecoach" }
+    }
+  },
+  "replay_status_staged": {
+    "message": "Transfer staged. Migration is not verified.",
+    "description": "Label for legacy ingest_succeeded state; never imply native migration completion."
+  },
   "replay_partial_skipped": {
     "message": "some pages were skipped",
     "description": "Partial import reason: malformed responses or exhausted request retries."

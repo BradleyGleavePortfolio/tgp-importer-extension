@@ -1,7 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { makeBgMock, installChrome } from "./helpers/background-mock.js";
+import {
+  makeBgMock,
+  installChrome,
+  acceptedIngest,
+} from "./helpers/background-mock.js";
 import { fakePageStore, realSourceTab } from "./helpers/source-tab.js";
 
 // End-to-end proof that the GENERIC, site-agnostic replay path reproduces the
@@ -147,7 +151,7 @@ describe("replay TrueCoach e2e — generic engine reproduces the verified contra
       }
       if (url === INGEST_URL) {
         ingestBodies.push(JSON.parse(init.body));
-        return { ok: true, status: 200 };
+        return acceptedIngest(init);
       }
       if (url === COMPLETE_URL) {
         completeCalls += 1;

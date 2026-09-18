@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { makeBgMock, installChrome } from "./helpers/background-mock.js";
+import {
+  makeBgMock,
+  installChrome,
+  acceptedIngest,
+} from "./helpers/background-mock.js";
 
 // Wire-level coverage of the LEGACY `start_ingest` entrypoint's settlement.
 //
@@ -90,7 +94,7 @@ function routeRun(mock, { sourceBodies = {}, ingestStatus = () => 200 } = {}) {
       ingested.push(body);
       // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
       const status = ingestStatus(body);
-      return { ok: status < 300, status };
+      return acceptedIngest(init, status);
     }
     if (url === PROGRESS_URL) {
       progressBodies.push(JSON.parse(init.body));

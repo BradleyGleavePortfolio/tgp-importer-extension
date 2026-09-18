@@ -22,6 +22,7 @@
 //
 // R75: zero banned type-assertions — every narrowing is a real guard.
 import { TGP_API_ORIGIN, makeScoutIngestBody } from "./shared/protocol.js";
+import { readIngestAcknowledgement } from "./shared/ingest-ack.js";
 import {
   establishSession,
   hasActiveSession,
@@ -128,7 +129,7 @@ function isTgpAuthLost(err) {
 
 // POST a batch to /api/scout/ingest with the bearer token (finite timeout).
 // On 401, refresh once and retry. If the retry also 401s, invoke onAuthLost and stop.
-function makeSender(intent, onAuthLost, tally) {
+function makeSender(intent, onAuthLost, tally, staging) {
   return async function sendEntities(entityType, entities) {
     // Entities pass through VERBATIM — each is the camelCase makeEntity()
     // envelope { sourceId, sourcePlatform, capturedAt, payload } that the
@@ -138,14 +139,26 @@ function makeSender(intent, onAuthLost, tally) {
       makeScoutIngestBody(intent.intentId, entityType, entities),
     );
     const attempt = async (token) =>
-      fetchWithTimeout(fetch, `${TGP_API_ORIGIN}/api/scout/ingest`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+      fetchWithTimeout(
+        fetch,
+        `${TGP_API_ORIGIN}/api/scout/ingest`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body,
         },
-        body,
-      });
+        undefined,
+        async (response) => ({
+          ok: response.ok,
+          status: response.status,
+          ack: response.ok
+            ? await readIngestAcknowledgement(response, entities.length)
+            : null,
+        }),
+      );
     let token = await getAccessToken();
     let res = await attempt(token);
     if (res.status === 401) {
@@ -166,8 +179,24 @@ function makeSender(intent, onAuthLost, tally) {
     if (!res.ok) {
       throw new Error(`ingest ${entityType} -> ${res.status}`);
     }
-    // Counted only after the ack, so the tally records what landed.
-    tally?.set(entityType, (tally.get(entityType) ?? 0) + entities.length);
+    // A 2xx alone proves nothing. Only a valid, bounded acknowledgement counts.
+    // These are staging counters, NOT verified native or source-unique records.
+    const { received, deduped } = res.ack;
+    tally.set(entityType, (tally.get(entityType) ?? 0) + received);
+    const previous = staging.get(entityType) ?? {
+      received: 0,
+      inserted: 0,
+      deduped: 0,
+    };
+    staging.set(entityType, {
+      received: previous.received + received,
+      inserted: previous.inserted + received - deduped,
+      deduped: previous.deduped + deduped,
+    });
+    broadcastStatus({
+      ...currentSnapshot,
+      staging: Object.fromEntries(staging),
+    });
   };
 }
 
@@ -328,11 +357,15 @@ function broadcastAuthRequired(message) {
 // The OS notification is often the ONLY surface a coach sees, so it must not say
 // "complete" for an outcome the popup is about to flag.
 const NOTIFY_SUFFIX = {
+  complete: "replay_notify_staged",
   empty: "found no records — check the popup.",
   partial: "finished incomplete — check the popup.",
 };
 function notifyOutcome(platform, engineStatus) {
-  const message = `Import from ${platform} ${NOTIFY_SUFFIX[engineStatus] ?? "complete."}`;
+  const message =
+    engineStatus === "complete"
+      ? chrome.i18n.getMessage(NOTIFY_SUFFIX.complete, [platform])
+      : `Import from ${platform} ${NOTIFY_SUFFIX[engineStatus] ?? "needs review — check the popup."}`;
   chrome.notifications.create({
     type: "basic",
     iconUrl: "popup/icon-128.png",
@@ -385,6 +418,7 @@ async function handleStartIngest(message) {
 
   // The extractor keeps no tally of its own, so the sender keeps one for it.
   const tally = new Map();
+  const staging = new Map();
   const sendEntities = makeSender(
     intent,
     () => {
@@ -392,8 +426,10 @@ async function handleStartIngest(message) {
       broadcastAuthRequired("session expired — please sign in again");
     },
     tally,
+    staging,
   );
-  const wrappedBroadcast = (snap) => broadcastStatus({ ...snap, intent });
+  const wrappedBroadcast = (snap) =>
+    broadcastStatus({ ...currentSnapshot, ...snap, intent });
 
   // The source-platform bearer token (e.g. TrueCoach) is captured in-tab and
   // passed on the start message; the extractor reuses the coach's session.
@@ -608,11 +644,18 @@ async function handleStartImport(message) {
   };
   broadcastStatus({ ...emptySnapshot(), intent, progress: [] });
 
-  const sendEntities = makeSender(intent, () => {
-    // TGP-side auth loss: makeSender already cleared the tokens; route to pairing.
-    controller.abort();
-    broadcastAuthRequired("session expired — please sign in again");
-  });
+  const tally = new Map();
+  const staging = new Map();
+  const sendEntities = makeSender(
+    intent,
+    () => {
+      // TGP-side auth loss: makeSender already cleared the tokens; route to pairing.
+      controller.abort();
+      broadcastAuthRequired("session expired — please sign in again");
+    },
+    tally,
+    staging,
+  );
   // Real source bearer from the coach's own tab; absent -> "" -> fails closed.
   const sourceToken = await collectSourceToken(message.tabId, allowedOrigins);
   const reporter = createProgressReporter({
@@ -693,7 +736,7 @@ async function handleStartImport(message) {
     // TGP session is still good, so the intent must be settled first.
     if (!settlementSent) {
       await reporter.flush(null, detail);
-      await settleFailed(intent, detail);
+      await settleFailed(intent, detail, Object.fromEntries(tally));
     }
     broadcastStatus({
       ...currentSnapshot,
