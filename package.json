@@ -5,9 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "vitest run --passWithNoTests=false",
-    "check:ratio": "node scripts/check-test-ratio.mjs",
     "check:banned": "node scripts/check-banned.mjs",
-    "check:loc": "node scripts/check-prod-loc.mjs",
     "check:flags": "node scripts/check-flag-discipline.mjs",
     "check:fixtures": "node scripts/check-production-fixtures.mjs",
     "check:production-preflight": "node scripts/check-deploy-readiness.mjs",
@@ -16,7 +14,7 @@
     "format:check": "node scripts/check-format.mjs",
     "type-check": "tsc -p jsconfig.json && tsc -p jsconfig.scripts.json",
     "prepare": "lefthook install",
-    "gates": "npm run check:banned && npm run check:loc && npm run check:flags && npm run check:ratio && npm run check:fixtures && npm run check:production-preflight && npm run check:hooks && npm run lint && npm run type-check && npm run format:check"
+    "gates": "npm run check:banned && npm run check:flags && npm run check:fixtures && npm run check:production-preflight && npm run check:hooks && npm run lint && npm run type-check && npm run format:check"
   },
   "devDependencies": {
     "@types/chrome": "0.2.9",

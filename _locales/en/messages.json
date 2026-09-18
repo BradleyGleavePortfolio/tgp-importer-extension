@@ -1,4 +1,87 @@
 {
+  "outcome_running": { "message": "Bringing records across" },
+  "outcome_interrupted": { "message": "Transfer status needs checking" },
+  "outcome_empty": { "message": "No records confirmed" },
+  "outcome_attention": { "message": "Transfer needs attention" },
+  "outcome_source_auth": {
+    "message": "The source sign-in expired or access was denied. Sign in directly on the source platform, then have this result reviewed before another transfer."
+  },
+  "outcome_receipt_invalid": {
+    "message": "TGP did not return a valid transfer receipt. The affected batch needs reconciliation, not a blind retry."
+  },
+  "outcome_settlement_failed": {
+    "message": "The final status could not be confirmed. Earlier transfer receipts are retained below."
+  },
+  "outcome_source_incomplete": {
+    "message": "Some source pages could not be read. Their record counts are unknown."
+  },
+  "outcome_interrupted_detail": {
+    "message": "The transfer stopped before every result could be confirmed. Preserve this summary for review."
+  },
+  "outcome_family_clients": { "message": "Client records" },
+  "outcome_family_notes": { "message": "Notes" },
+  "outcome_family_exercises": { "message": "Exercises" },
+  "outcome_family_workouts": { "message": "Workouts" },
+  "outcome_family_plans": { "message": "Plans" },
+  "outcome_family_records": { "message": "Records" },
+  "outcome_receipt": {
+    "message": "$RECEIVED$ confirmed received: $INSERTED$ newly staged, $DEDUPED$ with no new row.",
+    "placeholders": {
+      "received": { "content": "$1" },
+      "inserted": { "content": "$2" },
+      "deduped": { "content": "$3" }
+    }
+  },
+  "outcome_pending": {
+    "message": "$COUNT$ awaiting confirmation.",
+    "placeholders": { "count": { "content": "$1" } }
+  },
+  "outcome_unconfirmed": {
+    "message": "$COUNT$ unconfirmed. They may already have reached TGP; do not retry blindly.",
+    "placeholders": { "count": { "content": "$1" } }
+  },
+  "outcome_coverage": {
+    "message": "Missing-record count is unknown. Unread pages or unsupported data may contain more records."
+  },
+  "outcome_native": {
+    "message": "These are transfer receipts, not verified clients or history ready to use in TGP."
+  },
+  "outcome_no_receipt": {
+    "message": "No detailed transfer receipts are available. This does not prove that nothing was written."
+  },
+  "outcome_guidance": {
+    "message": "Keep this result. Copy the summary for TGP support before another transfer. Automatic recovery is not available yet."
+  },
+  "outcome_running_guidance": {
+    "message": "Check status to see the latest recorded progress. A new transfer is blocked here to protect this result."
+  },
+  "outcome_summary_heading": {
+    "message": "TGP importer: local transfer summary (not verified migration)"
+  },
+  "outcome_check_button": { "message": "Check status" },
+  "outcome_loading": {
+    "message": "Checking previous transfer. Start is paused until status is known. You can check status again if this takes too long."
+  },
+  "outcome_status_unavailable": {
+    "message": "Could not confirm whether a previous transfer exists. Start remains paused. Use Check status to try again without starting a transfer."
+  },
+  "outcome_ready": {
+    "message": "No recorded transfer. Open your source platform to start."
+  },
+  "outcome_copy_button": { "message": "Copy summary" },
+  "outcome_details": { "message": "Transfer details" },
+  "outcome_checked": {
+    "message": "Local status checked. This does not verify server recovery."
+  },
+  "outcome_check_failed": {
+    "message": "Could not check status. Your last displayed result is unchanged."
+  },
+  "outcome_copied": {
+    "message": "Summary copied. No client details or credentials included."
+  },
+  "outcome_copy_failed": {
+    "message": "Could not copy. You can select and copy the visible result instead."
+  },
   "start_import_unconfirmed": {
     "message": "Start was not confirmed. Check the importer status before trying again.",
     "description": "A lost or unsuccessful Start reply does not prove that no work ran."
