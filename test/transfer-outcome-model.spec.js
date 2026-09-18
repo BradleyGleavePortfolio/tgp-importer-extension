@@ -81,9 +81,8 @@ describe("local transfer evidence projection", () => {
       );
       expect(view.native).toContain("not verified");
       expect(view.coverage).toContain("unknown");
-      expect(view.summary).not.toMatch(
-        /100%|all records|ready to use in TGP\.$/,
-      );
+      expect(view.summary).not.toMatch(/100%|all records/);
+      expect(view.summary).not.toMatch(/ready to use in TGP\.$/);
       expect(view.guidance).toContain("Automatic recovery is not available");
       expect(view.lines[0].unconfirmed).toBe("");
     },
