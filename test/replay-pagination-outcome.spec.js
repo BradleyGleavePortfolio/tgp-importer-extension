@@ -1,7 +1,11 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
 import * as originalResolver from "../shared/replay/resolve.js";
 import { runReplay } from "../shared/replay/engine.js";
-import { makeBgMock, installChrome } from "./helpers/background-mock.js";
+import {
+  makeBgMock,
+  installChrome,
+  acceptedIngest,
+} from "./helpers/background-mock.js";
 import { readFileSync } from "node:fs";
 
 const origin = "https://app.truecoach.co";
@@ -134,10 +138,10 @@ describe("truncated replay preserves reason-specific bounded diagnostics", () =>
           completeBodies.push(JSON.parse(init.body));
           return Response.json({});
         }
-        if (
-          value === "https://api.tgp.coach/api/scout/ingest" ||
-          value === "https://api.tgp.coach/api/scout/progress"
-        ) {
+        if (value === "https://api.tgp.coach/api/scout/ingest") {
+          return acceptedIngest(init);
+        }
+        if (value === "https://api.tgp.coach/api/scout/progress") {
           return Response.json({});
         }
         throw new Error("unexpected test request");

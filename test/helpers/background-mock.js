@@ -164,3 +164,14 @@ export function makeBgMock({ session, tab } = {}) {
 export function installChrome(mock) {
   globalThis.chrome = mock.chrome;
 }
+
+// Match ScoutIngestResult instead of the previous empty-2xx test shortcut.
+export function acceptedIngest(init, status = 202) {
+  return Response.json(
+    {
+      received: JSON.parse(init.body).entities.length,
+      deduped: 0,
+    },
+    { status },
+  );
+}

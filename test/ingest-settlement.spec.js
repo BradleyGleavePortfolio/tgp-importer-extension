@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { makeBgMock, installChrome } from "./helpers/background-mock.js";
+import {
+  makeBgMock,
+  installChrome,
+  acceptedIngest,
+} from "./helpers/background-mock.js";
 import { fakePageStore, realSourceTab } from "./helpers/source-tab.js";
 
 // Wire-level coverage of the settlement path for a run that THREW rather than
@@ -141,7 +145,7 @@ function routeRun(
       return { ok: true, status: 200, json: async () => ({ notes }) };
     }
     if (url === INGEST_URL) {
-      return { ok: ingestStatus < 300, status: ingestStatus };
+      return acceptedIngest(init, ingestStatus);
     }
     if (url === PROGRESS_URL) {
       progressBodies.push(JSON.parse(init.body));

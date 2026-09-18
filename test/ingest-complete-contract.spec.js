@@ -1,5 +1,9 @@
 import { describe, it, expect, vi } from "vitest";
-import { makeBgMock, installChrome } from "./helpers/background-mock.js";
+import {
+  makeBgMock,
+  installChrome,
+  acceptedIngest,
+} from "./helpers/background-mock.js";
 import { fakePageStore, realSourceTab } from "./helpers/source-tab.js";
 
 // Wire-level coverage of what background.js actually POSTs to
@@ -106,7 +110,7 @@ function routeRun(mock, { clients, notes = [], sourceStatus = 200 } = {}) {
       return { ok: true, status: 200, json: async () => ({ notes }) };
     }
     if (url === INGEST_URL) {
-      return { ok: true, status: 200 };
+      return acceptedIngest(init);
     }
     if (url === PROGRESS_URL) {
       progressBodies.push(JSON.parse(init.body));
@@ -322,13 +326,17 @@ describe("outcome notification — the most visible surface must not overclaim",
     expect(message).toMatch(/no records/);
   });
 
-  it("still says complete for a genuinely clean populated walk", async () => {
+  it("says staged, not migration complete, for a clean populated walk", async () => {
     const mock = await load(withSourceTab());
     // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     routeRun(mock, { clients: [{ id: "c1" }] });
     await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
     expect(await settle(mock)).toBe("ingest_succeeded");
-    expect(mock.notifications.at(-1).message).toMatch(/complete/);
+    expect(mock.notifications.at(-1).message).toContain("were staged in TGP");
+    expect(mock.notifications.at(-1).message).toContain(
+      "Migration is not verified",
+    );
+    expect(mock.notifications.at(-1).message).not.toContain("complete.");
   });
 
   it("raises no notification at all on a failed walk", async () => {
