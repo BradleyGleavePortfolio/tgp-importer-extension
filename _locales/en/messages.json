@@ -1,4 +1,8 @@
 {
+  "start_import_unconfirmed": {
+    "message": "Start was not confirmed. Check the importer status before trying again.",
+    "description": "A lost or unsuccessful Start reply does not prove that no work ran."
+  },
   "replay_staging_counts": {
     "message": "$RECEIVED$ received: $INSERTED$ new staged, $DEDUPED$ no new row",
     "description": "Backend staging acknowledgements, not verified native records; no-new-row does not prove correct deduplication.",

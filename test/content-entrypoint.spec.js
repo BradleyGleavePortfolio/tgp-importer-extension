@@ -46,6 +46,28 @@ function boot(overrides = {}) {
 }
 
 describe("manifest content script entrypoint", () => {
+  it("keeps the credential listener available after a failed announcement without logging secrets", async () => {
+    const listeners = [];
+    const warn = vi.fn();
+    const runtime = {
+      id: "this-extension",
+      onMessage: { addListener: (listener) => listeners.push(listener) },
+      sendMessage: vi.fn(async () => {
+        throw new Error("PRIVATE_SOURCE_TOKEN");
+      }),
+    };
+    boot({ chrome: { runtime }, console: { warn } });
+    await Promise.resolve();
+    expect(listeners).toHaveLength(1);
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      JSON.stringify({
+        src: "tgp-importer",
+        event: "source_tab_announcement_failed",
+      }),
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain("PRIVATE");
+  });
+
   it("loads as a classic script and registers the live credential producer", () => {
     const page = boot({
       localStorage: fakePageStore([["auth", "one.two.three"]]),

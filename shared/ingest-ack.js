@@ -1,3 +1,5 @@
+import { logNetworkEvent } from "./log.js";
+
 // The current backend acknowledges an accepted envelope, not a native migration.
 // Bound body bytes as well as time (the caller owns the request deadline).
 const MAX_ACK_BYTES = 4096;
@@ -32,7 +34,10 @@ export async function readIngestAcknowledgement(response, expected) {
     return { received: ack.received, deduped: ack.deduped };
   } catch {
     // Never echo response bytes, parser errors or transport diagnostics.
-    if (reader) void reader.cancel().catch(() => undefined);
+    if (reader)
+      void reader.cancel().catch(() => {
+        logNetworkEvent("ingest_ack_cancel_failed");
+      });
     throw new Error("ingest_ack_invalid");
   } finally {
     if (reader) reader.releaseLock();

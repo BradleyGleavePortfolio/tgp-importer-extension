@@ -46,5 +46,14 @@
   });
   runtime
     .sendMessage({ kind: "platform_tab_live", url: location.href })
-    .catch(() => undefined);
+    .catch(() => {
+      // This classic entrypoint cannot import the module logger. Emit only a
+      // fixed event, never a page URL, storage value or runtime error.
+      console.warn(
+        JSON.stringify({
+          src: "tgp-importer",
+          event: "source_tab_announcement_failed",
+        }),
+      );
+    });
 })();

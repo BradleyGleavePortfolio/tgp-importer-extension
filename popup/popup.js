@@ -88,16 +88,35 @@ export function requestStartImport(runtime, tabs) {
 // Wire the Start Import CTA. Disables the button while the send is in flight so a
 // double-click cannot fire two messages (the worker also enforces single-flight);
 // re-enables on settle. Exported + injected so a test drives the real handler.
-export function wireStartImport(runtime, tabs, doc) {
+export function wireStartImport(
+  runtime,
+  tabs,
+  doc,
+  getMessage = (key) => chrome.i18n.getMessage(key),
+) {
   const btn = doc.getElementById("start-import");
   if (!btn) {
     return;
   }
+  function showUnconfirmedStart() {
+    const errorBox = doc.getElementById("error");
+    if (errorBox) {
+      errorBox.hidden = false;
+      errorBox.textContent = getMessage("start_import_unconfirmed");
+    }
+  }
   btn.addEventListener("click", () => {
     btn.disabled = true;
     requestStartImport(runtime, tabs)
-      .catch(() => undefined)
-      .then(() => {
+      .then((response) => {
+        if (!isOk(response)) showUnconfirmedStart();
+      })
+      .catch(() => {
+        // A lost reply is not proof that Start was rejected or that no records
+        // were written. Do not encourage a blind retry or expose the error.
+        showUnconfirmedStart();
+      })
+      .finally(() => {
         btn.disabled = false;
       });
   });
