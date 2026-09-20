@@ -62,6 +62,20 @@ function locateChrome() {
   return candidates.at(-1) ?? null;
 }
 
+// The packager writes `<zip>.inventory.json` beside the archive with the source
+// head and per-file hashes; carry its identity block into the evidence so the
+// proof is bound to the exact candidate, not just to bytes.
+function readInventory(zipPath) {
+  const path = zipPath.replace(/\.zip$/, ".inventory.json");
+  if (!existsSync(path)) return null;
+  const inventory = JSON.parse(readFileSync(path, "utf8"));
+  return {
+    path,
+    source: inventory.source ?? null,
+    zipSha256: inventory.zip?.sha256 ?? null,
+  };
+}
+
 // ---- CDP over --remote-debugging-pipe (fd 3 in, fd 4 out) --------------------
 
 function connectPipe(child) {
@@ -126,6 +140,30 @@ function waitFor(predicate, timeoutMs, label) {
     };
     tick();
   });
+}
+
+/**
+ * Evaluate `expression` in a session and return its JSON-serialisable value,
+ * surfacing thrown exceptions and undefined results instead of hiding them.
+ * @param {{ send: (method: string, params?: object, sessionId?: string) => Promise<any> }} cdp
+ */
+async function evaluate(cdp, sessionId, expression, awaitPromise = false) {
+  const result = await cdp.send(
+    "Runtime.evaluate",
+    { expression, returnByValue: true, awaitPromise },
+    sessionId,
+  );
+  if (result.exceptionDetails) {
+    throw new Error(
+      `evaluate failed: ${result.exceptionDetails.text} ${result.exceptionDetails.exception?.description ?? ""}`,
+    );
+  }
+  if (result.result?.value === undefined) {
+    throw new Error(
+      `evaluate returned no value: ${JSON.stringify(result).slice(0, 400)}`,
+    );
+  }
+  return result.result.value;
 }
 
 // ---- synthetic source origin --------------------------------------------------
@@ -238,6 +276,8 @@ async function main() {
   const consoleLines = [];
   /** @type {{ target: string, text: string }[]} */
   const exceptions = [];
+  /** @type {string[]} */
+  const attemptedUrls = [];
 
   const child = spawn(
     chrome,
@@ -280,6 +320,8 @@ async function main() {
         target: event.sessionId ?? "browser",
         text: `${details.text} ${details.exception?.description ?? ""} @${details.url ?? ""}:${details.lineNumber}`,
       });
+    } else if (event.method === "Network.requestWillBeSent") {
+      attemptedUrls.push(String(event.params.request?.url ?? ""));
     } else if (event.method === "Runtime.consoleAPICalled") {
       consoleLines.push(
         event.params.args
@@ -289,19 +331,29 @@ async function main() {
     }
   });
 
+  /** @type {Record<string, unknown> | undefined} */
   let evidence;
+  /** @type {string | undefined} */
+  let abortError;
   try {
     const version = await cdp.send("Browser.getVersion");
     await cdp.send("Target.setDiscoverTargets", { discover: true });
+    // Select OUR worker by the manifest's declared service worker path; Chrome
+    // also runs component extensions with their own service workers.
+    const shippedManifest = JSON.parse(
+      readFileSync(join(extensionDir, "manifest.json"), "utf8"),
+    );
+    const workerPath = `/${shippedManifest.background.service_worker}`;
     const worker = await waitFor(
       () =>
         [...targets.values()].find(
           (target) =>
             target.type === "service_worker" &&
-            target.url.startsWith("chrome-extension://"),
+            target.url.startsWith("chrome-extension://") &&
+            new URL(target.url).pathname === workerPath,
         ),
       20_000,
-      "extension service worker target",
+      `extension service worker target for ${workerPath}`,
     );
     const extensionId = new URL(worker.url).host;
     const workerSession = (
@@ -311,28 +363,23 @@ async function main() {
       })
     ).sessionId;
     await cdp.send("Runtime.enable", {}, workerSession);
-    const manifestResult = await cdp.send(
-      "Runtime.evaluate",
-      {
-        expression:
-          "JSON.stringify({ id: chrome.runtime.id, version: chrome.runtime.getManifest().version, versionName: chrome.runtime.getManifest().version_name, listeners: chrome.runtime.onMessage.hasListeners() })",
-        returnByValue: true,
-      },
-      workerSession,
+    const workerState = JSON.parse(
+      await evaluate(
+        cdp,
+        workerSession,
+        "JSON.stringify({ id: chrome.runtime.id, name: chrome.runtime.getManifest().name, version: chrome.runtime.getManifest().version, versionName: chrome.runtime.getManifest().version_name, worker: chrome.runtime.getManifest().background?.service_worker, listeners: chrome.runtime.onMessage.hasListeners() })",
+      ),
     );
-    const workerState = JSON.parse(manifestResult.result.value);
-    const shippedManifest = JSON.parse(
-      readFileSync(join(extensionDir, "manifest.json"), "utf8"),
-    );
-    check("service worker evaluated from the package", true, {
-      workerUrl: worker.url,
-      extensionId,
-    });
     check(
-      "worker manifest matches shipped manifest",
-      workerState.version === shippedManifest.version &&
+      "attached worker is the packaged extension (id, URL path and manifest identity agree)",
+      workerState.id === extensionId &&
+        new URL(worker.url).host === extensionId &&
+        new URL(worker.url).pathname === workerPath &&
+        workerState.worker === shippedManifest.background.service_worker &&
+        workerState.name === shippedManifest.name &&
+        workerState.version === shippedManifest.version &&
         workerState.versionName === shippedManifest.version_name,
-      workerState,
+      { workerUrl: worker.url, extensionId, workerState },
     );
     check(
       "worker registered its message router",
@@ -352,26 +399,32 @@ async function main() {
     ).sessionId;
     await cdp.send("Runtime.enable", {}, popupSession);
     await cdp.send("Page.enable", {}, popupSession);
-    await waitFor(
-      () => targets.get(popupTarget.targetId)?.url.includes("popup.html"),
+    // Fresh profile => no paired session. The truthful popup behaviour is:
+    // popup.js loads its module graph, asks the worker for session state, and
+    // redirects to pair.html, whose module graph renders the pairing form.
+    const pairUrl = `chrome-extension://${extensionId}/popup/pair.html`;
+    const redirected = await waitFor(
+      () => targets.get(popupTarget.targetId)?.url === pairUrl || null,
       10_000,
-      "popup target",
+      "popup redirect to pair.html",
+    ).catch(() => false);
+    const popup = JSON.parse(
+      await evaluate(
+        cdp,
+        popupSession,
+        "new Promise((ok) => { const done = () => ok(JSON.stringify({ href: location.href, ready: document.readyState, pairForm: Boolean(document.getElementById('pair-form')), code: Boolean(document.getElementById('code')), start: Boolean(document.getElementById('start-import')) })); if (document.readyState === 'complete') done(); else window.addEventListener('load', done); })",
+        true,
+      ),
     );
-    const popupState = await cdp.send(
-      "Runtime.evaluate",
-      {
-        expression:
-          "new Promise((ok) => { const done = () => ok(JSON.stringify({ ready: document.readyState, start: Boolean(document.getElementById('start-import')), title: document.title })); if (document.readyState === 'complete') done(); else window.addEventListener('load', done); })",
-        awaitPromise: true,
-        returnByValue: true,
-      },
-      popupSession,
-    );
-    const popup = JSON.parse(popupState.result.value);
     check(
-      "popup page loaded its module graph",
-      popup.ready === "complete" && popup.start === true,
-      popup,
+      "popup loaded, learned there is no session, and redirected to the pairing view",
+      redirected === true &&
+        popup.href === pairUrl &&
+        popup.ready === "complete" &&
+        popup.pairForm === true &&
+        popup.code === true &&
+        popup.start === false,
+      { redirected, popup },
     );
 
     // Synthetic source tab: content script must execute in an isolated world.
@@ -397,6 +450,9 @@ async function main() {
     });
     await cdp.send("Runtime.enable", {}, pageSession);
     await cdp.send("Page.enable", {}, pageSession);
+    await cdp.send("Network.enable", {}, pageSession);
+    await cdp.send("Network.enable", {}, workerSession);
+    await cdp.send("Network.enable", {}, popupSession);
     await cdp.send(
       "Page.navigate",
       { url: `https://${SOURCE_HOST}/clients` },
@@ -421,10 +477,11 @@ async function main() {
     // Boundary: the worker asks the tab for the source credential; the reply
     // must carry exactly the synthetic token, and nothing else may see it.
     const collect = async (expected) => {
-      const result = await cdp.send(
-        "Runtime.evaluate",
-        {
-          expression: `(async () => {
+      return JSON.parse(
+        await evaluate(
+          cdp,
+          workerSession,
+          `(async () => {
             const tabs = await chrome.tabs.query({ url: "https://${SOURCE_HOST}/*" });
             if (tabs.length !== 1) return JSON.stringify({ tabs: tabs.length });
             const deadline = Date.now() + 8000;
@@ -440,12 +497,9 @@ async function main() {
             }
             return JSON.stringify({ tabs: 1, reply: last });
           })()`,
-          awaitPromise: true,
-          returnByValue: true,
-        },
-        workerSession,
+          true,
+        ),
       );
-      return JSON.parse(result.result.value);
     };
     const withToken = await collect(true);
     check(
@@ -477,33 +531,61 @@ async function main() {
       { ok: withoutToken.reply?.ok, thrown: withoutToken.reply?.thrown },
     );
 
-    const storage = await cdp.send(
-      "Runtime.evaluate",
-      {
-        expression:
-          "Promise.all([chrome.storage.local.get(null), chrome.storage.session.get(null)]).then((all) => JSON.stringify(all))",
-        awaitPromise: true,
-        returnByValue: true,
-      },
-      workerSession,
+    const persisted = JSON.parse(
+      await evaluate(
+        cdp,
+        workerSession,
+        `(async () => {
+          const out = { storageType: typeof chrome.storage, apis: Object.keys(chrome).sort() };
+          if (chrome.storage) {
+            out.local = await chrome.storage.local.get(null);
+            out.session = await chrome.storage.session.get(null);
+          }
+          return JSON.stringify(out);
+        })()`,
+        true,
+      ),
     );
-    const persisted = storage.result.value;
+    const persistedText = JSON.stringify([persisted.local, persisted.session]);
+    check(
+      "chrome.storage is bound in the worker (storage permission honoured)",
+      persisted.storageType === "object",
+      { storageType: persisted.storageType, apis: persisted.apis },
+    );
     check(
       "synthetic token never reaches extension storage or console output",
-      !persisted.includes(SYNTHETIC_TOKEN) &&
+      !persistedText.includes(SYNTHETIC_TOKEN) &&
         !consoleLines.some((line) => line.includes(SYNTHETIC_TOKEN)) &&
         !exceptions.some((entry) => entry.text.includes(SYNTHETIC_TOKEN)),
-      { storageKeys: Object.keys(JSON.parse(persisted)[0] ?? {}) },
+      { storageKeys: Object.keys(persisted.local ?? {}) },
     );
     check(
       "no runtime exceptions in worker, popup or content script",
       exceptions.length === 0,
       exceptions,
     );
+    const attemptedHosts = [
+      ...new Set(
+        attemptedUrls.map((url) => {
+          try {
+            const parsed = new URL(url);
+            return parsed.protocol === "chrome-extension:"
+              ? parsed.protocol
+              : parsed.host;
+          } catch {
+            return url;
+          }
+        }),
+      ),
+    ].sort();
     check(
-      "only the synthetic origin was contacted",
-      origin.requests.every((request) => request.host === SOURCE_HOST),
-      origin.requests,
+      "every network request observed on page, popup and worker sessions targeted the synthetic host or the extension origin (all other hosts resolve NOTFOUND by resolver rule)",
+      attemptedHosts.length > 0 &&
+        attemptedHosts.every(
+          (host) => host === SOURCE_HOST || host === "chrome-extension:",
+        ) &&
+        origin.requests.every((request) => request.host === SOURCE_HOST),
+      { attemptedHosts, served: origin.requests },
     );
 
     evidence = {
@@ -512,7 +594,21 @@ async function main() {
         : "browser-load-proof",
       generatedAt: new Date().toISOString(),
       chrome: { path: chrome, ...version },
-      package: { path: zipPath, sha256: zipSha256, bytes: zip.length },
+      package: {
+        path: zipPath,
+        sha256: zipSha256,
+        bytes: zip.length,
+        inventory: readInventory(zipPath),
+      },
+      mutation: negativeControl
+        ? {
+            file: "content/main.js",
+            appended: 'export const readSourceBearer = () => "";',
+            sha256AfterMutation: sha256(
+              readFileSync(join(extensionDir, "content", "main.js")),
+            ),
+          }
+        : null,
       extensionId,
       isolation: {
         hostResolverRules: `MAP ${SOURCE_HOST} 127.0.0.1, MAP * ~NOTFOUND`,
@@ -523,6 +619,8 @@ async function main() {
       consoleLines,
       exceptions,
     };
+  } catch (error) {
+    abortError = error instanceof Error ? error.stack : String(error);
   } finally {
     child.kill("SIGKILL");
     origin.server.close();
@@ -534,11 +632,16 @@ async function main() {
       package: { sha256: zipSha256 },
       checks,
       exceptions,
+      abortError,
       stderr: stderrLines.slice(-20),
     };
   }
   writeFileSync(outPath, `${JSON.stringify(evidence, null, 2)}\n`);
   const failed = checks.filter((entry) => !entry.pass);
+  if (abortError) {
+    process.stderr.write(`browser load proof aborted: ${abortError}\n`);
+    failed.push({ name: "aborted", pass: false, detail: abortError });
+  }
   for (const entry of checks) {
     process.stdout.write(`${entry.pass ? "PASS" : "FAIL"} ${entry.name}\n`);
   }
@@ -546,16 +649,46 @@ async function main() {
     `package sha256 ${zipSha256}; evidence ${outPath}; ${failed.length} failed\n`,
   );
   if (negativeControl) {
-    // The control must FAIL the content-script checks; otherwise the proof is vacuous.
-    const detected = failed.some((entry) =>
-      /content script isolated world|collects the synthetic source token|no runtime exceptions/.test(
-        entry.name,
+    // The control must fail in the SPECIFIC way a classic script with module
+    // syntax fails in Chrome: the content script never registers its listener,
+    // so the worker's collect gets no receiver. Unrelated failures (worker,
+    // popup, storage, network) must still pass, or the control is not a control.
+    const byName = new Map(checks.map((entry) => [entry.name, entry]));
+    const collect = byName.get(
+      "worker collects the synthetic source token over the internal message boundary",
+    );
+    const collectDetail =
+      /** @type {{ tabs?: number, thrown?: string, ok?: boolean }} */ (
+        collect?.detail ?? {}
+      );
+    const noReceiver =
+      collect?.pass === false &&
+      collectDetail.tabs === 1 &&
+      typeof collectDetail.thrown === "string" &&
+      /Receiving end does not exist|Could not establish connection/.test(
+        collectDetail.thrown,
+      );
+    const syntaxSeen = exceptions.some((entry) =>
+      /Unexpected token 'export'|Cannot use import statement|export/.test(
+        entry.text,
       ),
     );
+    const unrelatedFailures = failed.filter(
+      (entry) =>
+        !/collects the synthetic source token|honest \{ ok: false \}|no runtime exceptions|content script isolated world/.test(
+          entry.name,
+        ),
+    );
+    const detected = noReceiver && unrelatedFailures.length === 0;
+    evidence.negativeControl = {
+      detected,
+      noReceiver,
+      syntaxExceptionSeen: syntaxSeen,
+      unrelatedFailures: unrelatedFailures.map((entry) => entry.name),
+    };
+    writeFileSync(outPath, `${JSON.stringify(evidence, null, 2)}\n`);
     process.stdout.write(
-      detected
-        ? "negative control: broken classic content script was detected\n"
-        : "negative control: defect NOT detected — proof is vacuous\n",
+      `negative control: ${detected ? "DETECTED" : "NOT DETECTED"} — noReceiver=${noReceiver} syntaxExceptionSeen=${syntaxSeen} unrelatedFailures=${unrelatedFailures.length}\n`,
     );
     process.exit(detected ? 0 : 1);
   }

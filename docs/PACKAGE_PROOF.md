@@ -17,12 +17,20 @@ in `content/main.js`) as a negative case.
 `npm run proof:browser` loads the built archive into an isolated local Chrome
 (throwaway profile, all DNS mapped to NOTFOUND except a synthetic
 `app.truecoach.co` served by a local TLS server pinned by SPKI for that process)
-and checks via the DevTools pipe that the module service worker evaluates, the
-popup module graph loads, the classic content script runs on the synthetic
-origin, `collect_source_token` returns the synthetic token or `{ ok: false }`,
-and the token never appears in storage or console output.
+and checks via the DevTools pipe that the worker it binds to IS the packaged
+extension (worker URL path, `chrome.runtime.id`, manifest name/version agree
+with the shipped manifest — Chrome also runs its own component-extension
+workers, which must never be mistaken for ours), that the popup loads, learns
+there is no paired session and redirects to the pairing view (the truthful
+fresh-profile state), that the classic content script runs on the synthetic
+origin, that `collect_source_token` returns the synthetic token or `{ ok: false }`,
+that the token never appears in storage or console output, and that every
+observed network request targeted the synthetic host or the extension origin.
+Evidence JSON carries the archive sha256 and the inventory's source head.
 `npm run proof:browser:control` re-runs with the historical defect re-applied
-and must report the defect detected. Both need a Chrome binary (`TGP_CHROME`
+and passes only when the failure has the specific no-receiver signature
+(`chrome.tabs.sendMessage` finds no listener in the tab) while every unrelated
+check still passes. Both need a Chrome binary (`TGP_CHROME`
 or a Playwright `chromium-*` cache); without one they exit 2 with an explicit
 gap. Passing is a loader and boundary proof, not evidence that a customer
 import completed.

@@ -394,13 +394,24 @@ function extractorFor(platform, deps) {
   return null;
 }
 
+// Persisted/displayed error text carries the tab ORIGIN only: a full source URL
+// can name a client in its path or query, and lastError is written to
+// chrome.storage.local and rendered in the popup.
+function describedOrigin(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "(invalid url)";
+  }
+}
+
 async function handleStartIngest(message) {
   const url = typeof message.url === "string" ? message.url : "";
   const platform = detectPlatform(url);
   if (platform === null) {
     broadcastStatus({
       ...emptySnapshot(),
-      lastError: `unsupported site: ${url}`,
+      lastError: `unsupported site: ${describedOrigin(url)}`,
     });
     return;
   }
@@ -610,7 +621,7 @@ async function handleStartImport(message) {
   if (platform === null) {
     broadcastStatus({
       ...emptySnapshot(),
-      lastError: `unsupported site: ${url}`,
+      lastError: `unsupported site: ${describedOrigin(url)}`,
     });
     return;
   }
@@ -618,7 +629,7 @@ async function handleStartImport(message) {
   if (allowedOrigins === null) {
     broadcastStatus({
       ...emptySnapshot(),
-      lastError: `unsafe import origin: ${url}`,
+      lastError: `unsafe import origin: ${describedOrigin(url)}`,
     });
     return;
   }
@@ -885,6 +896,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true; // async response
   }
   if (isStartIngest(message)) {
+    // Legacy entrypoint accepts a caller-supplied token/url: same trusted-page
+    // gate as start_import, so a content-script principal cannot drive it.
+    if (!isTrustedExtensionPage(sender)) {
+      sendResponse({ ok: false, error: "untrusted_sender" });
+      return false;
+    }
     // Shared single-flight (see importInFlight): reject a second concurrent run.
     if (importInFlight) {
       sendResponse({ ok: false, error: "import_in_progress" });
@@ -916,6 +933,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     sendResponse({ ok: true });
     return false;
+  }
+  if (isStartCapture(message) || isStopCapture(message)) {
+    // chrome.debugger attach/detach and captured entries are for this
+    // extension's own pages only, never a content-script principal.
+    if (!isTrustedExtensionPage(sender)) {
+      sendResponse({ ok: false, error: "untrusted_sender" });
+      return false;
+    }
   }
   if (isStartCapture(message)) {
     const tabId = readTabId(message);
