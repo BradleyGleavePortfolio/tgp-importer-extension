@@ -166,6 +166,33 @@ async function evaluate(cdp, sessionId, expression, awaitPromise = false) {
   return result.result.value;
 }
 
+/**
+ * Poll an async predicate every 250 ms until it returns a truthy value or
+ * `timeoutMs` elapses; returns null on timeout (never throws) so the caller
+ * can record the last observed state.
+ * @template T
+ * @param {() => Promise<T | null>} predicate
+ * @param {number} timeoutMs
+ * @returns {Promise<T | null>}
+ */
+async function waitForAsync(predicate, timeoutMs) {
+  const started = Date.now();
+  for (;;) {
+    let value = null;
+    try {
+      value = await predicate();
+    } catch (error) {
+      value = null;
+      lastPollError = error instanceof Error ? error.message : String(error);
+    }
+    if (value) return value;
+    if (Date.now() - started > timeoutMs) return null;
+    await new Promise((ok) => setTimeout(ok, 250));
+  }
+}
+/** @type {string | null} */
+let lastPollError = null;
+
 // ---- synthetic source origin --------------------------------------------------
 
 function makeCertificate(dir) {
@@ -278,6 +305,8 @@ async function main() {
   const exceptions = [];
   /** @type {string[]} */
   const attemptedUrls = [];
+  /** @type {Record<string, unknown>} */
+  const progress = {};
 
   const child = spawn(
     chrome,
@@ -363,6 +392,25 @@ async function main() {
       })
     ).sessionId;
     await cdp.send("Runtime.enable", {}, workerSession);
+    progress.worker = { url: worker.url, targetId: worker.targetId };
+    // Attaching on target discovery can precede the worker's extension
+    // bindings and the module graph's top-level evaluation. Poll until the
+    // runtime binding exists and the router has registered (or time out with
+    // the last observed state so a failure here is diagnosable).
+    const readiness = await waitForAsync(async () => {
+      const state = await evaluate(
+        cdp,
+        workerSession,
+        "JSON.stringify({ hasChrome: typeof chrome !== 'undefined', hasRuntime: typeof chrome !== 'undefined' && typeof chrome.runtime === 'object' && typeof chrome.runtime.id === 'string', listeners: typeof chrome !== 'undefined' && typeof chrome.runtime === 'object' && typeof chrome.runtime.onMessage === 'object' ? chrome.runtime.onMessage.hasListeners() : false })",
+      ).then((value) => JSON.parse(value));
+      progress.workerReadiness = state;
+      return state.hasRuntime && state.listeners ? state : null;
+    }, 15_000);
+    check(
+      "worker runtime bindings present and message router registered within 15s",
+      readiness !== null,
+      progress.workerReadiness,
+    );
     const workerState = JSON.parse(
       await evaluate(
         cdp,
@@ -633,7 +681,9 @@ async function main() {
       checks,
       exceptions,
       abortError,
-      stderr: stderrLines.slice(-20),
+      progress,
+      lastPollError,
+      stderr: stderrLines.filter((line) => !line.includes("dbus")).slice(-20),
     };
   }
   writeFileSync(outPath, `${JSON.stringify(evidence, null, 2)}\n`);
