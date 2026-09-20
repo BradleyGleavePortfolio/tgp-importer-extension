@@ -9,7 +9,8 @@
     "skipLibCheck": true,
     "target": "ES2022",
     "paths": {
-      "punycode": ["types/punycode.d.ts"]
+      "punycode": ["types/punycode.d.ts"],
+      "string_decoder": ["types/punycode.d.ts"]
     }
   },
   "include": [

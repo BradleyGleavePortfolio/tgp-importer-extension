@@ -14,6 +14,9 @@
     "format:check": "node scripts/check-format.mjs",
     "type-check": "tsc -p jsconfig.json && tsc -p jsconfig.scripts.json",
     "prepare": "lefthook install",
+    "package": "node scripts/package-extension.mjs",
+    "proof:browser": "node scripts/browser-load-proof.mjs --zip dist/tgp-importer-extension-0.3.0-rc.1.zip --out dist/browser-load-proof.json",
+    "proof:browser:control": "node scripts/browser-load-proof.mjs --negative-control --zip dist/tgp-importer-extension-0.3.0-rc.1.zip --out dist/browser-load-proof.negative-control.json",
     "gates": "npm run check:banned && npm run check:flags && npm run check:fixtures && npm run check:production-preflight && npm run check:hooks && npm run lint && npm run type-check && npm run format:check"
   },
   "devDependencies": {
