@@ -14,8 +14,12 @@
 // if the backend contract is ever pulled.
 //
 // R75: zero banned type-assertions — every narrowing is a real guard.
-import { TGP_API_ORIGIN, PAIRING_ENABLED, PAIR_REDEEM_PATH } from "./protocol.js";
-import { fetchWithTimeout, isTimeout } from "./net.js";
+import {
+  TGP_API_ORIGIN,
+  PAIRING_ENABLED,
+  PAIR_REDEEM_PATH,
+} from "./protocol.js";
+import { fetchWithTimeout, isTimeout, readBoundedJson } from "./net.js";
 import { logNetworkEvent } from "./log.js";
 
 const REDEEM_ENDPOINT = `${TGP_API_ORIGIN}${PAIR_REDEEM_PATH}`;
@@ -23,19 +27,22 @@ const REDEEM_ENDPOINT = `${TGP_API_ORIGIN}${PAIR_REDEEM_PATH}`;
 // Structured backend failure codes -> coach-facing copy. Unknown codes fall
 // back to a generic message; no raw server text is ever echoed to the coach.
 const ERROR_COPY = {
-    expired: "That code has expired. Generate a fresh one in the TGP app.",
-    already_used: "That code was already used. Generate a fresh one in the TGP app.",
-    invalid: "That code isn't valid. Check the digits and try again.",
-    locked: "Too many attempts. Wait a moment, then generate a new code.",
+  expired: "That code has expired. Generate a fresh one in the TGP app.",
+  already_used:
+    "That code was already used. Generate a fresh one in the TGP app.",
+  invalid: "That code isn't valid. Check the digits and try again.",
+  locked: "Too many attempts. Wait a moment, then generate a new code.",
 };
 
 function readString(record, key) {
-    return typeof record === "object" && record !== null && typeof record[key] === "string"
-        ? record[key]
-        : null;
+  return typeof record === "object" &&
+    record !== null &&
+    typeof record[key] === "string"
+    ? record[key]
+    : null;
 }
 function isOk(value) {
-    return typeof value === "object" && value !== null && value.ok === true;
+  return typeof value === "object" && value !== null && value.ok === true;
 }
 
 // Redeem a 6-digit pairing code and establish the session. Returns
@@ -43,65 +50,92 @@ function isOk(value) {
 // message — never token material. `deps` injects fetch + sendMessage so this is
 // unit-testable with no live network and no chrome runtime.
 export async function redeemPairingCode(code, deps = {}) {
-    const fetchImpl = deps.fetch ?? globalThis.fetch;
-    const sendMessage = deps.sendMessage ?? ((m) => chrome.runtime.sendMessage(m));
-    // The shipped state comes from PAIRING_ENABLED (on for the v0.3 RC).
-    // `deps.enabled` lets a test pin either branch explicitly without depending
-    // on the shipped flag value. Production callers (pair.js) never pass it.
-    const enabled = deps.enabled ?? PAIRING_ENABLED;
+  const fetchImpl = deps.fetch ?? globalThis.fetch;
+  const sendMessage =
+    deps.sendMessage ?? ((m) => chrome.runtime.sendMessage(m));
+  // The shipped state comes from PAIRING_ENABLED (on for the v0.3 RC).
+  // `deps.enabled` lets a test pin either branch explicitly without depending
+  // on the shipped flag value. Production callers (pair.js) never pass it.
+  const enabled = deps.enabled ?? PAIRING_ENABLED;
 
-    if (!enabled) {
-        return { ok: false, error: "Pairing isn't available yet." };
-    }
-    if (!/^\d{6}$/.test(typeof code === "string" ? code : "")) {
-        return { ok: false, error: ERROR_COPY.invalid };
-    }
+  if (!enabled) {
+    return { ok: false, error: "Pairing isn't available yet." };
+  }
+  if (!/^\d{6}$/.test(typeof code === "string" ? code : "")) {
+    return { ok: false, error: ERROR_COPY.invalid };
+  }
 
-    let res;
-    try {
-        res = await fetchWithTimeout(fetchImpl, REDEEM_ENDPOINT, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ code }),
-        });
-    }
-    catch (err) {
-        if (isTimeout(err)) {
-            logNetworkEvent("pair_timeout");
-            return { ok: false, error: "That took too long. Check your connection and try again." };
+  // Headers AND body are consumed inside the one finite deadline: a response
+  // whose JSON never finishes arriving must fail the same way a hung connect
+  // does, so the coach's single submit is never parked without its remedy.
+  // The body is parsed inside the consumer with a byte bound as well. A
+  // malformed/empty/oversized body maps to `null` (not a silent swallow); the
+  // null then routes to explicit copy below. We log a PII-free event code —
+  // never the body, which could carry server text.
+  let res;
+  try {
+    res = await fetchWithTimeout(
+      fetchImpl,
+      REDEEM_ENDPOINT,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      },
+      undefined,
+      async (response, signal) => {
+        let body = null;
+        try {
+          body = await readBoundedJson(response, signal);
+        } catch (err) {
+          // A deadline abort mid-body is reported as the timeout below, not
+          // as a parse failure.
+          if (signal.aborted) throw err;
+          logNetworkEvent("pair_body_parse_error");
         }
-        logNetworkEvent("pair_network_error");
-        return { ok: false, error: "Network error. Please try again." };
+        return { ok: response.ok === true, body };
+      },
+    );
+  } catch (err) {
+    if (isTimeout(err)) {
+      logNetworkEvent("pair_timeout");
+      return {
+        ok: false,
+        error: "That took too long. Check your connection and try again.",
+      };
     }
+    logNetworkEvent("pair_network_error");
+    return { ok: false, error: "Network error. Please try again." };
+  }
+  const body = res.body;
 
-    // Parse the body explicitly. A malformed/empty body maps to `null` here (not
-    // a silent swallow); the null then routes to explicit copy below. We log a
-    // PII-free event code — never the body, which could carry server text.
-    let body;
-    try {
-        body = await res.json();
-    }
-    catch {
-        logNetworkEvent("pair_body_parse_error");
-        body = null;
-    }
+  if (!res.ok) {
+    const reason = readString(body, "code");
+    return {
+      ok: false,
+      error:
+        (reason && ERROR_COPY[reason]) || "Pairing failed. Please try again.",
+    };
+  }
 
-    if (!res.ok) {
-        const reason = readString(body, "code");
-        return { ok: false, error: (reason && ERROR_COPY[reason]) || "Pairing failed. Please try again." };
-    }
+  const accessToken = readString(body, "access_token");
+  const refreshToken = readString(body, "refresh_token");
+  if (accessToken === null || refreshToken === null) {
+    return { ok: false, error: "Unexpected pairing response." };
+  }
 
-    const accessToken = readString(body, "access_token");
-    const refreshToken = readString(body, "refresh_token");
-    if (accessToken === null || refreshToken === null) {
-        return { ok: false, error: "Unexpected pairing response." };
-    }
-
-    // Hand the token pair to the single owner (background worker). Fail-closed:
-    // report success only once the worker acknowledges the session.
-    const ack = await sendMessage({ kind: "session_established", accessToken, refreshToken });
-    if (!isOk(ack)) {
-        return { ok: false, error: "Could not establish session. Please try again." };
-    }
-    return { ok: true, chosenPlatform: readString(body, "chosen_platform") };
+  // Hand the token pair to the single owner (background worker). Fail-closed:
+  // report success only once the worker acknowledges the session.
+  const ack = await sendMessage({
+    kind: "session_established",
+    accessToken,
+    refreshToken,
+  });
+  if (!isOk(ack)) {
+    return {
+      ok: false,
+      error: "Could not establish session. Please try again.",
+    };
+  }
+  return { ok: true, chosenPlatform: readString(body, "chosen_platform") };
 }

@@ -19,7 +19,12 @@
 //
 // R75: zero banned type-assertions — every narrowing is a real guard.
 import { TGP_API_ORIGIN } from "./protocol.js";
-import { fetchWithTimeout, isTimeout } from "./net.js";
+import {
+  discardBody,
+  fetchWithTimeout,
+  isTimeout,
+  readBoundedJson,
+} from "./net.js";
 import { logNetworkEvent } from "./log.js";
 
 // The one persisted secret. Lives only in chrome.storage.session.
@@ -42,7 +47,15 @@ let stateEpoch = 0;
 
 // Coalesce concurrent cold-wake refreshes so the same refresh token is never
 // presented twice in parallel (backend reuse-detection would force a re-pair).
+// The in-flight refresh belongs to the session epoch it started under; every
+// establish/clear detaches it so callers arriving for the NEW session never
+// join stale work (its commit would be fenced off anyway) — they start their
+// own refresh against the new refresh token. The stale promise still settles
+// for its own callers and only vacates the slot if it is still the current one.
 let refreshInFlight = null;
+function detachRefreshInFlight() {
+  refreshInFlight = null;
+}
 
 // Serializes state transitions. Each transition chains onto the previous one so
 // they apply atomically relative to each other; a rejected transition never
@@ -91,6 +104,7 @@ export async function hasActiveSession() {
 export function clearTokens() {
   return withStateLock(async () => {
     stateEpoch += 1;
+    detachRefreshInFlight();
     accessTokenInMemory = undefined;
     await chrome.storage.session.remove(REFRESH_TOKEN_KEY);
   });
@@ -113,6 +127,7 @@ export function establishSession(accessToken, refreshToken) {
       return { ok: false, error: "session_persist_failed" };
     }
     stateEpoch += 1;
+    detachRefreshInFlight();
     accessTokenInMemory = accessToken;
     return { ok: true };
   });
@@ -132,10 +147,11 @@ export async function refreshAccessToken() {
   if (refreshInFlight !== null) {
     return refreshInFlight;
   }
-  refreshInFlight = refreshAccessTokenOnce().finally(() => {
-    refreshInFlight = null;
+  const run = refreshAccessTokenOnce().finally(() => {
+    if (refreshInFlight === run) refreshInFlight = null;
   });
-  return refreshInFlight;
+  refreshInFlight = run;
+  return run;
 }
 
 async function refreshAccessTokenOnce() {
@@ -147,13 +163,38 @@ async function refreshAccessTokenOnce() {
     return null;
   }
 
+  // Headers AND body are consumed inside the one finite deadline. A refresh
+  // whose JSON never finishes arriving must settle (null) like a hung connect,
+  // so coalesced callers are released and can fail closed instead of pinning
+  // the worker until teardown. Body bytes are bounded as well as time.
   let res;
   try {
-    res = await fetchWithTimeout(fetch, REFRESH_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ refresh_token: snapshot.token }),
-    });
+    res = await fetchWithTimeout(
+      fetch,
+      REFRESH_ENDPOINT,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ refresh_token: snapshot.token }),
+      },
+      undefined,
+      async (response, signal) => {
+        if (!response.ok) {
+          // Not parsed (fixed categories only), but not left live either.
+          discardBody(response);
+          return { ok: false, body: null };
+        }
+        let body = null;
+        try {
+          body = await readBoundedJson(response, signal);
+        } catch (err) {
+          // A deadline abort mid-body is the timeout below, not a parse error.
+          if (signal.aborted) throw err;
+          logNetworkEvent("refresh_body_parse_error");
+        }
+        return { ok: true, body };
+      },
+    );
   } catch (err) {
     logNetworkEvent(
       isTimeout(err) ? "refresh_timeout" : "refresh_network_error",
@@ -164,13 +205,7 @@ async function refreshAccessTokenOnce() {
     return null;
   }
 
-  let body;
-  try {
-    body = await res.json();
-  } catch {
-    logNetworkEvent("refresh_body_parse_error");
-    return null;
-  }
+  const body = res.body;
   const next = readString(body, "access_token");
   if (next === null) {
     return null;

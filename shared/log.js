@@ -16,6 +16,7 @@ const KNOWN_EVENTS = new Set([
   "refresh_timeout",
   "settlement_network_error",
   "ingest_ack_cancel_failed",
+  "auth_body_cancel_failed",
   "status_popup_unavailable",
 ]);
 

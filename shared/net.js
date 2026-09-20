@@ -9,9 +9,14 @@
 //
 // Caller-supplied init.signal is composed, not dropped: abort from either the
 // timeout controller OR the caller's signal cancels the underlying fetch.
+import { logNetworkEvent } from "./log.js";
+
 export const DEFAULT_TIMEOUT_MS = 15000;
 
-// An optional consumer keeps response-body work inside the same deadline.
+// An optional consumer keeps response-body work inside the same deadline. It
+// receives the deadline AbortSignal as its second argument so body readers can
+// release their stream when the deadline (or the caller) aborts.
+/** @param {(response: any, signal: AbortSignal) => any} [consume] */
 export function fetchWithTimeout(
   fetchImpl,
   url,
@@ -48,6 +53,7 @@ export function fetchWithTimeout(
       controller.signal.throwIfAborted();
       return consume(
         await fetchImpl(url, { ...rest, signal: controller.signal }),
+        controller.signal,
       );
     })(),
   ]).finally(() => {
@@ -60,6 +66,93 @@ export function fetchWithTimeout(
 
 export function isTimeout(err) {
   return err instanceof Error && err.name === "TimeoutError";
+}
+
+// Upper bound on any authentication response body. A token pair is a few
+// kilobytes at most; anything larger is not a token response we should parse.
+export const MAX_AUTH_BODY_BYTES = 16384;
+
+// Parse a JSON body INSIDE the caller's deadline, bounded in bytes as well as
+// time. Must be called from a fetchWithTimeout consumer so a body that never
+// closes is cut off by the same deadline that bounds the headers. Rejects with a
+// tagged BodyError on oversize, undecodable or malformed bodies; the error
+// never carries response bytes. Falls back to response.json() when the runtime
+// exposes no body stream. Aborting `signal` cancels an in-progress read.
+/** @param {AbortSignal | null} [signal] */
+export async function readBoundedJson(
+  response,
+  signal = null,
+  maxBytes = MAX_AUTH_BODY_BYTES,
+) {
+  const bodyError = () => {
+    const err = new Error("body_invalid");
+    err.name = "BodyError";
+    return err;
+  };
+  const body = response && typeof response === "object" ? response.body : null;
+  if (
+    body === null ||
+    body === undefined ||
+    typeof body !== "object" ||
+    typeof body.getReader !== "function"
+  ) {
+    try {
+      return await response.json();
+    } catch {
+      throw bodyError();
+    }
+  }
+  const reader = body.getReader();
+  const cancel = () => {
+    void reader.cancel().catch(() => {
+      logNetworkEvent("auth_body_cancel_failed");
+    });
+  };
+  if (signal) {
+    if (signal.aborted) cancel();
+    else signal.addEventListener("abort", cancel, { once: true });
+  }
+  try {
+    const decoder = new TextDecoder("utf-8", { fatal: true });
+    let bytes = 0;
+    let text = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) throw bodyError();
+      text += decoder.decode(value, { stream: true });
+    }
+    text += decoder.decode();
+    return JSON.parse(text);
+  } catch {
+    // Never echo response bytes, parser errors or transport diagnostics.
+    cancel();
+    throw bodyError();
+  } finally {
+    if (signal) signal.removeEventListener("abort", cancel);
+    reader.releaseLock();
+  }
+}
+
+// Request cancellation of a body we will not read (e.g. a non-2xx auth reply)
+// so the connection is not left live after the caller has settled. Never
+// awaited: a hung cancel must not block the caller. Never throws.
+export function discardBody(response) {
+  const body = response && typeof response === "object" ? response.body : null;
+  if (!body || typeof body !== "object" || typeof body.cancel !== "function") {
+    return false;
+  }
+  try {
+    if (body.locked === true) return false;
+    void Promise.resolve(body.cancel()).catch(() => {
+      logNetworkEvent("auth_body_cancel_failed");
+    });
+    return true;
+  } catch {
+    logNetworkEvent("auth_body_cancel_failed");
+    return false;
+  }
 }
 
 // Upper bound on any server-supplied Retry-After. "Retry-After: 86400" would park
