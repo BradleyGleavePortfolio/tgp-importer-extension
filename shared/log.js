@@ -15,6 +15,7 @@ const KNOWN_EVENTS = new Set([
   "pair_body_parse_error",
   "refresh_timeout",
   "settlement_network_error",
+  "settlement_skipped_session_replaced",
   "ingest_ack_cancel_failed",
   "auth_body_cancel_failed",
   "status_popup_unavailable",

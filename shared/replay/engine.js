@@ -394,8 +394,9 @@ export async function runReplay(options) {
       }
     }
   } catch (err) {
-    // Abort is a normal terminal outcome; the only caller that aborts today is
-    // TGP auth loss. Source auth loss must propagate so the caller fails closed.
+    // Abort is a normal terminal outcome; the callers that abort today are TGP
+    // auth loss and a replaced TGP session. Source auth loss must propagate so
+    // the caller fails closed.
     if (isAborted(err)) {
       return {
         status: "cancelled",

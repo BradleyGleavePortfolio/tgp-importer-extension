@@ -45,16 +45,38 @@ let accessTokenInMemory;
 // token value — robust even if the same token string recurs).
 let stateEpoch = 0;
 
-// Coalesce concurrent cold-wake refreshes so the same refresh token is never
-// presented twice in parallel (backend reuse-detection would force a re-pair).
-// The in-flight refresh belongs to the session epoch it started under; every
-// establish/clear detaches it so callers arriving for the NEW session never
-// join stale work (its commit would be fenced off anyway) — they start their
-// own refresh against the new refresh token. The stale promise still settles
-// for its own callers and only vacates the slot if it is still the current one.
+// Identity of the ESTABLISHED session, as opposed to the version of its state:
+// bumped only by establishSession/clearTokens, never by a refresh rotation
+// (same session, new tokens). A caller that starts work under one session
+// records this and can later ask whether that session is still the current
+// one; obsolete work must stop rather than clear/expire an acknowledged
+// replacement or resume under the replacement's credentials (S4-R3-A-02).
+// A non-secret integer; never token material.
+let sessionGeneration = 0;
+
+// Coalesce concurrent refreshes so the same refresh token is never presented
+// twice in parallel (backend reuse-detection would force a re-pair).
+//
+// The slot records the epoch the run SNAPSHOTTED under, written inside the
+// state lock (`null` until then). An establish/clear that bumps the epoch
+// detaches only a run whose recorded epoch is now stale — that run belongs to
+// the previous session and its commit is fenced anyway, so callers for the NEW
+// session must not join it. A run that has not snapshotted yet is queued behind
+// the transition on the same lock, WILL read the new token and epoch, and
+// therefore stays joinable: detaching it would let a second caller present the
+// new refresh token in parallel (S4-R3-A-01 / S4-R3B-01). The slot is vacated
+// in `finally` only by the run that owns it.
+/** @typedef {{ epoch: number | null }} RefreshRun */
+/** @type {{ promise: Promise<string | null>, run: RefreshRun } | null} */
 let refreshInFlight = null;
-function detachRefreshInFlight() {
-  refreshInFlight = null;
+function detachStaleRefresh() {
+  if (
+    refreshInFlight !== null &&
+    refreshInFlight.run.epoch !== null &&
+    refreshInFlight.run.epoch !== stateEpoch
+  ) {
+    refreshInFlight = null;
+  }
 }
 
 // Serializes state transitions. Each transition chains onto the previous one so
@@ -102,12 +124,39 @@ export async function hasActiveSession() {
 // /auth/extension/logout is a backend dependency), so this clears LOCAL state
 // only and makes no revocation guarantee.
 export function clearTokens() {
+  return withStateLock(clearUnderLock);
+}
+
+// Conditional variant for a caller that started work under a specific session
+// (see getSessionGeneration): clears ONLY if that session is still the current
+// one, evaluated under the same state serialization as establish/clear. Returns
+// whether it cleared. `false` means the caller's session was already replaced
+// or cleared by someone else — the caller's work is obsolete and it must not
+// treat its own failure as this session's failure.
+export function clearTokensIfSession(generation) {
   return withStateLock(async () => {
-    stateEpoch += 1;
-    detachRefreshInFlight();
-    accessTokenInMemory = undefined;
-    await chrome.storage.session.remove(REFRESH_TOKEN_KEY);
+    if (generation !== sessionGeneration) {
+      return false;
+    }
+    await clearUnderLock();
+    return true;
   });
+}
+
+async function clearUnderLock() {
+  stateEpoch += 1;
+  sessionGeneration += 1;
+  detachStaleRefresh();
+  accessTokenInMemory = undefined;
+  await chrome.storage.session.remove(REFRESH_TOKEN_KEY);
+}
+
+// Which established session is current. Callers bind long-running work to this
+// value and re-check it before acting on that session (send, settle, clear).
+// Monotonic, so a value equal to the current one proves no establish/clear
+// happened in between; a rotation keeps it unchanged.
+export function getSessionGeneration() {
+  return sessionGeneration;
 }
 
 // The one authoritative "no session -> session" transition. Persists the
@@ -127,7 +176,8 @@ export function establishSession(accessToken, refreshToken) {
       return { ok: false, error: "session_persist_failed" };
     }
     stateEpoch += 1;
-    detachRefreshInFlight();
+    sessionGeneration += 1;
+    detachStaleRefresh();
     accessTokenInMemory = accessToken;
     return { ok: true };
   });
@@ -145,20 +195,29 @@ export function establishSession(accessToken, refreshToken) {
 // exactly as establishSession does (no asymmetric wipe / no torn pair).
 export async function refreshAccessToken() {
   if (refreshInFlight !== null) {
-    return refreshInFlight;
+    return refreshInFlight.promise;
   }
-  const run = refreshAccessTokenOnce().finally(() => {
-    if (refreshInFlight === run) refreshInFlight = null;
-  });
-  refreshInFlight = run;
-  return run;
+  /** @type {RefreshRun} */
+  const run = { epoch: null };
+  const slot = {
+    run,
+    promise: refreshAccessTokenOnce(run).finally(() => {
+      if (refreshInFlight === slot) refreshInFlight = null;
+    }),
+  };
+  refreshInFlight = slot;
+  return slot.promise;
 }
 
-async function refreshAccessTokenOnce() {
-  const snapshot = await withStateLock(async () => ({
-    token: await readRefreshToken(),
-    epoch: stateEpoch,
-  }));
+/** @param {RefreshRun} run */
+async function refreshAccessTokenOnce(run) {
+  const snapshot = await withStateLock(async () => {
+    const token = await readRefreshToken();
+    // Recorded inside the lock so a transition queued behind this snapshot
+    // sees the epoch it must compare against (see detachStaleRefresh).
+    run.epoch = stateEpoch;
+    return { token, epoch: stateEpoch };
+  });
   if (snapshot.token === null) {
     return null;
   }

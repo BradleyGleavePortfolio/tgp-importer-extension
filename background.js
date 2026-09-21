@@ -12,7 +12,9 @@
 //   - Token lifecycle lives entirely in shared/session.js (memory-only access
 //     token, chrome.storage.session refresh token). On 401 mid-crawl we refresh
 //     once; if that also fails we clear local token state + broadcast
-//     `auth_required` (there is no server logout endpoint yet — no revocation
+//     `auth_required` — but only when the run's session is still the current
+//     one; a run whose session was replaced meanwhile stops without touching
+//     the replacement (there is no server logout endpoint yet — no revocation
 //     is claimed).
 //   - On completion: chrome.notifications + POST /api/scout/ingest/complete.
 //   - On SW wake: the snapshot rehydrates from disk; credentials live in
@@ -28,7 +30,8 @@ import {
   hasActiveSession,
   getAccessToken,
   refreshAccessToken,
-  clearTokens,
+  clearTokensIfSession,
+  getSessionGeneration,
 } from "./shared/session.js";
 import { detectPlatform } from "./extractors/detect.js";
 import { TrueCoachExtractor } from "./extractors/truecoach.js";
@@ -127,9 +130,65 @@ function isTgpAuthLost(err) {
   return err instanceof Error && err.name === "TgpAuthLostError";
 }
 
+// The session a run started under was replaced (a new pairing was acknowledged)
+// or cleared by someone else while the run was in flight. Distinct from auth
+// loss: the CURRENT session is intact, so nothing is cleared and no
+// `auth_required` is broadcast. The obsolete run stops and must not resume
+// (send, settle, or report) under the replacement's credentials (S4-R3-A-02).
+function tgpSessionReplaced() {
+  const err = new Error("session_replaced");
+  err.name = "TgpSessionReplacedError";
+  return err;
+}
+function isTgpSessionReplaced(err) {
+  return err instanceof Error && err.name === "TgpSessionReplacedError";
+}
+const SESSION_REPLACED_DETAIL =
+  "import stopped — your TGP session changed during the import. Start the import again.";
+
+// Bearer for work bound to the session `generation` (see getSessionGeneration).
+// Throws TgpSessionReplacedError once that session is no longer the current
+// one, so obsolete work never carries the replacement's token. The generation
+// is monotonic: unchanged after the read means the token was minted for this
+// session.
+async function ownedAccessToken(generation) {
+  if (getSessionGeneration() !== generation) {
+    throw tgpSessionReplaced();
+  }
+  const token = await getAccessToken();
+  if (getSessionGeneration() !== generation) {
+    throw tgpSessionReplaced();
+  }
+  return token;
+}
+
+// A run's terminal 401 becomes the right stop. The local session is cleared and
+// routed to pairing ONLY when the run's session is still the current one
+// (decided under the session module's state lock); otherwise an acknowledged
+// replacement owns the tokens now and this run is merely obsolete.
+async function sessionLossError(run) {
+  const cleared = await clearTokensIfSession(run.generation);
+  if (!cleared) {
+    run.onObsolete();
+    return tgpSessionReplaced();
+  }
+  run.onAuthLost();
+  return tgpAuthLost();
+}
+
+// Stop an obsolete run before it presents or refreshes another session's
+// tokens.
+function obsoleteRunError(run) {
+  run.onObsolete();
+  return tgpSessionReplaced();
+}
+
 // POST a batch to /api/scout/ingest with the bearer token (finite timeout).
-// On 401, refresh once and retry. If the retry also 401s, invoke onAuthLost and stop.
-function makeSender(intent, onAuthLost, tally, staging) {
+// On 401, refresh once and retry. If the retry also 401s, invoke onAuthLost
+// and stop — unless the run's session was replaced meanwhile (see
+// sessionLossError).
+// `run` = { generation, onAuthLost, onObsolete }.
+function makeSender(intent, run, tally, staging) {
   return async function sendEntities(entityType, entities) {
     // Entities pass through VERBATIM — each is the camelCase makeEntity()
     // envelope { sourceId, sourcePlatform, capturedAt, payload } that the
@@ -165,21 +224,34 @@ function makeSender(intent, onAuthLost, tally, staging) {
             : null,
         }),
       );
-    let token = await getAccessToken();
+    let token;
+    try {
+      token = await ownedAccessToken(run.generation);
+    } catch (err) {
+      if (isTgpSessionReplaced(err)) {
+        run.onObsolete();
+      }
+      throw err;
+    }
     let res = await attempt(token);
     if (res.status === 401) {
+      // Never refresh (present the refresh token of) a session this run does
+      // not own.
+      if (getSessionGeneration() !== run.generation) {
+        throw obsoleteRunError(run);
+      }
       const refreshed = await refreshAccessToken();
       if (refreshed === null) {
-        await clearTokens();
-        onAuthLost();
-        throw tgpAuthLost();
+        throw await sessionLossError(run);
+      }
+      // A token minted after a replacement landed belongs to the replacement.
+      if (getSessionGeneration() !== run.generation) {
+        throw obsoleteRunError(run);
       }
       token = refreshed;
       res = await attempt(token);
       if (res.status === 401) {
-        await clearTokens();
-        onAuthLost();
-        throw tgpAuthLost();
+        throw await sessionLossError(run);
       }
     }
     if (!res.ok) {
@@ -220,8 +292,11 @@ const OUTCOME = {
 // undeclared field). Refreshes the token once on a 401 and retries, same as
 // sendEntities(), so a token merely expired since the last entity send can't
 // false-report ingest_failed. Never calls onAuthLost/clearTokens — an
-// unrefreshable token still surfaces as "complete 401" to the caller.
-async function completeIngest(intent, outcome) {
+// unrefreshable token still surfaces as "complete 401" to the caller. Bound to
+// the run's session `generation`: a replaced session throws
+// TgpSessionReplacedError instead of settling the old intent with the new
+// session's credentials.
+async function completeIngest(intent, outcome, generation) {
   const body = {
     intent_id: intent.intentId,
     terminal_status: outcome.terminalStatus,
@@ -253,10 +328,16 @@ async function completeIngest(intent, outcome) {
       throw isTimeout(err) ? new Error("complete_timeout") : err;
     }
   };
-  let token = await getAccessToken();
+  let token = await ownedAccessToken(generation);
   let res = await attempt(token);
   if (res.status === 401) {
+    if (getSessionGeneration() !== generation) {
+      throw tgpSessionReplaced();
+    }
     const refreshed = await refreshAccessToken();
+    if (getSessionGeneration() !== generation) {
+      throw tgpSessionReplaced();
+    }
     if (refreshed !== null) {
       res = await attempt(refreshed);
     }
@@ -271,13 +352,24 @@ async function completeIngest(intent, outcome) {
 // "running" forever. `finalCounts` (only what's already known to have landed,
 // e.g. makeSender's tally) is omitted, not guessed, when absent. Never throws
 // — a failed settlement POST is logged (PII-free), not silently swallowed.
-function settleFailed(intent, errorSummary, finalCounts) {
+function settleFailed(intent, errorSummary, finalCounts, generation) {
   const outcome = { terminalStatus: OUTCOME.failed.terminal, errorSummary };
   if (finalCounts !== undefined && Object.keys(finalCounts).length > 0) {
     outcome.finalCounts = finalCounts;
   }
-  return completeIngest(intent, outcome).catch(() =>
-    logNetworkEvent("settlement_network_error"),
+  return completeIngest(intent, outcome, generation).catch(
+    logSettlementFailure,
+  );
+}
+
+// A settlement that could not be sent is logged by category only. A run whose
+// session was replaced is not a network fault: it is deliberately left
+// unsettled rather than settled under the replacement's credentials.
+function logSettlementFailure(err) {
+  logNetworkEvent(
+    isTgpSessionReplaced(err)
+      ? "settlement_skipped_session_replaced"
+      : "settlement_network_error",
   );
 }
 
@@ -299,9 +391,10 @@ async function getDeviceId() {
 }
 
 // Bearer POST to /api/scout/progress. Rejects on non-2xx; the reporter
-// swallows it (progress must never fail a run).
-async function postProgress(body) {
-  const token = await getAccessToken();
+// swallows it (progress must never fail a run). Bound to the run's session so
+// an obsolete run never reports under the replacement's token.
+async function postProgress(body, generation) {
+  const token = await ownedAccessToken(generation);
   const res = await fetchWithTimeout(
     fetch,
     `${TGP_API_ORIGIN}/api/scout/progress`,
@@ -428,6 +521,9 @@ async function handleStartIngest(message) {
     return;
   }
 
+  // The session this run belongs to. Any later establish/clear makes the run
+  // obsolete (see ownedAccessToken / sessionLossError).
+  const generation = getSessionGeneration();
   const controller = new AbortController();
   const intent = {
     intentId: `ext-${Date.now()}`,
@@ -441,9 +537,13 @@ async function handleStartIngest(message) {
   const staging = new Map();
   const sendEntities = makeSender(
     intent,
-    () => {
-      controller.abort();
-      broadcastAuthRequired("session expired — please sign in again");
+    {
+      generation,
+      onAuthLost: () => {
+        controller.abort();
+        broadcastAuthRequired("session expired — please sign in again");
+      },
+      onObsolete: () => controller.abort(),
     },
     tally,
     staging,
@@ -481,11 +581,15 @@ async function handleStartIngest(message) {
     const outcome = OUTCOME[result.status];
     const detail = terminalDetail(result);
     settlementSent = true;
-    await completeIngest(intent, {
-      terminalStatus: outcome.terminal,
-      finalCounts: result.counts,
-      errorSummary: detail ?? undefined,
-    });
+    await completeIngest(
+      intent,
+      {
+        terminalStatus: outcome.terminal,
+        finalCounts: result.counts,
+        errorSummary: detail ?? undefined,
+      },
+      generation,
+    );
     broadcastStatus({
       ...currentSnapshot,
       intent: { ...intent, status: outcome.state },
@@ -497,11 +601,21 @@ async function handleStartIngest(message) {
     if (isTgpAuthLost(err)) {
       return;
     }
+    // Session replaced mid-run: the current session is intact (nothing cleared,
+    // no auth_required) and the old intent is not settled under it.
+    if (isTgpSessionReplaced(err)) {
+      broadcastStatus({
+        ...currentSnapshot,
+        intent: { ...intent, status: "ingest_failed" },
+        lastError: SESSION_REPLACED_DETAIL,
+      });
+      return;
+    }
     const detail = err instanceof Error ? err.message : "import failed";
     // Same unsettled-intent defect as the replay path; no progress-channel
     // fallback here, so carry the already-ACKed tally into the settlement.
     if (!settlementSent) {
-      await settleFailed(intent, detail, Object.fromEntries(tally));
+      await settleFailed(intent, detail, Object.fromEntries(tally), generation);
     }
     broadcastStatus({
       ...currentSnapshot,
@@ -656,6 +770,9 @@ async function handleStartImport(message) {
     return;
   }
 
+  // The session this run belongs to. Any later establish/clear makes the run
+  // obsolete (see ownedAccessToken / sessionLossError).
+  const generation = getSessionGeneration();
   const controller = new AbortController();
   const intent = {
     intentId: `imp-${Date.now()}`,
@@ -668,10 +785,17 @@ async function handleStartImport(message) {
   const staging = new Map();
   const sendEntities = makeSender(
     intent,
-    () => {
-      // TGP-side auth loss: makeSender already cleared the tokens; route to pairing.
-      controller.abort();
-      broadcastAuthRequired("session expired — please sign in again");
+    {
+      generation,
+      onAuthLost: () => {
+        // TGP-side auth loss: makeSender already cleared the tokens; route to
+        // pairing.
+        controller.abort();
+        broadcastAuthRequired("session expired — please sign in again");
+      },
+      // Session replaced/cleared by someone else: stop crawling; the catch
+      // below reports it without touching the current session.
+      onObsolete: () => controller.abort(),
     },
     tally,
     staging,
@@ -679,7 +803,7 @@ async function handleStartImport(message) {
   // Real source bearer from the coach's own tab; absent -> "" -> fails closed.
   const sourceToken = await collectSourceToken(message.tabId, allowedOrigins);
   const reporter = createProgressReporter({
-    postProgress,
+    postProgress: (body) => postProgress(body, generation),
     intentId: intent.intentId,
     deviceId: await getDeviceId(),
   });
@@ -700,8 +824,9 @@ async function handleStartImport(message) {
     });
     const outcome = OUTCOME[result.status];
     if (outcome === undefined) {
-      // cancelled: only the TGP auth-loss callback below aborts this run, and
-      // it already cleared the tokens a complete needs (see the doc).
+      // cancelled: only the run's own callbacks abort it (TGP auth loss, which
+      // already cleared the tokens a complete needs, or a replaced session,
+      // whose tokens this run must not use), so it stays unsettled.
       broadcastStatus({
         ...currentSnapshot,
         intent: { ...intent, status: "ingest_failed" },
@@ -723,8 +848,8 @@ async function handleStartImport(message) {
     settlementSent = true;
     if (result.status === "failed") {
       // Best-effort, so this POST failing stays observable, not silent.
-      await completeIngest(intent, settlement).catch(() =>
-        logNetworkEvent("settlement_network_error"),
+      await completeIngest(intent, settlement, generation).catch(
+        logSettlementFailure,
       );
       broadcastStatus({
         ...currentSnapshot,
@@ -734,7 +859,7 @@ async function handleStartImport(message) {
       return;
     }
     // Still requires a backend ack: a throw here is ingest_failed, not success.
-    await completeIngest(intent, settlement);
+    await completeIngest(intent, settlement, generation);
     broadcastStatus({
       ...currentSnapshot,
       intent: { ...intent, status: outcome.state },
@@ -747,6 +872,19 @@ async function handleStartImport(message) {
     if (isTgpAuthLost(err)) {
       return;
     }
+    // The session this run started under was replaced (a new pairing was
+    // acknowledged) or cleared meanwhile. The CURRENT session is intact:
+    // nothing is cleared, no auth_required, and the old intent is NOT settled
+    // or reported under the replacement's credentials. It stays unsettled,
+    // like the auth-loss case.
+    if (isTgpSessionReplaced(err)) {
+      broadcastStatus({
+        ...currentSnapshot,
+        intent: { ...intent, status: "ingest_failed" },
+        lastError: SESSION_REPLACED_DETAIL,
+      });
+      return;
+    }
     // Source auth loss is fail-closed but NOT a TGP logout: prompt a source re-login.
     const detail = isAuthLost(err)
       ? "source sign-in required — open your source platform and try again"
@@ -756,7 +894,7 @@ async function handleStartImport(message) {
     // TGP session is still good, so the intent must be settled first.
     if (!settlementSent) {
       await reporter.flush(null, detail);
-      await settleFailed(intent, detail, Object.fromEntries(tally));
+      await settleFailed(intent, detail, Object.fromEntries(tally), generation);
     }
     broadcastStatus({
       ...currentSnapshot,
