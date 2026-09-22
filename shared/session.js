@@ -66,8 +66,18 @@ let sessionGeneration = 0;
 // therefore stays joinable: detaching it would let a second caller present the
 // new refresh token in parallel (S4-R3-A-01 / S4-R3B-01). The slot is vacated
 // in `finally` only by the run that owns it.
-/** @typedef {{ epoch: number | null }} RefreshRun */
-/** @type {{ promise: Promise<string | null>, run: RefreshRun } | null} */
+//
+// A run may be BOUND to the session generation its caller's work belongs to
+// (`expected`; `null` = unbound). The binding is evaluated under the state
+// lock at snapshot time, BEFORE the refresh token is read: if the session was
+// replaced or cleared while the run was queued behind that transition, the run
+// presents nothing and yields null instead of consuming (and rotating) the
+// replacement's refresh token on behalf of obsolete work (S4-R4-A-02). The
+// generation the run actually snapshotted is recorded so a bound joiner can
+// refuse a token minted for a different session.
+/** @typedef {{ epoch: number | null, generation: number | null, expected: number | null, obsolete: boolean }} RefreshRun */
+/** @typedef {{ promise: Promise<string | null>, run: RefreshRun }} RefreshSlot */
+/** @type {RefreshSlot | null} */
 let refreshInFlight = null;
 function detachStaleRefresh() {
   if (
@@ -193,12 +203,53 @@ export function establishSession(accessToken, refreshToken) {
 // persisting a rotated refresh token throws, we DO NOT publish the new access
 // token — the prior session state is preserved and the caller fails closed,
 // exactly as establishSession does (no asymmetric wipe / no torn pair).
-export async function refreshAccessToken() {
-  if (refreshInFlight !== null) {
-    return refreshInFlight.promise;
+//
+// `expectedGeneration` (optional) binds the call to the session the caller's
+// work started under (see getSessionGeneration). A bound call presents nothing
+// and returns null once that session is no longer current — decided outside
+// the lock on entry, under the lock at snapshot, and again on the token it
+// would hand back — so obsolete work can neither refresh nor be handed the
+// replacement's credentials. Legitimate same-session callers still coalesce
+// onto one run. An unbound call (no argument) keeps the original semantics.
+export async function refreshAccessToken(expectedGeneration) {
+  const expected = Number.isInteger(expectedGeneration)
+    ? expectedGeneration
+    : null;
+  // Bounded: each pass awaits a slot that vacates itself in `finally`; the
+  // loop only re-enters when a different caller's run occupied the slot in
+  // the meantime and this caller could not share it.
+  for (;;) {
+    if (expected !== null && expected !== sessionGeneration) {
+      return null;
+    }
+    const slot = refreshInFlight ?? startRefreshRun(expected);
+    if (!canJoinRun(slot.run, expected)) {
+      // Another session's bound run holds the slot: wait for it to vacate,
+      // never join it and never present a second token in parallel.
+      await slot.promise.then(
+        () => undefined,
+        () => undefined,
+      );
+      continue;
+    }
+    const token = await slot.promise;
+    if (expected !== null) {
+      return slot.run.generation === expected ? token : null;
+    }
+    if (slot.run.obsolete) {
+      // Unbound caller joined a run that stood down for its bound owner; the
+      // current session may be perfectly refreshable, so run again.
+      continue;
+    }
+    return token;
   }
+}
+
+/** @param {number | null} expected @returns {RefreshSlot} */
+function startRefreshRun(expected) {
   /** @type {RefreshRun} */
-  const run = { epoch: null };
+  const run = { epoch: null, generation: null, expected, obsolete: false };
+  /** @type {RefreshSlot} */
   const slot = {
     run,
     promise: refreshAccessTokenOnce(run).finally(() => {
@@ -206,16 +257,33 @@ export async function refreshAccessToken() {
     }),
   };
   refreshInFlight = slot;
-  return slot.promise;
+  return slot;
+}
+
+// A caller may share a run unless both are bound to different sessions.
+/** @param {RefreshRun} run @param {number | null} expected */
+function canJoinRun(run, expected) {
+  return (
+    run.expected === null || expected === null || run.expected === expected
+  );
 }
 
 /** @param {RefreshRun} run */
 async function refreshAccessTokenOnce(run) {
   const snapshot = await withStateLock(async () => {
-    const token = await readRefreshToken();
     // Recorded inside the lock so a transition queued behind this snapshot
-    // sees the epoch it must compare against (see detachStaleRefresh).
+    // sees the epoch it must compare against (see detachStaleRefresh), and so
+    // a bound joiner can tell which session this run minted for.
     run.epoch = stateEpoch;
+    run.generation = sessionGeneration;
+    if (run.expected !== null && run.expected !== sessionGeneration) {
+      // The session this run was bound to was replaced/cleared while the run
+      // was queued: stand down WITHOUT reading or presenting the current
+      // session's refresh token (S4-R4-A-02).
+      run.obsolete = true;
+      return { token: null, epoch: stateEpoch };
+    }
+    const token = await readRefreshToken();
     return { token, epoch: stateEpoch };
   });
   if (snapshot.token === null) {
@@ -294,12 +362,14 @@ async function refreshAccessTokenOnce(run) {
 
 // Return a usable access token, minting one from the refresh token if the
 // in-memory copy is absent (cold service-worker wake). Throws "no_session" when
-// no session exists so callers fail closed.
-export async function getAccessToken() {
+// no session exists so callers fail closed. `expectedGeneration` (optional)
+// binds the cold-path refresh to the caller's session (see refreshAccessToken);
+// the in-memory fast path is the caller's to check against getSessionGeneration.
+export async function getAccessToken(expectedGeneration) {
   if (isNonEmptyString(accessTokenInMemory)) {
     return accessTokenInMemory;
   }
-  const minted = await refreshAccessToken();
+  const minted = await refreshAccessToken(expectedGeneration);
   if (minted === null) {
     throw new Error("no_session");
   }

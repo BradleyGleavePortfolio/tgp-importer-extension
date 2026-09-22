@@ -230,3 +230,215 @@ describe("refresh admission vs establish/clear (S4-R3-A-01)", () => {
     expect(session.getSessionGeneration()).not.toBe(afterEstablish);
   });
 });
+
+// Regression for S4-R4-A-02 / S4-R4B-01: a refresh BOUND to the session its
+// caller's work started under must not present (or rotate) the refresh token
+// of a session that replaced it while the refresh was queued behind that
+// transition on the state lock. The R4 coalescer let the queued run read and
+// present the NEW token on behalf of the obsolete caller. Legitimate
+// same-session coalescing and unbound (harness) callers keep working.
+describe("bound refresh admission vs establish/clear (S4-R4-A-02)", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("a bound refresh queued behind a replacement stands down: nothing presented, null, replacement not rotated; the current session still refreshes", async () => {
+    const { session, storage, net } = await load();
+    const bound = session.getSessionGeneration();
+    const persist = deferred();
+    storage.holdNextSet(persist);
+    const established = session.establishSession("NEW_ACCESS", "NEW_REFRESH");
+    await flush();
+    // An obsolete caller's 401 requests a refresh for the OLD session while the
+    // replacement holds the lock in storage.set.
+    const queued = session.refreshAccessToken(bound);
+    await flush();
+    expect(net.presented).toEqual([]);
+    persist.resolve(undefined);
+    storage.releaseSet();
+    expect(await established).toEqual({ ok: true });
+    expect(await queued).toBeNull();
+    await flush();
+    // The replacement's token was never read for that caller, never presented,
+    // and is still the stored (unrotated) one.
+    expect(net.fetchImpl).not.toHaveBeenCalled();
+    expect(storage.store.get(REFRESH_KEY)).toBe("NEW_REFRESH");
+    expect(await session.getAccessToken()).toBe("NEW_ACCESS");
+    // A caller bound to the CURRENT session refreshes normally.
+    const current = session.getSessionGeneration();
+    expect(current).not.toBe(bound);
+    const fresh = session.refreshAccessToken(current);
+    await flush();
+    expect(net.presented).toEqual(["NEW_REFRESH"]);
+    net.releases[0](minted("MINTED_ACCESS", "ROTATED_REFRESH"));
+    expect(await fresh).toBe("MINTED_ACCESS");
+    expect(storage.store.get(REFRESH_KEY)).toBe("ROTATED_REFRESH");
+  });
+
+  it("a caller bound to a generation that is no longer current gets null before any snapshot or fetch", async () => {
+    const { session, storage, net } = await load();
+    const stale = session.getSessionGeneration();
+    await establish(session, "NEW_ACCESS", "NEW_REFRESH");
+    expect(await session.refreshAccessToken(stale)).toBeNull();
+    await flush();
+    expect(net.fetchImpl).not.toHaveBeenCalled();
+    expect(storage.store.get(REFRESH_KEY)).toBe("NEW_REFRESH");
+  });
+
+  it("two callers bound to the same current session coalesce: one fetch, both minted", async () => {
+    const { session, storage, net } = await load();
+    const current = session.getSessionGeneration();
+    const a = session.refreshAccessToken(current);
+    const b = session.refreshAccessToken(current);
+    await flush();
+    expect(net.presented).toEqual(["OLD_REFRESH"]);
+    expect(net.fetchImpl).toHaveBeenCalledTimes(1);
+    net.releases[0](minted("MINTED_ACCESS", "ROTATED_REFRESH"));
+    expect(await Promise.all([a, b])).toEqual([
+      "MINTED_ACCESS",
+      "MINTED_ACCESS",
+    ]);
+    expect(storage.store.get(REFRESH_KEY)).toBe("ROTATED_REFRESH");
+    expect(session.getSessionGeneration()).toBe(current);
+  });
+
+  it("an unbound caller that joined a bound run which stood down re-runs for the current session: NEW presented exactly once", async () => {
+    const { session, storage, net } = await load();
+    const bound = session.getSessionGeneration();
+    const persist = deferred();
+    storage.holdNextSet(persist);
+    const established = session.establishSession("NEW_ACCESS", "NEW_REFRESH");
+    await flush();
+    const queued = session.refreshAccessToken(bound);
+    await flush();
+    const joiner = session.refreshAccessToken(); // unbound, shares the slot
+    await flush();
+    expect(net.presented).toEqual([]);
+    persist.resolve(undefined);
+    storage.releaseSet();
+    expect(await established).toEqual({ ok: true });
+    expect(await queued).toBeNull();
+    await flush();
+    // Only the joiner's own re-run presents, and only the NEW token, once.
+    expect(net.presented).toEqual(["NEW_REFRESH"]);
+    expect(net.fetchImpl).toHaveBeenCalledTimes(1);
+    net.releases[0](minted("MINTED_ACCESS", "ROTATED_REFRESH"));
+    expect(await joiner).toBe("MINTED_ACCESS");
+  });
+
+  it("a caller bound to the NEW session never joins the OLD-bound run occupying the slot: it waits, then presents NEW once", async () => {
+    const { session, storage, net } = await load();
+    const bound = session.getSessionGeneration();
+    const persist = deferred();
+    storage.holdNextSet(persist);
+    const established = session.establishSession("NEW_ACCESS", "NEW_REFRESH");
+    await flush();
+    const queued = session.refreshAccessToken(bound);
+    await flush();
+    persist.resolve(undefined);
+    storage.releaseSet();
+    expect(await established).toEqual({ ok: true });
+    // Requested while the OLD-bound run may still hold the slot.
+    const fresh = session.refreshAccessToken(session.getSessionGeneration());
+    expect(await queued).toBeNull();
+    await flush();
+    expect(net.presented).toEqual(["NEW_REFRESH"]);
+    expect(net.fetchImpl).toHaveBeenCalledTimes(1);
+    net.releases[0](minted("MINTED_ACCESS", "ROTATED_REFRESH"));
+    expect(await fresh).toBe("MINTED_ACCESS");
+  });
+
+  it("pending establish FAILURE (persist throws): the session is unchanged, so the bound refresh proceeds and presents OLD once", async () => {
+    const { session, storage, net } = await load();
+    const bound = session.getSessionGeneration();
+    /** @type {(reason: Error) => void} */
+    let reject = () => undefined;
+    const failing = new Promise((_resolve, r) => {
+      reject = r;
+    });
+    storage.holdNextSet({ promise: failing });
+    const established = session.establishSession("NEW_ACCESS", "NEW_REFRESH");
+    await flush();
+    const queued = session.refreshAccessToken(bound);
+    await flush();
+    expect(net.presented).toEqual([]);
+    reject(new Error("storage unavailable"));
+    storage.releaseSet();
+    expect(await established).toEqual({
+      ok: false,
+      error: "session_persist_failed",
+    });
+    await flush();
+    // No transition happened: same generation, OLD token presented once.
+    expect(session.getSessionGeneration()).toBe(bound);
+    expect(net.presented).toEqual(["OLD_REFRESH"]);
+    net.releases[0](minted("MINTED_ACCESS", "ROTATED_REFRESH"));
+    expect(await queued).toBe("MINTED_ACCESS");
+    expect(storage.store.get(REFRESH_KEY)).toBe("ROTATED_REFRESH");
+  });
+
+  it("bound refresh queued behind clear then re-establish stands down; the new session's own bound refreshes coalesce and present NEW once", async () => {
+    const { session, storage, net } = await load();
+    const bound = session.getSessionGeneration();
+    const removal = deferred();
+    storage.holdNextRemove(removal);
+    const cleared = session.clearTokens();
+    await flush();
+    const established = session.establishSession("NEW_ACCESS", "NEW_REFRESH");
+    const queued = session.refreshAccessToken(bound);
+    await flush();
+    expect(net.presented).toEqual([]);
+    removal.resolve(undefined);
+    storage.releaseRemove();
+    await cleared;
+    expect(await established).toEqual({ ok: true });
+    expect(await queued).toBeNull();
+    await flush();
+    expect(net.fetchImpl).not.toHaveBeenCalled();
+    expect(storage.store.get(REFRESH_KEY)).toBe("NEW_REFRESH");
+    const current = session.getSessionGeneration();
+    const a = session.refreshAccessToken(current);
+    const b = session.refreshAccessToken(current);
+    await flush();
+    expect(net.presented).toEqual(["NEW_REFRESH"]);
+    net.releases[0](minted("MINTED_ACCESS", "ROTATED_REFRESH"));
+    expect(await Promise.all([a, b])).toEqual([
+      "MINTED_ACCESS",
+      "MINTED_ACCESS",
+    ]);
+  });
+
+  it("bound getAccessToken on the cold path stands down the same way (throws no_session, presents nothing) once its session is replaced", async () => {
+    const { session, storage, net } = await load();
+    const bound = session.getSessionGeneration();
+    const persist = deferred();
+    storage.holdNextSet(persist);
+    const established = session.establishSession("NEW_ACCESS", "NEW_REFRESH");
+    await flush();
+    const cold = session.getAccessToken(bound);
+    await flush();
+    persist.resolve(undefined);
+    storage.releaseSet();
+    expect(await established).toEqual({ ok: true });
+    await expect(cold).rejects.toThrow("no_session");
+    expect(net.fetchImpl).not.toHaveBeenCalled();
+    expect(storage.store.get(REFRESH_KEY)).toBe("NEW_REFRESH");
+  });
+
+  // Unchanged-session control: a bound cold refresh whose session is NOT
+  // replaced mints normally and keeps its generation.
+  it("control — bound cold getAccessToken with no transition mints under the same generation", async () => {
+    const { session, storage, net } = await load();
+    const before = session.getSessionGeneration();
+    const cold = session.getAccessToken(before);
+    await flush();
+    expect(net.presented).toEqual(["OLD_REFRESH"]);
+    net.releases[0](minted("MINTED_ACCESS", "ROTATED_REFRESH"));
+    expect(await cold).toBe("MINTED_ACCESS");
+    expect(session.getSessionGeneration()).toBe(before);
+    expect(storage.store.get(REFRESH_KEY)).toBe("ROTATED_REFRESH");
+  });
+});

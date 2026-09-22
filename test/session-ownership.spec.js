@@ -155,7 +155,12 @@ async function expectReplacementIntact(mock, calls) {
     "session expired — please sign in again",
   );
   // Nothing was sent, settled or reported under the replacement's bearer, and
-  // the replacement's refresh token was never presented by the old run.
+  // the replacement's refresh token was never presented by the old run. The
+  // schedules in THIS file replace the session while the old run's refresh is
+  // already on the wire (or between refresh and retry), so the guarantee here
+  // rests on the 401 gate + fenced commit; the queued-refresh interleavings
+  // where the old run's refresh is admitted behind the establish itself
+  // (S4-R4-A-02) are exercised in session-ownership-preflight.spec.js.
   const newBearer = `Bearer ${NEW.accessToken}`;
   expect(calls.filter((c) => c.authorization === newBearer)).toEqual([]);
   expect(calls.filter((c) => c.url === COMPLETE_URL)).toEqual([]);

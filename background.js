@@ -148,18 +148,61 @@ const SESSION_REPLACED_DETAIL =
 
 // Bearer for work bound to the session `generation` (see getSessionGeneration).
 // Throws TgpSessionReplacedError once that session is no longer the current
-// one, so obsolete work never carries the replacement's token. The generation
-// is monotonic: unchanged after the read means the token was minted for this
-// session.
+// one, so obsolete work never carries the replacement's token. The binding is
+// carried INTO the cold-path refresh (the session module evaluates it under
+// its state lock before presenting any refresh token) and re-checked on the
+// way out: the generation is monotonic, so unchanged after the read means the
+// token was minted for this session. A refresh that stood down or was fenced
+// because the session moved surfaces as "replaced", not as "no session".
 async function ownedAccessToken(generation) {
   if (getSessionGeneration() !== generation) {
     throw tgpSessionReplaced();
   }
-  const token = await getAccessToken();
+  let token;
+  try {
+    token = await getAccessToken(generation);
+  } catch (err) {
+    if (getSessionGeneration() !== generation) {
+      throw tgpSessionReplaced();
+    }
+    throw err;
+  }
   if (getSessionGeneration() !== generation) {
     throw tgpSessionReplaced();
   }
   return token;
+}
+
+// Preflight for an accepted Start: the run is already bound to `generation`
+// (captured synchronously at admission, before any await), so the token it
+// verifies is the OWNING session's, never whichever session exists when the
+// cold refresh returns (S4-R4-A-01). Returns the failure to report, or null to
+// proceed. "login required" is broadcast ONLY when the run's own session is
+// still current and could not mint; a session replaced during preflight is
+// reported as such and the replacement is left untouched.
+async function preflightOwnedSession(generation) {
+  let accessToken;
+  try {
+    accessToken = await ownedAccessToken(generation);
+  } catch (err) {
+    if (isTgpSessionReplaced(err)) {
+      return { replaced: true };
+    }
+    return { replaced: false };
+  }
+  if (typeof accessToken !== "string" || accessToken.length === 0) {
+    return { replaced: false };
+  }
+  return null;
+}
+
+function reportPreflightFailure(failure) {
+  if (failure.replaced) {
+    // The CURRENT session is intact: no auth_required, nothing cleared.
+    broadcastStatus({ ...emptySnapshot(), lastError: SESSION_REPLACED_DETAIL });
+    return;
+  }
+  broadcastAuthRequired("login required to import");
 }
 
 // A run's terminal 401 becomes the right stop. The local session is cleared and
@@ -236,11 +279,12 @@ function makeSender(intent, run, tally, staging) {
     let res = await attempt(token);
     if (res.status === 401) {
       // Never refresh (present the refresh token of) a session this run does
-      // not own.
+      // not own: checked here and, bound by `run.generation`, again under the
+      // session module's state lock before the token is read.
       if (getSessionGeneration() !== run.generation) {
         throw obsoleteRunError(run);
       }
-      const refreshed = await refreshAccessToken();
+      const refreshed = await refreshAccessToken(run.generation);
       if (refreshed === null) {
         throw await sessionLossError(run);
       }
@@ -334,7 +378,7 @@ async function completeIngest(intent, outcome, generation) {
     if (getSessionGeneration() !== generation) {
       throw tgpSessionReplaced();
     }
-    const refreshed = await refreshAccessToken();
+    const refreshed = await refreshAccessToken(generation);
     if (getSessionGeneration() !== generation) {
       throw tgpSessionReplaced();
     }
@@ -499,6 +543,11 @@ function describedOrigin(url) {
 }
 
 async function handleStartIngest(message) {
+  // The session this accepted Start belongs to, bound SYNCHRONOUSLY at
+  // admission (the router calls this before yielding), before any await. Any
+  // later establish/clear makes the run obsolete (see ownedAccessToken /
+  // sessionLossError); the run never adopts a session that appears later.
+  const generation = getSessionGeneration();
   const url = typeof message.url === "string" ? message.url : "";
   const platform = detectPlatform(url);
   if (platform === null) {
@@ -508,22 +557,14 @@ async function handleStartIngest(message) {
     });
     return;
   }
-  // Verify we have (or can mint) a TGP access token before starting.
-  let accessToken;
-  try {
-    accessToken = await getAccessToken();
-  } catch {
-    broadcastAuthRequired("login required to import");
-    return;
-  }
-  if (typeof accessToken !== "string" || accessToken.length === 0) {
-    broadcastAuthRequired("login required to import");
+  // Verify the OWNING session has (or can mint) a TGP access token before
+  // starting.
+  const preflight = await preflightOwnedSession(generation);
+  if (preflight !== null) {
+    reportPreflightFailure(preflight);
     return;
   }
 
-  // The session this run belongs to. Any later establish/clear makes the run
-  // obsolete (see ownedAccessToken / sessionLossError).
-  const generation = getSessionGeneration();
   const controller = new AbortController();
   const intent = {
     intentId: `ext-${Date.now()}`,
@@ -730,6 +771,11 @@ async function collectSourceToken(tabId, allowedOrigins) {
 }
 
 async function handleStartImport(message) {
+  // The session this accepted Start belongs to, bound SYNCHRONOUSLY at
+  // admission (the router calls this before yielding), before any await. Any
+  // later establish/clear makes the run obsolete (see ownedAccessToken /
+  // sessionLossError); the run never adopts a session that appears later.
+  const generation = getSessionGeneration();
   const url = typeof message.url === "string" ? message.url : "";
   const platform = detectPlatform(url);
   if (platform === null) {
@@ -757,22 +803,14 @@ async function handleStartImport(message) {
     broadcastStatus({ ...emptySnapshot(), lastError: detail });
     return;
   }
-  // A TGP access token is required for ingest before we start crawling.
-  let accessToken;
-  try {
-    accessToken = await getAccessToken();
-  } catch {
-    broadcastAuthRequired("login required to import");
-    return;
-  }
-  if (typeof accessToken !== "string" || accessToken.length === 0) {
-    broadcastAuthRequired("login required to import");
+  // A TGP access token of the OWNING session is required for ingest before we
+  // start crawling.
+  const preflight = await preflightOwnedSession(generation);
+  if (preflight !== null) {
+    reportPreflightFailure(preflight);
     return;
   }
 
-  // The session this run belongs to. Any later establish/clear makes the run
-  // obsolete (see ownedAccessToken / sessionLossError).
-  const generation = getSessionGeneration();
   const controller = new AbortController();
   const intent = {
     intentId: `imp-${Date.now()}`,
