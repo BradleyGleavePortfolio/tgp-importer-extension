@@ -196,12 +196,21 @@ async function preflightOwnedSession(generation) {
   return null;
 }
 
-function reportPreflightFailure(failure) {
-  if (failure.replaced) {
+// Final reporting authority for a preflight failure of the run bound to
+// `generation`. The classification above was decided BEFORE an await boundary
+// (the async preflight resolving back into the handler); a replacement whose
+// establish was queued on the state lock can commit inside that gap, so the
+// owner is revalidated SYNCHRONOUSLY here, immediately before any
+// notification. A now-obsolete preflight reports "replaced" — never
+// auth_required for a session that is not its own (S4-R5-A-01). Nothing of
+// the current session is read, presented or cleared on either branch.
+function reportPreflightFailure(failure, generation) {
+  if (failure.replaced || getSessionGeneration() !== generation) {
     // The CURRENT session is intact: no auth_required, nothing cleared.
     broadcastStatus({ ...emptySnapshot(), lastError: SESSION_REPLACED_DETAIL });
     return;
   }
+  // The run's OWN session is still current and could not mint: genuine.
   broadcastAuthRequired("login required to import");
 }
 
@@ -558,10 +567,10 @@ async function handleStartIngest(message) {
     return;
   }
   // Verify the OWNING session has (or can mint) a TGP access token before
-  // starting.
+  // starting. The owner is re-checked synchronously at the report.
   const preflight = await preflightOwnedSession(generation);
   if (preflight !== null) {
-    reportPreflightFailure(preflight);
+    reportPreflightFailure(preflight, generation);
     return;
   }
 
@@ -804,10 +813,10 @@ async function handleStartImport(message) {
     return;
   }
   // A TGP access token of the OWNING session is required for ingest before we
-  // start crawling.
+  // start crawling. The owner is re-checked synchronously at the report.
   const preflight = await preflightOwnedSession(generation);
   if (preflight !== null) {
-    reportPreflightFailure(preflight);
+    reportPreflightFailure(preflight, generation);
     return;
   }
 

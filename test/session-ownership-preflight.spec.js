@@ -645,3 +645,154 @@ describe("a refresh on behalf of an obsolete run never presents the replacement'
     expect(mock.sessionMap.has(REFRESH_KEY)).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// S4-R5-A-01: the preflight's failure CLASSIFICATION ("not replaced") is
+// decided before an await boundary; a replacement whose establish was queued
+// on the state lock can commit inside that gap. The final reporting action
+// must revalidate the owner synchronously, so a now-obsolete preflight reports
+// "replaced" instead of auth_required while the replacement is current. The
+// offset at which the replacement commits is enumerated finitely (microtask
+// turns), so both classes are exercised: OLD still current at the report
+// (genuine "login required" exactly once, still visible) and B current at the
+// report (replaced detail, no auth_required, B intact, hasSession).
+describe("preflight reporting authority is revalidated synchronously at the notification (S4-R5-A-01)", () => {
+  const MAX_OFFSET = 40;
+
+  for (const kind of ["start_import", "start_ingest"]) {
+    it(`${kind}: OLD refresh 401 classified while OLD is current, replacement commits before the report → replaced, never auth_required for B (offsets 0..${MAX_OFFSET})`, async () => {
+      const routes = makeRoutes({
+        refresh: () => new Response(null, { status: 401 }),
+        ingest: (_n, init) => acceptedIngest(init),
+      });
+      const { mock, session } = await loadCold(routes);
+      // Record the session generation AT EMISSION TIME of every message.
+      /** @type {Array<{ kind: string, lastError: any, generation: number }>} */
+      let emitted = [];
+      const originalSend = mock.chrome.runtime.sendMessage;
+      mock.chrome.runtime.sendMessage = (msg) => {
+        emitted.push({
+          kind: msg.kind,
+          lastError: msg.lastError ?? null,
+          generation: session.getSessionGeneration(),
+        });
+        return originalSend(msg);
+      };
+      const heldRefresh = deferred();
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async (url, init) => {
+          if (url === REFRESH_URL) {
+            const refreshToken = JSON.parse(init.body).refresh_token;
+            routes.calls.push({ url, authorization: null, refreshToken });
+            return heldRefresh.promise;
+          }
+          return routes.fetchImpl(url, init);
+        }),
+      );
+
+      let oldCurrentAtReport = 0;
+      let replacementCurrentAtReport = 0;
+      for (let offset = 0; offset <= MAX_OFFSET; offset += 1) {
+        // Fresh cold OLD state for this offset (same module instance; the
+        // generation is monotonic, so each round has a distinct OLD).
+        await session.clearTokens();
+        await flush();
+        mock.sessionMap.set(REFRESH_KEY, OLD.refreshToken);
+        mock.sent.length = 0;
+        emitted = [];
+        routes.calls.length = 0;
+        const held = deferred();
+        heldRefresh.resolve = held.resolve;
+        heldRefresh.promise = held.promise;
+        const oldGeneration = session.getSessionGeneration();
+
+        await start(mock, kind);
+        await flush();
+        expect(routes.calls.filter((c) => c.url === REFRESH_URL)).toHaveLength(
+          1,
+        );
+        expect(routes.calls[0].refreshToken).toBe(OLD.refreshToken);
+
+        const barrier = holdPersistOf(mock, NEW.refreshToken);
+        const pairing = replace(mock);
+        await flush();
+        expect(barrier.entered()).toBe(true);
+
+        held.resolve(new Response(null, { status: 401 }));
+        await flush(offset);
+        barrier.release();
+        expect(await pairing).toEqual({ ok: true });
+        await until(() => terminal(mock));
+        await flush();
+
+        const newGeneration = session.getSessionGeneration();
+        expect(newGeneration).not.toBe(oldGeneration);
+        // THE invariant: no auth_required was ever emitted while a session
+        // other than the run's own was current.
+        const staleAuth = emitted.filter(
+          (e) => e.kind === "auth_required" && e.generation !== oldGeneration,
+        );
+        expect(staleAuth).toEqual([]);
+        // B's credentials were never presented, rotated or removed.
+        expect(mock.sessionMap.get(REFRESH_KEY)).toBe(NEW.refreshToken);
+        expect(
+          routes.calls.filter((c) => c.refreshToken === NEW.refreshToken),
+        ).toEqual([]);
+        expect(routes.calls.filter((c) => c.url !== REFRESH_URL)).toEqual([]);
+
+        const report = emitted
+          .filter((e) => e.kind === "status_snapshot")
+          .at(-1);
+        expect(report).toBeDefined();
+        if (report.generation === oldGeneration) {
+          // OLD was still current when the report was emitted: a genuine
+          // failure of the run's own session stays visible, exactly once.
+          oldCurrentAtReport += 1;
+          expect(authRequired(mock)).toHaveLength(1);
+          expect(report.lastError).toBe(LOGIN_REQUIRED);
+        } else {
+          // The replacement had committed by the report: honest replaced stop.
+          replacementCurrentAtReport += 1;
+          expect(authRequired(mock)).toHaveLength(0);
+          expect(report.lastError).toBe(REPLACED_DETAIL);
+          expect(lastSnapshot(mock).intent).toBeNull();
+          const state = await mock.dispatch({ kind: "request_session_state" });
+          expect(state).toEqual({ ok: true, hasSession: true });
+        }
+        // Guard released either way.
+        const again = await mock.dispatch({
+          kind: "start_import",
+          url: "https://example.invalid/",
+          tabId: TAB_ID,
+        });
+        expect(again).toEqual({ ok: true });
+      }
+      // The enumeration must have exercised BOTH classes, or it discriminates
+      // nothing.
+      expect(oldCurrentAtReport).toBeGreaterThan(0);
+      expect(replacementCurrentAtReport).toBeGreaterThan(0);
+    });
+  }
+
+  it("control — the replacement commits only AFTER the genuine report: 'login required' exactly once for OLD, then B pairs cleanly", async () => {
+    const routes = makeRoutes({
+      refresh: () => new Response(null, { status: 401 }),
+      ingest: (_n, init) => acceptedIngest(init),
+    });
+    const { mock, session } = await loadCold(routes);
+    const oldGeneration = session.getSessionGeneration();
+    await start(mock, "start_import");
+    await until(() => terminal(mock));
+    expect(authRequired(mock)).toHaveLength(1);
+    expect(lastSnapshot(mock).lastError).toBe(LOGIN_REQUIRED);
+    expect(session.getSessionGeneration()).toBe(oldGeneration);
+    expect(await replace(mock)).toEqual({ ok: true });
+    await flush();
+    // The late pairing does not retroactively produce a second notification.
+    expect(authRequired(mock)).toHaveLength(1);
+    expect(mock.sessionMap.get(REFRESH_KEY)).toBe(NEW.refreshToken);
+    const state = await mock.dispatch({ kind: "request_session_state" });
+    expect(state).toEqual({ ok: true, hasSession: true });
+  });
+});
