@@ -107,6 +107,13 @@ describe("package: reproducible shipping bytes", { timeout: 30_000 }, () => {
     ).toBe("classic");
   });
 
+  it("the fixture/mock reference pattern matches a bare and a nested specifier", () => {
+    const fixtureRef =
+      /["'](?:[^"']*\/)?(?:test\/fixtures|fixtures|__mocks__|mocks)\/[^"']*["']/;
+    expect('"fixtures/a.json"').toMatch(fixtureRef);
+    expect('"src/nested/fixtures/a.json"').toMatch(fixtureRef);
+  });
+
   it("contains no Node, test-runner or fixture references in shipped code", () => {
     const { files } = collectShipping(root);
     for (const file of files) {
@@ -115,7 +122,7 @@ describe("package: reproducible shipping bytes", { timeout: 30_000 }, () => {
       expect(source, file.path).not.toMatch(/["']node:[a-z_/]+["']/);
       expect(source, file.path).not.toMatch(/\bprocess\.env\b|\bvitest\b/);
       expect(source, file.path).not.toMatch(
-        /["'][^"']*(?:^|\/)(?:test\/fixtures|fixtures|__mocks__|mocks)\/[^"']*["']/,
+        /["'](?:[^"']*\/)?(?:test\/fixtures|fixtures|__mocks__|mocks)\/[^"']*["']/,
       );
     }
   });

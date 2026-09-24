@@ -366,7 +366,7 @@ describe("session refresh — body stall, recovery and epoch isolation", () => {
       },
     });
     fetches = [];
-    fetchImpl = async () => stalledResponse();
+    fetchImpl = async (_url, _init) => stalledResponse();
     vi.stubGlobal("fetch", async (url, init) => {
       fetches.push(JSON.parse(init.body).refresh_token);
       return fetchImpl(url, init);
@@ -393,7 +393,7 @@ describe("session refresh — body stall, recovery and epoch isolation", () => {
     expect(events).toContain("refresh_timeout");
     expect(events).not.toContain("refresh_body_parse_error");
     // Coalesced callers are released too: a fresh call does its own fetch.
-    fetchImpl = async () =>
+    fetchImpl = async (_url, _init) =>
       streamed(JSON.stringify({ access_token: "access-after-timeout" }));
     await expect(mod.refreshAccessToken()).resolves.toBe(
       "access-after-timeout",
@@ -404,7 +404,7 @@ describe("session refresh — body stall, recovery and epoch isolation", () => {
   it("a body that completes AFTER the deadline is never committed", async () => {
     vi.useFakeTimers();
     const late = lateResponse();
-    fetchImpl = async () => late.res;
+    fetchImpl = async (_url, _init) => late.res;
     const state = settleTracker(mod.refreshAccessToken());
     await vi.advanceTimersByTimeAsync(DEFAULT_TIMEOUT_MS);
     expect(state.value).toBeNull();
@@ -414,7 +414,7 @@ describe("session refresh — body stall, recovery and epoch isolation", () => {
     expect(late.state.lateBytesAccepted).toBe(false);
     expect(store.get(REFRESH_KEY)).toBe("refresh-1");
     // No access token was published: the next getAccessToken must refresh.
-    fetchImpl = async () =>
+    fetchImpl = async (_url, _init) =>
       streamed(JSON.stringify({ access_token: "access-fresh" }));
     await expect(mod.getAccessToken()).resolves.toBe("access-fresh");
   });
@@ -423,7 +423,7 @@ describe("session refresh — body stall, recovery and epoch isolation", () => {
     vi.useFakeTimers();
     /** @type {(value: unknown) => void} */
     let releaseJson = () => {};
-    fetchImpl = async () => ({
+    fetchImpl = async (_url, _init) => ({
       ok: true,
       status: 200,
       json: () =>
@@ -437,7 +437,7 @@ describe("session refresh — body stall, recovery and epoch isolation", () => {
     releaseJson({ access_token: "LATE", refresh_token: "rotated-late" });
     await vi.advanceTimersByTimeAsync(10);
     expect(store.get(REFRESH_KEY)).toBe("refresh-1");
-    fetchImpl = async () =>
+    fetchImpl = async (_url, _init) =>
       streamed(JSON.stringify({ access_token: "access-fresh" }));
     await expect(mod.getAccessToken()).resolves.toBe("access-fresh");
   });
@@ -451,7 +451,7 @@ describe("session refresh — body stall, recovery and epoch isolation", () => {
 
     await mod.clearTokens();
     await mod.establishSession("access-new", "refresh-new");
-    fetchImpl = async () =>
+    fetchImpl = async (_url, _init) =>
       streamed(
         JSON.stringify({
           access_token: "access-new-minted",
@@ -475,7 +475,7 @@ describe("session refresh — body stall, recovery and epoch isolation", () => {
     await mod.establishSession("access-e1", "refresh-e1");
     /** @type {(value: Response) => void} */
     let release = () => {};
-    fetchImpl = () =>
+    fetchImpl = (_url, _init) =>
       new Promise((r) => {
         release = r;
       });
@@ -508,7 +508,7 @@ describe("session refresh — body stall, recovery and epoch isolation", () => {
     // New-session refresh parks on the network (headers not yet in).
     /** @type {(value: Response) => void} */
     let releaseNew = () => {};
-    fetchImpl = () =>
+    fetchImpl = (_url, _init) =>
       new Promise((r) => {
         releaseNew = r;
       });
@@ -544,7 +544,7 @@ describe("session refresh — body stall, recovery and epoch isolation", () => {
 
   it("a non-2xx refresh reply is not parsed but its body is cancelled", async () => {
     let cancelRequested = false;
-    fetchImpl = async () =>
+    fetchImpl = async (_url, _init) =>
       stalledResponse(401, () => {
         cancelRequested = true;
         return new Promise(() => {});
@@ -558,7 +558,7 @@ describe("session refresh — body stall, recovery and epoch isolation", () => {
   });
 
   it("an oversized refresh body is a parse failure: nothing committed, token kept", async () => {
-    fetchImpl = async () =>
+    fetchImpl = async (_url, _init) =>
       streamed(
         JSON.stringify({ access_token: "x".repeat(MAX_AUTH_BODY_BYTES + 1) }),
       );
@@ -571,7 +571,7 @@ describe("session refresh — body stall, recovery and epoch isolation", () => {
   it("same-epoch concurrent refreshes still coalesce onto one fetch", async () => {
     /** @type {(value: Response) => void} */
     let release = () => {};
-    fetchImpl = () =>
+    fetchImpl = (_url, _init) =>
       new Promise((r) => {
         release = r;
       });

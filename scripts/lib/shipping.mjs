@@ -228,10 +228,16 @@ export function collectShipping(root) {
     const localesRoot = join(root, "_locales");
     for (const locale of readdirSync(localesRoot).sort()) {
       const messages = join(localesRoot, locale, "messages.json");
-      if (!existsSync(messages) || !statSync(messages).isFile()) {
-        throw new Error(`_locales/${locale} has no messages.json`);
+      let messagesText;
+      try {
+        messagesText = readFileSync(messages, "utf8");
+      } catch (err) {
+        if (err && (err.code === "ENOENT" || err.code === "EISDIR")) {
+          throw new Error(`_locales/${locale} has no messages.json`);
+        }
+        throw err;
       }
-      JSON.parse(readFileSync(messages, "utf8"));
+      JSON.parse(messagesText);
       queue.push({
         path: toPosix(relative(root, messages)),
         kind: "locale",
