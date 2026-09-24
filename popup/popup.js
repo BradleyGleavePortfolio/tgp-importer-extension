@@ -1,7 +1,7 @@
 // TGP Importer — popup status UI.
 // Requests a snapshot from the background worker and renders intent +
 // per-entity progress + the last error. Re-renders on every broadcast.
-import { outcomeView } from "./outcome.js";
+import { outcomeView, preStartIssue } from "./outcome.js";
 
 let latestSnapshot = null;
 let snapshotVersion = 0;
@@ -114,7 +114,12 @@ function render(snapshot) {
   }
   if (snapshot.lastError && !snapshot.intent) {
     errorBox.hidden = false;
-    errorBox.textContent = snapshot.lastError;
+    // Approved fact+remedy copy only; the raw worker-internal lastError (which
+    // can include a platform slug or tab origin) never reaches the coach.
+    errorBox.textContent = preStartIssue(
+      snapshot.lastError,
+      chrome.i18n.getMessage,
+    );
   } else {
     errorBox.hidden = true;
   }

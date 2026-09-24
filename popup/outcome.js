@@ -118,3 +118,30 @@ export function outcomeView(snapshot, message) {
       .join("\n"),
   };
 }
+
+// Pure mapper for the NO-RUN error box (snapshot.lastError with no intent).
+// These strings come from background.js and are worker-internal detail, not
+// approved coach copy: never render them directly (X6 / CQ-17). Each of the
+// seven known families gets a fact + remedy line from the approved catalog;
+// anything unrecognised — including a platform/vendor slug — falls through to
+// one generic line. Exported so a test can drive it without a live worker.
+export function preStartIssue(lastError, message) {
+  const error = typeof lastError === "string" ? lastError : "";
+  const key = error.includes("your TGP session changed")
+    ? "prestart_session_changed"
+    : error.includes("auth_required") ||
+        error.includes("login required to import") ||
+        error.includes("session expired")
+      ? "prestart_pairing_needed"
+      : error.startsWith("unsafe import origin")
+        ? "prestart_unsafe_origin"
+        : error.startsWith("unsupported site")
+          ? "prestart_page_unsupported"
+          : error.startsWith("no extractor for")
+            ? "prestart_no_reader"
+            : error.startsWith("no blueprint for") ||
+                error === "blueprint resolve failed"
+              ? "prestart_site_setup_unavailable"
+              : "prestart_unknown";
+  return message(key);
+}

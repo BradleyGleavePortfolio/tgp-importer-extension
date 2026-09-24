@@ -133,5 +133,33 @@
       "reasons": { "content": "$1", "example": "some pages were skipped" },
       "count": { "content": "$2", "example": "12" }
     }
+  },
+  "prestart_session_changed": {
+    "message": "Your TGP session changed before this import could start. Sign in again, then start the import.",
+    "description": "No-run error: the coach's TGP session was replaced before Start ran. Fact then remedy; no worker-internal detail."
+  },
+  "prestart_pairing_needed": {
+    "message": "TGP needs you to sign in again before this import can start. Sign in, then start the import.",
+    "description": "No-run error: pairing or sign-in is required before Start can proceed. Fact then remedy."
+  },
+  "prestart_page_unsupported": {
+    "message": "This page can't be imported from. Open a supported page on your source platform, then start the import.",
+    "description": "No-run error: the active tab's site is not one the importer supports. No vendor or platform name is shown."
+  },
+  "prestart_unsafe_origin": {
+    "message": "This page isn't a safe place to start an import from. Open the source platform directly, then start the import.",
+    "description": "No-run error: the active tab's origin failed the import-safety allowlist check."
+  },
+  "prestart_no_reader": {
+    "message": "TGP doesn't yet have a reader for this site. No records were read or sent.",
+    "description": "No-run error: no extractor exists for the detected platform. The platform/vendor slug is never shown (X6)."
+  },
+  "prestart_site_setup_unavailable": {
+    "message": "Setup for this site isn't available right now. No records were read or sent. Try again shortly.",
+    "description": "No-run error: the platform's blueprint could not be resolved (missing or failed to load)."
+  },
+  "prestart_unknown": {
+    "message": "The import could not start. No records were read or sent. Try again, and contact TGP support if this continues.",
+    "description": "No-run error: generic fallback for any lastError not in the approved catalog. Never shows raw worker text."
   }
 }
