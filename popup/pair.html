@@ -5,61 +5,112 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>TGP Importer — Pair</title>
     <style>
+      :root {
+        --bone: #f7f4ec;
+        --cream: #fffdf8;
+        --ink: #17251f;
+        --forest: #16533c;
+        --forest-pressed: #0f432f;
+        --muted: #53655b;
+        --line: #cbd2c8;
+        --error: #7e231b;
+        --error-surface: #fbece8;
+        --focus-ring: #0f4b37;
+        --font-heading: "Cormorant Garamond", ui-serif, Georgia, serif;
+        --font-body: Inter, ui-sans-serif, system-ui, sans-serif;
+      }
+
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+      }
+
       body {
-        width: 300px;
+        width: 22.5rem;
+        max-width: 100%;
         margin: 0;
-        padding: 16px;
-        font: 14px/1.45 system-ui, sans-serif;
-        background: #0f172a;
-        color: #f8fafc;
+        padding: 1.25rem;
+        font: 0.9375rem/1.5 var(--font-body);
+        background: var(--bone);
+        color: var(--ink);
       }
       h1 {
-        font-size: 15px;
-        margin: 0 0 8px;
+        margin: 0 0 0.5rem;
+        font: 600 1.5rem/1.1 var(--font-heading);
+        letter-spacing: 0.01em;
       }
       #hint {
-        color: #94a3b8;
-        font-size: 13px;
-        margin: 0 0 12px;
+        color: var(--muted);
+        font-size: 0.9375rem;
+        margin: 0 0 1rem;
       }
       label {
         display: block;
-        color: #94a3b8;
-        font-size: 13px;
-        margin: 10px 0 4px;
+        color: var(--ink);
+        font-size: 0.875rem;
+        font-weight: 700;
+        margin: 1rem 0 0.5rem;
       }
       input {
         width: 100%;
-        box-sizing: border-box;
-        padding: 8px;
-        border: 1px solid #1e293b;
-        border-radius: 6px;
-        background: #1e293b;
-        color: #f8fafc;
-        font: 600 20px/1.45 ui-monospace, monospace;
-        letter-spacing: 6px;
+        min-height: 3rem;
+        padding: 0.625rem 0.75rem;
+        border: 1px solid var(--muted);
+        border-radius: 0.375rem;
+        background: var(--cream);
+        color: var(--ink);
+        font: 700 1.5rem/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: 0.2em;
         text-align: center;
       }
       button {
         width: 100%;
-        margin-top: 14px;
-        padding: 9px;
+        min-height: 3rem;
+        margin-top: 1rem;
+        padding: 0.75rem 1rem;
         border: 0;
-        border-radius: 6px;
-        background: #38bdf8;
-        color: #0f172a;
-        font: 600 14px/1.45 system-ui, sans-serif;
+        border-radius: 0.375rem;
+        background: var(--forest);
+        color: #fff;
+        font: 700 0.9375rem/1.45 var(--font-body);
         cursor: pointer;
+        transition:
+          background-color 160ms ease,
+          box-shadow 160ms ease;
+      }
+      button:hover:not(:disabled) {
+        background: var(--forest-pressed);
       }
       button:disabled {
-        opacity: 0.6;
+        color: var(--ink);
+        background: #aeb9b0;
         cursor: default;
       }
       #error {
-        margin-top: 10px;
-        color: #f87171;
-        font-size: 13px;
-        word-break: break-word;
+        margin-top: 1rem;
+        padding: 0.75rem;
+        border: 1px solid var(--error);
+        border-radius: 0.375rem;
+        background: var(--error-surface);
+        color: var(--error);
+        font-size: 0.875rem;
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+      input:focus-visible,
+      button:focus-visible {
+        outline: 3px solid var(--focus-ring);
+        outline-offset: 3px;
+      }
+      @media (prefers-reduced-motion: reduce) {
+        *,
+        *::before,
+        *::after {
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+        }
       }
     </style>
   </head>
