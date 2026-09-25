@@ -51,6 +51,12 @@ import {
   readHeader,
 } from "./shared/net.js";
 import { createProgressReporter } from "./shared/progress.js";
+import {
+  IMPORT_STATUS_PATH,
+  isSendableIntentId,
+  readImportStatusReply,
+  unavailableServerStatus,
+} from "./shared/import-status.js";
 import { logNetworkEvent } from "./shared/log.js";
 import {
   attachDebugger,
@@ -97,6 +103,9 @@ function isRequestStatus(m) {
 }
 function isRequestSessionState(m) {
   return isRecord(m) && m.kind === "request_session_state";
+}
+function isRequestServerStatus(m) {
+  return isRecord(m) && m.kind === "request_server_status";
 }
 function isStartCapture(m) {
   return isRecord(m) && m.kind === "start_capture";
@@ -462,6 +471,50 @@ async function postProgress(body, generation) {
   );
   if (!res.ok) {
     throw new Error(`progress ${res.status}`);
+  }
+}
+
+// ---- server status read (Check status) --------------------------------------
+
+// Read-only: GET /api/scout/import/status for the worker's OWN recorded run id
+// (never a caller-supplied id), with the current session's bearer. Mirrors
+// completeIngest's auth handling: one refresh on 401, bound to the session
+// generation captured here; never clears tokens, never broadcasts
+// auth_required, never touches the snapshot, Start or run control. Any fault
+// is "unavailable"; a 404 is "not yet known" (see shared/import-status.js).
+async function handleRequestServerStatus() {
+  const generation = getSessionGeneration();
+  try {
+    if (!importInFlight) await rehydrateSnapshot();
+    const intentId = readString(
+      Reflect.get(currentSnapshot, "intent"),
+      "intentId",
+    );
+    if (!isSendableIntentId(intentId)) {
+      return { kind: "server_status", state: "no_run" };
+    }
+    const url = `${TGP_API_ORIGIN}${IMPORT_STATUS_PATH}?intent_id=${encodeURIComponent(intentId)}`;
+    const attempt = (token) =>
+      fetchWithTimeout(
+        fetch,
+        url,
+        { method: "GET", headers: { Authorization: `Bearer ${token}` } },
+        undefined,
+        (response, signal) => readImportStatusReply(response, intentId, signal),
+      );
+    let res = await attempt(await ownedAccessToken(generation));
+    if (res.http === 401) {
+      const refreshed = await refreshAccessToken(generation);
+      if (refreshed === null || getSessionGeneration() !== generation) {
+        return { kind: "server_status", ...unavailableServerStatus() };
+      }
+      res = await attempt(refreshed);
+    }
+    return { kind: "server_status", ...res.reply };
+  } catch {
+    // No session, replaced session, timeout or transport fault: nothing is
+    // known from the server, and no worker detail reaches the popup.
+    return { kind: "server_status", ...unavailableServerStatus() };
   }
 }
 
@@ -1053,6 +1106,15 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     void ready.then(() =>
       sendResponse({ ...currentSnapshot, workerActive: importInFlight }),
     );
+    return true; // async response
+  }
+  if (isRequestServerStatus(message)) {
+    // Spends the TGP bearer, so only this extension's own pages may ask.
+    if (!isTrustedExtensionPage(sender)) {
+      sendResponse({ ok: false, error: "untrusted_sender" });
+      return false;
+    }
+    void handleRequestServerStatus().then(sendResponse);
     return true; // async response
   }
   if (isRequestSessionState(message)) {

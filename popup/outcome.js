@@ -145,3 +145,104 @@ export function preStartIssue(lastError, message) {
               : "prestart_unknown";
   return message(key);
 }
+
+// Pure projection of the worker's server-status reply (GET
+// /api/scout/import/status, see shared/import-status.js) for the separate
+// "TGP server record" region. Returns null when nothing may be shown: no local
+// run, no run on the worker, or a reply for a different run than the one on
+// screen. Unknown is "not yet known", never 0; family counts are never summed;
+// no percent, phase or ETA; the server terminal is the final state and the
+// extension's own claim is never shown as the result.
+const SERVER_TERMINALS = [
+  "success",
+  "partial",
+  "failed",
+  "complete",
+  "blocked",
+  "cancelled",
+  "timed_out",
+];
+const SERVER_FAMILIES = ["clients", "notes", "exercises", "workouts", "plans"];
+function serverFamilyLabel(family, message) {
+  return message(
+    SERVER_FAMILIES.includes(family)
+      ? `outcome_family_${family}`
+      : "outcome_family_records",
+  );
+}
+function isServerCounts(counts) {
+  return (
+    Array.isArray(counts) &&
+    counts.every(
+      (row) =>
+        row &&
+        typeof row.entityType === "string" &&
+        row.entityType.length > 0 &&
+        count(row.committed),
+    )
+  );
+}
+export function serverStatusView(reply, snapshot, message) {
+  const intentId = snapshot?.intent?.intentId;
+  if (typeof intentId !== "string" || !reply || typeof reply !== "object")
+    return null;
+  const base = {
+    heading: message("server_status_heading"),
+    note: message("server_status_note"),
+    intentId,
+  };
+  const unavailable = {
+    ...base,
+    state: message("server_status_unavailable"),
+    lines: [],
+  };
+  if (reply.kind !== "server_status") return unavailable;
+  if (reply.state === "no_run") return null;
+  if (reply.state === "unavailable") return unavailable;
+  if (reply.state !== "not_yet_known" && reply.state !== "known")
+    return unavailable;
+  // Stale or foreign reply: never attach another run's server record.
+  if (reply.intentId !== intentId) return null;
+  if (reply.state === "not_yet_known")
+    return {
+      ...base,
+      state: message("server_status_not_yet_known"),
+      lines: [],
+    };
+  const terminal = SERVER_TERMINALS.includes(reply.status);
+  if (
+    (!terminal && reply.status !== "running") ||
+    !isServerCounts(reply.counts)
+  )
+    return unavailable;
+  const lines = reply.counts.map((row) => ({
+    label: serverFamilyLabel(row.entityType, message),
+    text: message("server_family_committed", [String(row.committed)]),
+  }));
+  // Families this browser has receipts for but the server does not list: the
+  // server stated no count for them, so they are not yet known (never 0).
+  const listed = new Set(reply.counts.map((row) => row.entityType));
+  const local = new Set(
+    snapshot.staging && typeof snapshot.staging === "object"
+      ? Object.keys(snapshot.staging)
+      : [],
+  );
+  if (typeof snapshot.pendingTransfer?.entityType === "string")
+    local.add(snapshot.pendingTransfer.entityType);
+  for (const family of local) {
+    if (listed.has(family)) continue;
+    lines.push({
+      label: serverFamilyLabel(family, message),
+      text: message("server_family_unknown"),
+    });
+  }
+  return {
+    ...base,
+    state: terminal
+      ? message("server_status_final", [
+          message(`server_state_${reply.status}`),
+        ])
+      : message("server_status_open"),
+    lines,
+  };
+}

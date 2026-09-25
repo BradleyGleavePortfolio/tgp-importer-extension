@@ -1,10 +1,11 @@
 // TGP Importer — popup status UI.
 // Requests a snapshot from the background worker and renders intent +
 // per-entity progress + the last error. Re-renders on every broadcast.
-import { outcomeView, preStartIssue } from "./outcome.js";
+import { outcomeView, preStartIssue, serverStatusView } from "./outcome.js";
 
 let latestSnapshot = null;
 let snapshotVersion = 0;
+let serverCheckVersion = 0;
 function el(id) {
   const node = document.getElementById(id);
   if (!node) {
@@ -112,6 +113,11 @@ function render(snapshot) {
       list.appendChild(row);
     }
   }
+  // A server record belongs to exactly one run: drop it when the run on screen
+  // changes, so another run's server counts are never shown under this one.
+  const server = document.getElementById("server-status");
+  if (server && server.dataset.intentId !== snapshot.intent?.intentId)
+    paintServerStatus(document, null);
   if (snapshot.lastError && !snapshot.intent) {
     errorBox.hidden = false;
     // Approved fact+remedy copy only; the raw worker-internal lastError (which
@@ -180,9 +186,49 @@ export function wireStartImport(
   });
 }
 
+// Paint the separate "TGP server record" region, or hide and clear it (null).
+// Display only: never touches Start, its lock, the snapshot or the receipts.
+export function paintServerStatus(doc, view) {
+  const region = doc.getElementById("server-status");
+  if (!region) return;
+  const state = doc.getElementById("server-status-state");
+  const families = doc.getElementById("server-status-families");
+  region.hidden = view === null;
+  region.dataset.intentId = view === null ? "" : view.intentId;
+  if (state) state.textContent = view === null ? "" : view.state;
+  if (!families) return;
+  families.textContent = "";
+  for (const line of view === null ? [] : view.lines) {
+    const row = doc.createElement("div");
+    row.className = "row";
+    const label = doc.createElement("span");
+    label.className = "label";
+    label.textContent = line.label;
+    const value = doc.createElement("span");
+    value.textContent = line.text;
+    row.appendChild(label);
+    row.appendChild(value);
+    families.appendChild(row);
+  }
+}
+
+// Check status, second half: ask the worker to read the server for its own
+// run. Runs after the local refresh; a newer check supersedes an older reply.
+async function checkServerStatus(runtime, doc, message) {
+  const version = ++serverCheckVersion;
+  let reply;
+  try {
+    reply = await runtime.sendMessage({ kind: "request_server_status" });
+  } catch {
+    reply = { kind: "server_status", state: "unavailable" };
+  }
+  if (version !== serverCheckVersion) return;
+  paintServerStatus(doc, serverStatusView(reply, latestSnapshot, message));
+}
+
 export function wireOutcomeActions(runtime, doc, clipboard, message, receive) {
   const feedback = doc.getElementById("action-feedback");
-  doc.getElementById("check-status").addEventListener("click", async () => {
+  async function checkLocalStatus() {
     const version = snapshotVersion;
     try {
       const snapshot = await runtime.sendMessage({ kind: "request_status" });
@@ -194,6 +240,10 @@ export function wireOutcomeActions(runtime, doc, clipboard, message, receive) {
       if (version !== snapshotVersion) return;
       feedback.textContent = message("outcome_check_failed");
     }
+  }
+  doc.getElementById("check-status").addEventListener("click", async () => {
+    await checkLocalStatus();
+    await checkServerStatus(runtime, doc, message);
   });
   doc.getElementById("copy-summary").addEventListener("click", async () => {
     try {

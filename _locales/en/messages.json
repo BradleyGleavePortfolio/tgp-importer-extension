@@ -161,5 +161,48 @@
   "prestart_unknown": {
     "message": "The import could not start. No records were read or sent. Try again, and contact TGP support if this continues.",
     "description": "No-run error: generic fallback for any lastError not in the approved catalog. Never shows raw worker text."
+  },
+  "server_status_heading": {
+    "message": "TGP server record",
+    "description": "Heading for what the TGP server itself has recorded for this run, kept separate from this browser's local receipts."
+  },
+  "server_status_note": {
+    "message": "What TGP itself has recorded for this transfer, shown separately from this browser's receipts above."
+  },
+  "server_status_not_yet_known": {
+    "message": "Not yet known. TGP has no record of this transfer to show yet. This does not mean nothing was sent.",
+    "description": "The status read answered 404, which the backend uses uniformly for no evidence yet, a foreign run or a dark route. Never shown as 0."
+  },
+  "server_status_unavailable": {
+    "message": "Could not check TGP. The receipts above are unchanged.",
+    "description": "Any network, auth, rate-limit or shape fault on the status read. No server state is guessed."
+  },
+  "server_status_open": {
+    "message": "No final state recorded on TGP yet.",
+    "description": "Server status is running. No percent, phase or ETA is shown."
+  },
+  "server_status_final": {
+    "message": "Final state (TGP server): $STATE$",
+    "description": "The server's settled terminal is the final state of this run.",
+    "placeholders": { "state": { "content": "$1", "example": "partial; some records may be missing" } }
+  },
+  "server_state_success": {
+    "message": "transfer settled; records staged, migration not verified",
+    "description": "Legacy server terminal success is a transport settlement, not a verified native migration."
+  },
+  "server_state_partial": { "message": "partial; some records may be missing" },
+  "server_state_failed": { "message": "failed" },
+  "server_state_complete": { "message": "complete" },
+  "server_state_blocked": { "message": "blocked" },
+  "server_state_cancelled": { "message": "cancelled" },
+  "server_state_timed_out": { "message": "timed out" },
+  "server_family_committed": {
+    "message": "$COUNT$ committed on TGP",
+    "description": "Server-committed count for one family. Never summed across families.",
+    "placeholders": { "count": { "content": "$1", "example": "12" } }
+  },
+  "server_family_unknown": {
+    "message": "Committed on TGP: not yet known",
+    "description": "A family this browser has receipts for that the server response does not list. Never shown as 0."
   }
 }

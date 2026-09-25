@@ -1,0 +1,702 @@
+{
+  "$comment": "Consumer-freeze fixture for GET /api/scout/import/status, derived from the landed backend contract. Schemas are verbatim copies; response bodies are synthetic examples that satisfy them. No real coach, intent or record data.",
+  "contract": {
+    "repo": "BradleyGleavePortfolio/growth-project-backend",
+    "ref": "integration/importer",
+    "commit": "df713fd9217df524915348ef8a42c797f288dde1",
+    "path": "docs/contracts/importer-openapi.json",
+    "blob": "3c1fd2ac528ef19bb565f4b6f073a2155e8bab3f",
+    "sha256": "fc42af0a8ec8f162dbc8e79dc05eeb09663d735b031314c316d98e834ed8d60e",
+    "info_version": "2.0.0-c1-s2.0"
+  },
+  "request": {
+    "method": "GET",
+    "path": "/api/scout/import/status",
+    "query": {
+      "intent_id": {
+        "in": "query",
+        "required": true,
+        "schema": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        }
+      }
+    },
+    "security": [
+      {
+        "bearer": []
+      }
+    ],
+    "operationId": "ScoutController_getImportStatus"
+  },
+  "response_refs": {
+    "200": "ScoutImportStatusResult",
+    "400": "ErrorEnvelope",
+    "401": "ErrorEnvelope",
+    "403": "ErrorEnvelope",
+    "404": "ErrorEnvelope",
+    "429": "RateLimitError"
+  },
+  "schemas": {
+    "ScoutImportStatusResult": {
+      "properties": {
+        "accepted_start_at": {
+          "description": "Server-owned start of a server run (written once at Start); null on legacy rows.",
+          "format": "date-time",
+          "nullable": true,
+          "type": "string"
+        },
+        "claimed_status": {
+          "description": "The extension's stored /complete claim (`success|partial|failed`); null while none. On a server run this is INPUT to the arbiter, never the terminal itself.",
+          "enum": [
+            "success",
+            "partial",
+            "failed"
+          ],
+          "nullable": true,
+          "type": "string"
+        },
+        "completed_at": {
+          "description": "Settled at (ISO-8601); null while running.",
+          "format": "date-time",
+          "nullable": true,
+          "type": "string"
+        },
+        "deadline_at": {
+          "description": "accepted_start_at + SCOUT_RUN_DEADLINE_MS; enforced lazily. Null on legacy rows.",
+          "format": "date-time",
+          "nullable": true,
+          "type": "string"
+        },
+        "entity_counts": {
+          "description": "Committed counts per entity.",
+          "items": {
+            "$ref": "#/components/schemas/ScoutImportEntityCountDto"
+          },
+          "type": "array"
+        },
+        "execution_epoch": {
+          "description": "Fence epoch of the run (1 until fenced).",
+          "minimum": 1,
+          "type": "number"
+        },
+        "families": {
+          "description": "Per-family evidence: staged unique rows and the reconstruction ledger tally. Native buckets are null (= not yet known, never 0) until later slices fill them.",
+          "items": {
+            "$ref": "#/components/schemas/ScoutImportFamilyDto"
+          },
+          "type": "array"
+        },
+        "intent_id": {
+          "description": "The intent id that was read.",
+          "type": "string"
+        },
+        "last_observed_at": {
+          "description": "Last write accepted through the run gate; null on legacy rows.",
+          "format": "date-time",
+          "nullable": true,
+          "type": "string"
+        },
+        "mode": {
+          "description": "`server` for a run started via POST /scout/runs/start; `legacy` otherwise.",
+          "enum": [
+            "legacy",
+            "server"
+          ],
+          "type": "string"
+        },
+        "phase": {
+          "description": "Open-run phase of a server run; null on legacy rows and once terminal.",
+          "enum": [
+            "discovering",
+            "transferring",
+            "reconciling"
+          ],
+          "nullable": true,
+          "type": "string"
+        },
+        "reason_code": {
+          "description": "Why the server run reached its terminal; null while open and on legacy rows.",
+          "enum": [
+            "reconciliation_not_performed",
+            "cancelled_by_coach",
+            "deadline_exceeded",
+            "transfer_failed",
+            "unresolved_family",
+            "revoked"
+          ],
+          "nullable": true,
+          "type": "string"
+        },
+        "started_at": {
+          "description": "Earliest evidence timestamp (ISO-8601): first committed entity, else lifecycle start, else latest progress snapshot. Null when none timestamped. For a settled run with zero committed entities and no snapshot this degenerates to the settle-time lifecycle start, so it may equal completed_at.",
+          "format": "date-time",
+          "nullable": true,
+          "type": "string"
+        },
+        "status": {
+          "description": "Proven lifecycle state.",
+          "enum": [
+            "running",
+            "success",
+            "partial",
+            "failed",
+            "complete",
+            "blocked",
+            "cancelled",
+            "timed_out"
+          ],
+          "type": "string"
+        }
+      },
+      "required": [
+        "intent_id",
+        "status",
+        "entity_counts",
+        "started_at",
+        "completed_at",
+        "mode",
+        "phase",
+        "accepted_start_at",
+        "deadline_at",
+        "last_observed_at",
+        "execution_epoch",
+        "claimed_status",
+        "reason_code",
+        "families"
+      ],
+      "type": "object"
+    },
+    "ScoutImportEntityCountDto": {
+      "properties": {
+        "committed": {
+          "description": "Entities actually committed (proof, not an estimate).",
+          "minimum": 0,
+          "type": "number"
+        },
+        "entity_type": {
+          "description": "Entity family.",
+          "example": "clients",
+          "type": "string"
+        }
+      },
+      "required": [
+        "entity_type",
+        "committed"
+      ],
+      "type": "object"
+    },
+    "ScoutImportFamilyDto": {
+      "properties": {
+        "already_present_verified": {
+          "description": "Verified already present (S9); null until known.",
+          "nullable": true,
+          "type": "number"
+        },
+        "created_native": {
+          "description": "Native rows created (S9); null until known.",
+          "nullable": true,
+          "type": "number"
+        },
+        "family": {
+          "description": "Entity family.",
+          "example": "clients",
+          "type": "string"
+        },
+        "ledger": {
+          "allOf": [
+            {
+              "$ref": "#/components/schemas/ScoutImportFamilyLedgerDto"
+            }
+          ],
+          "description": "Reconstruction ledger tally."
+        },
+        "observed_unique": {
+          "description": "Observed by the extension (S10); null until known.",
+          "nullable": true,
+          "type": "number"
+        },
+        "rejected": {
+          "description": "Rejected by reconciliation (S9); null until known.",
+          "nullable": true,
+          "type": "number"
+        },
+        "staged_unique": {
+          "description": "Distinct staged source identities for the family.",
+          "minimum": 0,
+          "type": "number"
+        },
+        "unresolved": {
+          "description": "Unresolved by reconciliation (S9); null until known.",
+          "nullable": true,
+          "type": "number"
+        }
+      },
+      "required": [
+        "family",
+        "observed_unique",
+        "staged_unique",
+        "created_native",
+        "already_present_verified",
+        "rejected",
+        "unresolved",
+        "ledger"
+      ],
+      "type": "object"
+    },
+    "ScoutImportFamilyLedgerDto": {
+      "properties": {
+        "failed": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "reconstructed": {
+          "minimum": 0,
+          "type": "number"
+        },
+        "skipped": {
+          "minimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "reconstructed",
+        "skipped",
+        "failed"
+      ],
+      "type": "object"
+    },
+    "ErrorEnvelope": {
+      "properties": {
+        "code": {
+          "description": "Machine-readable failure discriminant, present only when the handler set one (e.g. `extension_refresh_invalid`, `invalid`). Absent for generic validation/guard errors.",
+          "example": "invalid",
+          "type": "string"
+        },
+        "error": {
+          "description": "Short error class name (Nest default), e.g. `Bad Request`, `Unauthorized`.",
+          "example": "Bad Request",
+          "type": "string"
+        },
+        "message": {
+          "description": "Human-readable message. A single string for most errors; an array of strings when the global ValidationPipe reports one entry per failed constraint.",
+          "example": "Invalid pairing code.",
+          "oneOf": [
+            {
+              "type": "string"
+            },
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          ]
+        },
+        "path": {
+          "description": "Request path the error occurred on.",
+          "example": "/api/scout/ingest",
+          "type": "string"
+        },
+        "request_id": {
+          "description": "Correlation id from RequestIdMiddleware; omitted when absent.",
+          "example": "5f2c9b1e-6d3a-4c8b-9f0e-1a2b3c4d5e6f",
+          "type": "string"
+        },
+        "statusCode": {
+          "description": "HTTP status code, echoed in the body.",
+          "example": 400,
+          "type": "number"
+        },
+        "timestamp": {
+          "description": "ISO-8601 instant the error envelope was built.",
+          "example": "2026-07-13T18:30:00.000Z",
+          "format": "date-time",
+          "type": "string"
+        }
+      },
+      "required": [
+        "statusCode",
+        "message",
+        "error",
+        "timestamp",
+        "path"
+      ],
+      "type": "object"
+    },
+    "RateLimitError": {
+      "properties": {
+        "error": {
+          "description": "Always `Too Many Requests`.",
+          "example": "Too Many Requests",
+          "type": "string"
+        },
+        "message": {
+          "description": "Generic backoff message (never echoes input or which limit fired).",
+          "example": "Too many attempts. Please wait before trying again.",
+          "type": "string"
+        },
+        "retryAfter": {
+          "description": "Seconds to wait before retrying; matches the `Retry-After` header.",
+          "example": 3600,
+          "type": "number"
+        },
+        "statusCode": {
+          "description": "Always 429.",
+          "example": 429,
+          "type": "number"
+        }
+      },
+      "required": [
+        "statusCode",
+        "error",
+        "message",
+        "retryAfter"
+      ],
+      "type": "object"
+    }
+  },
+  "responses": {
+    "legacy_running": {
+      "http_status": 200,
+      "body": {
+        "intent_id": "imp-1790000000000",
+        "status": "running",
+        "entity_counts": [
+          {
+            "entity_type": "clients",
+            "committed": 12
+          },
+          {
+            "entity_type": "notes",
+            "committed": 3
+          }
+        ],
+        "started_at": "2026-09-25T16:00:00.000Z",
+        "completed_at": null,
+        "mode": "legacy",
+        "phase": null,
+        "accepted_start_at": null,
+        "deadline_at": null,
+        "last_observed_at": null,
+        "execution_epoch": 1,
+        "claimed_status": null,
+        "reason_code": null,
+        "families": [
+          {
+            "family": "clients",
+            "observed_unique": null,
+            "staged_unique": 12,
+            "created_native": null,
+            "already_present_verified": null,
+            "rejected": null,
+            "unresolved": null,
+            "ledger": {
+              "reconstructed": 0,
+              "skipped": 0,
+              "failed": 0
+            }
+          },
+          {
+            "family": "notes",
+            "observed_unique": null,
+            "staged_unique": 3,
+            "created_native": null,
+            "already_present_verified": null,
+            "rejected": null,
+            "unresolved": null,
+            "ledger": {
+              "reconstructed": 0,
+              "skipped": 0,
+              "failed": 0
+            }
+          }
+        ]
+      }
+    },
+    "legacy_success": {
+      "http_status": 200,
+      "body": {
+        "intent_id": "imp-1790000000000",
+        "status": "success",
+        "entity_counts": [
+          {
+            "entity_type": "clients",
+            "committed": 12
+          },
+          {
+            "entity_type": "notes",
+            "committed": 3
+          }
+        ],
+        "started_at": "2026-09-25T16:00:00.000Z",
+        "completed_at": "2026-09-25T16:05:00.000Z",
+        "mode": "legacy",
+        "phase": null,
+        "accepted_start_at": null,
+        "deadline_at": null,
+        "last_observed_at": null,
+        "execution_epoch": 1,
+        "claimed_status": "success",
+        "reason_code": null,
+        "families": [
+          {
+            "family": "clients",
+            "observed_unique": null,
+            "staged_unique": 12,
+            "created_native": null,
+            "already_present_verified": null,
+            "rejected": null,
+            "unresolved": null,
+            "ledger": {
+              "reconstructed": 0,
+              "skipped": 0,
+              "failed": 0
+            }
+          },
+          {
+            "family": "notes",
+            "observed_unique": null,
+            "staged_unique": 3,
+            "created_native": null,
+            "already_present_verified": null,
+            "rejected": null,
+            "unresolved": null,
+            "ledger": {
+              "reconstructed": 0,
+              "skipped": 0,
+              "failed": 0
+            }
+          }
+        ]
+      }
+    },
+    "legacy_partial": {
+      "http_status": 200,
+      "body": {
+        "intent_id": "imp-1790000000000",
+        "status": "partial",
+        "entity_counts": [
+          {
+            "entity_type": "clients",
+            "committed": 7
+          }
+        ],
+        "started_at": "2026-09-25T16:00:00.000Z",
+        "completed_at": "2026-09-25T16:05:00.000Z",
+        "mode": "legacy",
+        "phase": null,
+        "accepted_start_at": null,
+        "deadline_at": null,
+        "last_observed_at": null,
+        "execution_epoch": 1,
+        "claimed_status": "partial",
+        "reason_code": null,
+        "families": [
+          {
+            "family": "clients",
+            "observed_unique": null,
+            "staged_unique": 7,
+            "created_native": null,
+            "already_present_verified": null,
+            "rejected": null,
+            "unresolved": null,
+            "ledger": {
+              "reconstructed": 0,
+              "skipped": 0,
+              "failed": 0
+            }
+          }
+        ]
+      }
+    },
+    "legacy_failed_zero_committed": {
+      "http_status": 200,
+      "body": {
+        "intent_id": "imp-1790000000000",
+        "status": "failed",
+        "entity_counts": [],
+        "started_at": "2026-09-25T16:05:00.000Z",
+        "completed_at": "2026-09-25T16:05:00.000Z",
+        "mode": "legacy",
+        "phase": null,
+        "accepted_start_at": null,
+        "deadline_at": null,
+        "last_observed_at": null,
+        "execution_epoch": 1,
+        "claimed_status": "failed",
+        "reason_code": null,
+        "families": []
+      }
+    },
+    "server_open": {
+      "http_status": 200,
+      "body": {
+        "intent_id": "imp-1790000000000",
+        "status": "running",
+        "entity_counts": [
+          {
+            "entity_type": "clients",
+            "committed": 4
+          }
+        ],
+        "started_at": "2026-09-25T16:00:00.000Z",
+        "completed_at": null,
+        "mode": "server",
+        "phase": "transferring",
+        "accepted_start_at": "2026-09-25T16:00:00.000Z",
+        "deadline_at": "2026-09-25T17:00:00.000Z",
+        "last_observed_at": "2026-09-25T16:02:00.000Z",
+        "execution_epoch": 1,
+        "claimed_status": null,
+        "reason_code": null,
+        "families": [
+          {
+            "family": "clients",
+            "observed_unique": null,
+            "staged_unique": 4,
+            "created_native": null,
+            "already_present_verified": null,
+            "rejected": null,
+            "unresolved": null,
+            "ledger": {
+              "reconstructed": 0,
+              "skipped": 0,
+              "failed": 0
+            }
+          }
+        ]
+      }
+    },
+    "server_timed_out": {
+      "http_status": 200,
+      "body": {
+        "intent_id": "imp-1790000000000",
+        "status": "timed_out",
+        "entity_counts": [
+          {
+            "entity_type": "clients",
+            "committed": 4
+          }
+        ],
+        "started_at": "2026-09-25T16:00:00.000Z",
+        "completed_at": "2026-09-25T16:05:00.000Z",
+        "mode": "server",
+        "phase": null,
+        "accepted_start_at": "2026-09-25T16:00:00.000Z",
+        "deadline_at": "2026-09-25T17:00:00.000Z",
+        "last_observed_at": "2026-09-25T16:02:00.000Z",
+        "execution_epoch": 2,
+        "claimed_status": null,
+        "reason_code": "deadline_exceeded",
+        "families": [
+          {
+            "family": "clients",
+            "observed_unique": null,
+            "staged_unique": 4,
+            "created_native": null,
+            "already_present_verified": null,
+            "rejected": null,
+            "unresolved": null,
+            "ledger": {
+              "reconstructed": 0,
+              "skipped": 0,
+              "failed": 0
+            }
+          }
+        ]
+      }
+    },
+    "server_complete": {
+      "http_status": 200,
+      "body": {
+        "intent_id": "imp-1790000000000",
+        "status": "complete",
+        "entity_counts": [
+          {
+            "entity_type": "clients",
+            "committed": 4
+          }
+        ],
+        "started_at": "2026-09-25T16:00:00.000Z",
+        "completed_at": "2026-09-25T16:05:00.000Z",
+        "mode": "server",
+        "phase": null,
+        "accepted_start_at": "2026-09-25T16:00:00.000Z",
+        "deadline_at": "2026-09-25T17:00:00.000Z",
+        "last_observed_at": "2026-09-25T16:02:00.000Z",
+        "execution_epoch": 1,
+        "claimed_status": "success",
+        "reason_code": null,
+        "families": [
+          {
+            "family": "clients",
+            "observed_unique": null,
+            "staged_unique": 4,
+            "created_native": null,
+            "already_present_verified": null,
+            "rejected": null,
+            "unresolved": null,
+            "ledger": {
+              "reconstructed": 4,
+              "skipped": 0,
+              "failed": 0
+            }
+          }
+        ]
+      }
+    },
+    "not_found": {
+      "http_status": 404,
+      "body": {
+        "statusCode": 404,
+        "message": "Not Found",
+        "error": "Not Found",
+        "timestamp": "2026-09-25T16:05:00.000Z",
+        "path": "/api/scout/import/status"
+      }
+    },
+    "bad_request": {
+      "http_status": 400,
+      "body": {
+        "statusCode": 400,
+        "message": [
+          "intent_id must be shorter than or equal to 128 characters"
+        ],
+        "error": "Bad Request",
+        "timestamp": "2026-09-25T16:05:00.000Z",
+        "path": "/api/scout/import/status"
+      }
+    },
+    "unauthorized": {
+      "http_status": 401,
+      "body": {
+        "statusCode": 401,
+        "message": "Unauthorized",
+        "error": "Unauthorized",
+        "timestamp": "2026-09-25T16:05:00.000Z",
+        "path": "/api/scout/import/status"
+      }
+    },
+    "forbidden": {
+      "http_status": 403,
+      "body": {
+        "statusCode": 403,
+        "message": "Forbidden resource",
+        "error": "Forbidden",
+        "timestamp": "2026-09-25T16:05:00.000Z",
+        "path": "/api/scout/import/status"
+      }
+    },
+    "rate_limited": {
+      "http_status": 429,
+      "body": {
+        "statusCode": 429,
+        "error": "Too Many Requests",
+        "message": "Too many attempts. Please wait before trying again.",
+        "retryAfter": 60
+      }
+    }
+  }
+}

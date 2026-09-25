@@ -14,7 +14,7 @@ The sender adds only `pendingTransfer: { entityType, count }` to the existing lo
 
 ## Coach controls
 
-The result appears before technical intent/platform details. Check status is read-only and inspects the same recorded run; it does not poll or reconcile the backend. Copy summary includes approved category names, counts and bounded guidance, never raw errors or identity data. Copy failure remains visible.
+The result appears before technical intent/platform details. Check status is read-only and inspects the same recorded run. On each click it also makes one `GET /api/scout/import/status` read for that run's own id, using the existing paired session (consumer-frozen at backend `integration/importer` `df713fd9`, contract `2.0.0-c1-s2.0`; fixture `test/fixtures/import-status/`). The server's record appears in a separate "TGP server record" region: its settled terminal is labelled as the final state, and its committed count is shown per family and never summed. A 404, or a family the server does not list, reads "not yet known", never 0. Any other fault reads "Could not check TGP". There is no percent, phase or ETA. The read does not poll, reconcile, retry, resume or change Start, its lock or the local receipts. Copy summary includes approved category names, counts and bounded guidance, never raw errors or identity data. Copy failure remains visible.
 
 A recorded run disables the popup's Start button so a casual retry cannot replace its result with a new timestamp intent. This is a presentation safeguard, not server fencing. The existing worker entrypoints and backend authority remain unchanged. A supported new-run/resume action depends on the owned server lifecycle contract, not clearing this guard.
 
