@@ -182,9 +182,9 @@ describe("fail-closed popup initialization", () => {
       expect(result.nodes.get("copy-summary").hidden).toBe(true);
       result.sendMessage.mockClear();
       await result.nodes.get("check-status").click();
-      expect(result.sendMessage).toHaveBeenCalledExactlyOnceWith({
-        kind: "request_status",
-      });
+      expect(result.sendMessage.mock.calls.map(([request]) => request)).toEqual(
+        [{ kind: "request_status" }, { kind: "request_server_status" }],
+      );
       expect(result.nodes.get("status").textContent).toBe(
         "Transfer needs attention",
       );
@@ -330,9 +330,10 @@ describe("actual popup outcome flow", () => {
     const result = await popup();
     result.sendMessage.mockClear();
     await result.nodes.get("check-status").click();
-    expect(result.sendMessage).toHaveBeenCalledExactlyOnceWith({
-      kind: "request_status",
-    });
+    expect(result.sendMessage.mock.calls.map(([request]) => request)).toEqual([
+      { kind: "request_status" },
+      { kind: "request_server_status" },
+    ]);
     expect(result.nodes.get("action-feedback").textContent).toContain(
       "Local status checked",
     );
