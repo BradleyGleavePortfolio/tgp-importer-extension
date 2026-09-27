@@ -10,7 +10,11 @@
 import { isCredentialKey } from "../credential-policy.js";
 import { compareText } from "./order.js";
 import { shapeSignature } from "./shapes.js";
-import { candidateKind, SUPPORTED_QUERY_KEYS } from "./url-templates.js";
+import {
+  candidateKind,
+  safeOrigin,
+  SUPPORTED_QUERY_KEYS,
+} from "./url-templates.js";
 const HARD = Object.freeze({
     maxObservations: 1000,
     maxDepth: 4,
@@ -25,7 +29,9 @@ const WINDOW_PAIRS = [
   ],
   PAGINATION_KEYS = new Set(["cursor", "limit", "offset", "page", "per_page"]),
   CURSOR_HINTS = ["after", "before"],
-  CONTACT_LITERAL = /@|\+?\d[\d ()-]{5,}\d/;
+  CONTACT_LITERAL = /@|\+?\d[\d ()-]{5,}\d/,
+  // A signature the shape budget could not fully inspect is not evidence.
+  UNINSPECTED_SHAPE = /\((?:overflow|cycle)\)|unsupported|\.\.\./;
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -85,10 +91,24 @@ function safeTemplateLiteral(pattern) {
       );
     });
 }
+// A literal segment is reusable structure only when C2a would never read it as
+// an id and it is not numeric/date-like; otherwise it may be one coach's or
+// client's value (C2a keeps literals it lacks distinct evidence to generalize).
+function structuralTemplate(pattern) {
+  return pattern
+    .split("/")
+    .filter((segment) => segment !== "" && segment !== ":id")
+    .every((segment) => {
+      const once = decodeSegment(segment);
+      return (
+        once !== null && candidateKind(once) === null && !/^[\d.-]+$/.test(once)
+      );
+    });
+}
 function validCluster(cluster) {
   return (
     isRecord(cluster) &&
-    typeof cluster.origin === "string" &&
+    safeOrigin(cluster.origin) &&
     ["GET", "HEAD"].includes(cluster.method) &&
     typeof cluster.pathPattern === "string" &&
     cluster.pathPattern.startsWith("/")
@@ -138,6 +158,8 @@ function classifyBody(body, limits) {
         items.map((item) => (isRecord(item) ? shapeSignature(item) : "scalar")),
       ),
     ];
+    if (variants.some((shape) => UNINSPECTED_SHAPE.test(shape)))
+      return { kind: "refused", reason: "uninspected_item_shape" };
     if (variants.length !== 1)
       return { kind: "refused", reason: "inconsistent_item_shape" };
     if (variants[0] !== "scalar") entity.push({ path, itemShape: variants[0] });
@@ -148,9 +170,11 @@ function classifyBody(body, limits) {
     return { kind: "list", itemsPath: entity[0].path, ...entity[0] };
   if (empty.length === 1)
     return { kind: "empty", itemsPath: empty[0], itemShape: null };
-  return isRecord(body)
-    ? { kind: "singleton", itemsPath: null, itemShape: shapeSignature(body) }
-    : { kind: "scalar" };
+  if (!isRecord(body)) return { kind: "scalar" };
+  const itemShape = shapeSignature(body);
+  return UNINSPECTED_SHAPE.test(itemShape)
+    ? { kind: "refused", reason: "uninspected_item_shape" }
+    : { kind: "singleton", itemsPath: null, itemShape };
 }
 function windowEvidence(keySets) {
   const pairs = new Set();
@@ -276,13 +300,19 @@ export function inferEndpointRoles(observations, templateClusters, options) {
     return bail("observation_limit", observations.length);
   if (templateClusters.length > limits.maxObservations)
     return bail("cluster_limit", templateClusters.length);
+  let badOrigins = templateClusters.filter(
+    (cluster) => isRecord(cluster) && !safeOrigin(cluster.origin),
+  ).length;
   const clusters = templateClusters.filter(validCluster),
     matched = clusters.map(() => []),
     ambiguous = new Set(),
     unmatched = new Map();
   for (const observation of observations) {
-    if (!isRecord(observation) || typeof observation.origin !== "string")
+    if (!isRecord(observation)) continue;
+    if (!safeOrigin(observation.origin)) {
+      badOrigins += 1;
       continue;
+    }
     const scored = clusters.flatMap((cluster, index) =>
         cluster.origin === observation.origin &&
         cluster.method === observation.method
@@ -315,6 +345,12 @@ export function inferEndpointRoles(observations, templateClusters, options) {
         reason: "unsafe_template_literal",
         support,
       });
+    else if (!structuralTemplate(cluster.pathPattern))
+      refused.push({
+        endpoint: { ...endpoint, template: null },
+        reason: "unproven_template_literal",
+        support,
+      });
     else if (ambiguous.has(index))
       refused.push({
         endpoint,
@@ -345,6 +381,13 @@ export function inferEndpointRoles(observations, templateClusters, options) {
       support: count,
     });
   }
+  // A rejected origin is never echoed: it may carry userinfo credentials.
+  if (badOrigins > 0)
+    refused.push({
+      endpoint: null,
+      reason: "invalid_origin",
+      support: badOrigins,
+    });
   const order = (a, b) => compareText(JSON.stringify(a), JSON.stringify(b));
   return {
     candidates: candidates.sort(order),

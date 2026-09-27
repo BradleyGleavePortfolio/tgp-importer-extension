@@ -896,3 +896,124 @@ describe("inferEndpointRoles — C2a pipeline and replay seam", () => {
       expect(serialized).not.toContain(forbidden);
   });
 });
+
+describe("inferEndpointRoles — review closures (B1–B3)", () => {
+  function normalized(entries) {
+    const { observations } = normalizeCaptureSnapshot(
+      entries.map(([path, body]) => ({
+        url: `${ORIGIN}${path}`,
+        method: "GET",
+        statusCode: 200,
+        responseBody: JSON.stringify(body),
+      })),
+    );
+    const { clusters } = inferUrlTemplates(observations);
+    return inferEndpointRoles(observations, clusters);
+  }
+
+  it("B1: never reuses a one-off id literal from a single normalized list GET", () => {
+    const result = normalized([
+      ["/clients/101/workouts", { items: [{ id: 5 }] }],
+    ]);
+    expect(result.candidates).toEqual([]);
+    expect(result.refused).toEqual([
+      {
+        endpoint: { origin: ORIGIN, method: "GET", template: null },
+        reason: "unproven_template_literal",
+        support: 1,
+      },
+    ]);
+    expect(JSON.stringify(result)).not.toContain("101");
+  });
+
+  it.each([
+    ["/clients/v2beta9x/log"],
+    ["/clients/2001/log"],
+    ["/clients/ab12cd34/log"],
+    ["/clients/12.5/log"],
+  ])("B1: refuses the non-structural literal in %s", (path) => {
+    const refusal = onlyRefusal(
+      inferEndpointRoles(
+        [observation(path, { data: [item(1)] })],
+        [cluster(path, 1)],
+      ),
+    );
+    expect(refusal.reason).toBe("unproven_template_literal");
+    expect(refusal.endpoint.template).toBeNull();
+  });
+
+  it("B1: still accepts structural literals around a dynamic id", () => {
+    const rows = [observation("/v2/clients/101/workouts", { data: [item(1)] })];
+    const candidate = only(
+      inferEndpointRoles(rows, [cluster("/v2/clients/:id/workouts", 1)]),
+    );
+    expect(candidate.endpoint.template).toBe("/v2/clients/:id/workouts");
+  });
+
+  it("B2: refuses a credential-bearing origin without echoing it", () => {
+    const origin = "https://person:password@coach.example";
+    const result = inferEndpointRoles(
+      [observation("/clients", { data: [item(1)] }, { origin })],
+      [cluster("/clients", 1, { origin })],
+    );
+    expect(result).toEqual({
+      candidates: [],
+      refused: [{ endpoint: null, reason: "invalid_origin", support: 2 }],
+    });
+    for (const leak of ["person", "password", "@"])
+      expect(JSON.stringify(result)).not.toContain(leak);
+  });
+
+  it.each([
+    ["http://coach.example"],
+    ["https://coach.example/"],
+    ["https://coach.example/api"],
+    ["https://coach.example?x=1"],
+    ["https://coach.example#frag"],
+    ["https://user@coach.example"],
+    ["not a url"],
+  ])("B2: refuses the non-origin %s", (origin) => {
+    const result = inferEndpointRoles(
+      [observation("/clients", { data: [item(1)] }, { origin })],
+      [cluster("/clients", 1, { origin })],
+    );
+    expect(result.candidates).toEqual([]);
+    expect(result.refused).toEqual([
+      { endpoint: null, reason: "invalid_origin", support: 2 },
+    ]);
+  });
+
+  it("B3: refuses a normalized 201-key item instead of a list", () => {
+    const wide = Object.fromEntries(
+      Array.from({ length: 201 }, (_unused, index) => [`key${index}`, index]),
+    );
+    const refusal = onlyRefusal(normalized([["/clients", { items: [wide] }]]));
+    expect(refusal.reason).toBe("uninspected_item_shape");
+  });
+
+  it("B3: refuses an item that exhausts the shape-work limit", () => {
+    const heavy = Object.fromEntries(
+      Array.from({ length: 60 }, (_unused, index) => [
+        `key${index}`,
+        Array.from({ length: 100 }, (_value, slot) => slot),
+      ]),
+    );
+    const refusal = onlyRefusal(normalized([["/clients", { items: [heavy] }]]));
+    expect(refusal.reason).toBe("uninspected_item_shape");
+  });
+
+  it("B3: refuses an uninspectable detail body and a cyclic item", () => {
+    const wide = Object.fromEntries(
+      Array.from({ length: 201 }, (_unused, index) => [`key${index}`, index]),
+    );
+    const cyclic = { id: 1 };
+    cyclic.self = cyclic;
+    for (const [row, template] of [
+      [observation("/clients/101", wide), cluster("/clients/:id", 1)],
+      [observation("/clients", { data: [cyclic] }), cluster("/clients", 1)],
+    ])
+      expect(onlyRefusal(inferEndpointRoles([row], [template])).reason).toBe(
+        "uninspected_item_shape",
+      );
+  });
+});
