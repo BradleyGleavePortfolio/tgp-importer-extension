@@ -1,0 +1,127 @@
+[
+  {
+    "glob": ".vendor-name-guard.json",
+    "reason": "Guard configuration names quarantined legacy paths.",
+    "retire": "L-slice origin authorization (T4)"
+  },
+    {
+      "glob": "test/**",
+      "reason": "Tests and fixtures preserve legacy source-contract evidence.",
+      "retire": "V1 learned-path parity"
+    },
+    {
+      "glob": "README.md",
+      "reason": "Historical extension documentation.",
+      "retire": "L-slice origin authorization (T4)"
+    },
+    {
+      "glob": "docs/NORTH_STAR.md",
+      "reason": "Current importer governance record states the retired legacy oracle.",
+      "retire": "V1 learned-path parity"
+    },
+  {
+    "glob": "docs/AUTO_DISCOVERY.md",
+    "reason": "Historical architecture record.",
+    "retire": "Historical record retained"
+  },
+  {
+    "glob": "docs/DECISION_V03_AUTONOMOUS_CRAWL.md",
+    "reason": "Historical decision record.",
+    "retire": "Historical record retained"
+  },
+  {
+    "glob": "docs/DESIGN.md",
+    "reason": "Historical design record.",
+    "retire": "Historical record retained"
+  },
+  {
+    "glob": "docs/PACKAGE_PROOF.md",
+    "reason": "Historical package-proof record.",
+    "retire": "Historical record retained"
+  },
+  {
+    "glob": "docs/REAL_GOAL_EXECUTION_PLAN.md",
+    "reason": "Historical execution record.",
+    "retire": "Historical record retained"
+  },
+  {
+    "glob": "docs/ROADMAP.md",
+    "reason": "Historical roadmap record.",
+    "retire": "Historical record retained"
+  },
+  {
+    "glob": "docs/SECRETS_SCANNING.md",
+    "reason": "Historical scanner record.",
+    "retire": "Historical record retained"
+  },
+  {
+    "glob": "docs/TIER0_CONTRACT_INTEGRITY.md",
+    "reason": "Historical contract record.",
+    "retire": "Historical record retained"
+  },
+  {
+    "glob": "docs/first-principles.md",
+    "reason": "Historical doctrine record.",
+    "retire": "Historical record retained"
+  },
+  {
+    "glob": "extractors/truecoach/**",
+    "reason": "Quarantined legacy oracle.",
+    "retire": "L-slice origin authorization (T4)"
+  },
+  {
+    "glob": "extractors/truecoach.js",
+    "reason": "Quarantined legacy oracle barrel.",
+    "retire": "L-slice origin authorization (T4)"
+  },
+    {
+      "glob": "extractors/detect.js",
+      "reason": "Legacy oracle dispatcher.",
+      "retire": "L-slice origin authorization (T4)"
+    },
+    {
+      "glob": "extractors/_interface.js",
+      "reason": "Legacy source-adapter contract.",
+      "retire": "L-slice origin authorization (T4)"
+    },
+  {
+    "glob": "manifest.json",
+    "reason": "Legacy-origin authorization.",
+    "retire": "L-slice origin authorization (T4)"
+  },
+  {
+    "glob": "background.js",
+    "reason": "Legacy-origin authorization.",
+    "retire": "L-slice origin authorization (T4)"
+  },
+  {
+    "glob": "shared/capture-policy.js",
+    "reason": "Legacy-origin authorization.",
+    "retire": "L-slice origin authorization (T4)"
+  },
+  {
+    "glob": "shared/protocol.js",
+    "reason": "Legacy-origin authorization.",
+    "retire": "L-slice origin authorization (T4)"
+  },
+  {
+    "glob": "shared/replay/resolve.js",
+    "reason": "Legacy-origin authorization.",
+    "retire": "L-slice origin authorization (T4)"
+  },
+  {
+    "glob": "scripts/browser-load-proof.mjs",
+    "reason": "Legacy-origin browser proof.",
+    "retire": "L-slice origin authorization (T4)"
+  },
+  {
+    "glob": "_locales/en/messages.json",
+    "reason": "Legacy protocol example.",
+    "retire": "L-slice origin authorization (T4)"
+  },
+  {
+    "glob": ".gitleaks.toml",
+    "reason": "Legacy test-path scanner configuration.",
+    "retire": "L-slice origin authorization (T4)"
+  }
+]
