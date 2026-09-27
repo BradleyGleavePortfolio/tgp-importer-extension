@@ -1,3 +1,5 @@
+> SUPERSEDED (2026-09-27) by /NORTH_STAR.md. Historical record, do not follow.
+
 # Auto-Discovery — Site-Agnostic Extraction Design
 
 > **Status:** architecture design, partially implemented. C1, the generic
