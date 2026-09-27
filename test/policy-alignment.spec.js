@@ -16,6 +16,7 @@ import { afterEach, describe, expect, it } from "vitest";
 const repo = fileURLToPath(new URL("..", import.meta.url));
 const manifest = JSON.parse(readFileSync(join(repo, "package.json"), "utf8"));
 const retained = [
+  "guard:vendors",
   "check:banned",
   "check:flags",
   "check:fixtures",
@@ -77,6 +78,7 @@ describe("volume-policy retirement preserves safety wiring", () => {
     expect(job["continue-on-error"]).toBeUndefined();
     const commands = [
       "npm ci",
+      "npm run guard:vendors",
       "npm test",
       "npm audit --audit-level=high",
       "node scripts/check-banned.mjs",
