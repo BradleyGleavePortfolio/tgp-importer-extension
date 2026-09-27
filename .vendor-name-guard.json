@@ -10,11 +10,6 @@
       "retire": "V1 learned-path parity"
     },
     {
-      "glob": "README.md",
-      "reason": "Historical extension documentation.",
-      "retire": "L-slice origin authorization (T4)"
-    },
-    {
       "glob": "docs/NORTH_STAR.md",
       "reason": "Current importer governance record states the retired legacy oracle.",
       "retire": "V1 learned-path parity"

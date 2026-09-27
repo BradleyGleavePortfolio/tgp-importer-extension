@@ -16,9 +16,9 @@ content/
 extractors/
   _interface.js            # LOCKED extractor contract (M-IMPORTER-EXTENSION v0)
   detect.js                # detectPlatform(url) dispatcher (hostname-suffix match)
-  truecoach.js             # public barrel for the TrueCoach extractor
-  truecoach/                # quarantined legacy oracle (deleted at V1 parity)
-    extractor.js           # TrueCoachExtractor orchestration class
+  <legacy-vendor>.js       # public barrel for the quarantined legacy oracle
+  <legacy-vendor>/         # quarantined legacy oracle (deleted at V1 parity)
+    extractor.js           # legacy extractor orchestration class
     parse.js               # pure parsers + entity builders
     net.js                 # runtime networking + date-window walker
     library.js             # org-level library (exercises, programs, ...)
@@ -61,7 +61,7 @@ Highlights of the redesign:
 
 - R75: zero banned type-assertions in any module — every narrowing uses a
   real type guard (see `isRecord`, `isTcClient`, `isStartIngest`, ...).
-- R76: every module ≤ 400 LOC.
+- Size: no line cap; reviewability decides (R76 retired by the governance refactor).
 - Interface in `extractors/_interface.js` is **locked**; changes require an
   operator ruling because they break every downstream extractor.
 
