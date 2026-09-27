@@ -1,5 +1,10 @@
 [
   {
+    "glob": ".vendor-name-guard.json",
+    "reason": "Guard configuration names quarantined legacy paths.",
+    "retire": "L-slice origin authorization (T4)"
+  },
+  {
     "glob": "test/**",
     "reason": "Tests and fixtures preserve legacy source-contract evidence.",
     "retire": "V1 learned-path parity"
