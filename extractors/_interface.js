@@ -3,8 +3,8 @@
 // =============================================================================
 //
 // This file is the CONTRACT every per-platform extractor implements. It is
-// locked: Chef #2–#6 (CoachRx, MyPTHub, Trainerize, PT Distinction, FitSW)
-// build against this exact shape without ambiguity. Change it only via an
+// locked: future source adapters build against this exact shape without
+// ambiguity. Change it only via an
 // operator ruling, because changing it breaks every downstream extractor.
 //
 // Design constraints honoured here:
@@ -30,10 +30,10 @@
  * Keeps `capturedAt` consistent and avoids per-extractor boilerplate.
  */
 export function makeEntity(platform, sourceId, payload) {
-    return {
-        sourceId: String(sourceId),
-        sourcePlatform: platform,
-        payload,
-        capturedAt: new Date().toISOString(),
-    };
+  return {
+    sourceId: String(sourceId),
+    sourcePlatform: platform,
+    payload,
+    capturedAt: new Date().toISOString(),
+  };
 }

@@ -1,7 +1,7 @@
 # TGP Importer (Chrome Extension)
 
-Browser-side importer that transfers a coach's TrueCoach clients (and related
-entities) into TGP from inside their own logged-in tab.
+Browser-side importer that transfers a coach's clients (and related entities)
+into TGP from inside their own logged-in tab.
 
 ## Layout
 
@@ -17,14 +17,7 @@ content/
 extractors/
   _interface.js            # LOCKED extractor contract (M-IMPORTER-EXTENSION v0)
   detect.js                # detectPlatform(url) dispatcher (hostname-suffix match)
-  truecoach.js             # public barrel for the TrueCoach extractor
-  truecoach/
-    extractor.js           # TrueCoachExtractor orchestration class
-    parse.js               # pure parsers + entity builders
-    net.js                 # runtime networking + date-window walker
-    library.js             # org-level library (exercises, programs, ...)
-    identity.js            # /organizations bootstrap
-    goal.js                # HTML-fragment goal endpoint parser
+  legacy oracle modules/  # quarantined source-specific verification adapter
 popup/
   popup.html popup.js      # import status + per-entity progress UI
   pair.html pair.js        # 6-digit pairing-code redeem view (the only sign-in surface)
