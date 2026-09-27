@@ -75,16 +75,17 @@ describe("inferEndpointRoles — collection evidence", () => {
       observation("/clients", [item(3)]),
     ];
     const candidate = only(inferEndpointRoles(rows, [cluster("/clients", 2)]));
+    // A lone zero-dynamic template is unproven structure (C2b-2 may prove it).
     expect(candidate).toEqual({
-      endpoint: { origin: ORIGIN, method: "GET", template: "/clients" },
+      endpoint: { origin: ORIGIN, method: "GET", template: null },
       roles: ["list"],
       itemsPath: [],
       itemShape: "object{boolean*1,number*1,string*1}",
       support: 2,
       windowEvidence: null,
       paginationEvidence: null,
-      replayCompatible: true,
-      reasons: [],
+      replayCompatible: false,
+      reasons: ["unproven_template_literal"],
     });
   });
 
@@ -98,7 +99,7 @@ describe("inferEndpointRoles — collection evidence", () => {
     const candidate = only(inferEndpointRoles(rows, [cluster("/clients", 1)]));
     expect(candidate.roles).toEqual(["list"]);
     expect(candidate.itemsPath).toEqual(["data", "items"]);
-    expect(candidate.replayCompatible).toBe(true);
+    expect(candidate.reasons).toEqual(["unproven_template_literal"]);
   });
 
   it("classifies a dynamic template with a singleton object as a detail", () => {
@@ -135,7 +136,7 @@ describe("inferEndpointRoles — collection evidence", () => {
     expect(
       onlyRefusal(inferEndpointRoles(rows, [cluster("/settings", 1)])),
     ).toEqual({
-      endpoint: { origin: ORIGIN, method: "GET", template: "/settings" },
+      endpoint: { origin: ORIGIN, method: "GET", template: null },
       reason: "metadata_only",
       support: 1,
     });
@@ -163,7 +164,10 @@ describe("inferEndpointRoles — window evidence", () => {
     expect(candidate.roles).toEqual(["list", "windowed"]);
     expect(candidate.windowEvidence).toEqual({ lower, upper });
     expect(candidate.replayCompatible).toBe(false);
-    expect(candidate.reasons).toEqual(["window_not_representable"]);
+    expect(candidate.reasons).toEqual([
+      "unproven_template_literal",
+      "window_not_representable",
+    ]);
   });
 
   it.each([["from"], ["to"], ["since"], ["start"], ["end"]])(
@@ -214,7 +218,10 @@ describe("inferEndpointRoles — pagination evidence", () => {
       styles: ["page"],
       queryKeys: [key, "limit"].sort(),
     });
-    expect(candidate.reasons).toEqual(["pagination_descriptor_required"]);
+    expect(candidate.reasons).toEqual([
+      "pagination_descriptor_required",
+      "unproven_template_literal",
+    ]);
     expect(candidate.replayCompatible).toBe(false);
   });
 
@@ -240,7 +247,7 @@ describe("inferEndpointRoles — pagination evidence", () => {
       );
       expect(candidate.roles).toEqual(["list"]);
       expect(candidate.paginationEvidence).toBeNull();
-      expect(candidate.replayCompatible).toBe(true);
+      expect(candidate.reasons).toEqual(["unproven_template_literal"]);
     },
   );
 
@@ -254,7 +261,10 @@ describe("inferEndpointRoles — pagination evidence", () => {
       );
       expect(candidate.paginationEvidence).toBeNull();
       expect(candidate.roles).toEqual(["list"]);
-      expect(candidate.reasons).toEqual(["ambiguous_cursor_keys"]);
+      expect(candidate.reasons).toEqual([
+        "ambiguous_cursor_keys",
+        "unproven_template_literal",
+      ]);
       expect(candidate.replayCompatible).toBe(false);
     },
   );
@@ -270,6 +280,7 @@ describe("inferEndpointRoles — pagination evidence", () => {
     expect(candidate.reasons).toEqual([
       "ambiguous_pagination_style",
       "pagination_descriptor_required",
+      "unproven_template_literal",
     ]);
     expect(candidate.replayCompatible).toBe(false);
   });
@@ -283,7 +294,7 @@ describe("inferEndpointRoles — pagination evidence", () => {
     );
     expect(candidate.paginationEvidence).toBeNull();
     expect(candidate.windowEvidence).toBeNull();
-    expect(candidate.replayCompatible).toBe(true);
+    expect(candidate.reasons).toEqual(["unproven_template_literal"]);
   });
 });
 
@@ -370,20 +381,27 @@ describe("inferEndpointRoles — contradiction refusals", () => {
 
 describe("inferEndpointRoles — template join", () => {
   it("prefers an exact literal template over an overlapping dynamic one", () => {
-    const rows = [observation("/clients/archived", { data: [item(1)] })];
+    const rows = [
+      observation("/clients/archived", { data: [item(1)] }),
+      observation("/clients/101", item(2)),
+      observation("/clients/102", item(3)),
+    ];
     const result = inferEndpointRoles(rows, [
       cluster("/clients/archived", 1),
-      cluster("/clients/:id", 0),
+      cluster("/clients/:id", 2),
     ]);
-    expect(result.candidates.map((entry) => entry.endpoint.template)).toEqual([
-      "/clients/archived",
-    ]);
-    expect(result.refused).toEqual([
-      {
-        endpoint: { origin: ORIGIN, method: "GET", template: "/clients/:id" },
-        reason: "no_successful_get_evidence",
-        support: 0,
-      },
+    expect(result.refused).toEqual([]);
+    // "archived" joins only its literal template, so :id keeps support 2; the
+    // lone literal template itself stays unproven and withheld.
+    expect(
+      result.candidates.map((entry) => [
+        entry.endpoint.template,
+        entry.roles.join("+"),
+        entry.support,
+      ]),
+    ).toEqual([
+      ["/clients/:id", "detail", 2],
+      [null, "list", 1],
     ]);
   });
 
@@ -407,7 +425,7 @@ describe("inferEndpointRoles — template join", () => {
     // The declared-but-unobserved template is refused on its own account.
     expect(result.refused).toEqual([
       {
-        endpoint: { origin: ORIGIN, method: "GET", template: "/clients" },
+        endpoint: { origin: ORIGIN, method: "GET", template: null },
         reason: "no_successful_get_evidence",
         support: 0,
       },
@@ -424,7 +442,7 @@ describe("inferEndpointRoles — template join", () => {
     expect(
       onlyRefusal(inferEndpointRoles(rows, [cluster("/clients", 4)])),
     ).toEqual({
-      endpoint: { origin: ORIGIN, method: "GET", template: "/clients" },
+      endpoint: { origin: ORIGIN, method: "GET", template: null },
       reason: "template_support_mismatch",
       support: 1,
     });
@@ -623,25 +641,24 @@ describe("inferEndpointRoles — determinism", () => {
   });
 
   it("sorts candidates and refusals canonically", () => {
-    const rows = [
-      observation("/zeta", { data: [item(1)] }),
-      observation("/alpha", { data: [item(2)] }),
-      observation("/omega", 5),
-      observation("/beta", 6),
-    ];
+    const rows = ["zeta", "alpha", "omega", "beta"].flatMap((name, index) =>
+      [101, 102].map((id) =>
+        observation(`/${name}/${id}`, index < 2 ? { data: [item(id)] } : id),
+      ),
+    );
     const result = inferEndpointRoles(rows, [
-      cluster("/zeta", 1),
-      cluster("/alpha", 1),
-      cluster("/omega", 1),
-      cluster("/beta", 1),
+      cluster("/zeta/:id", 2),
+      cluster("/alpha/:id", 2),
+      cluster("/omega/:id", 2),
+      cluster("/beta/:id", 2),
     ]);
     expect(result.candidates.map((entry) => entry.endpoint.template)).toEqual([
-      "/alpha",
-      "/zeta",
+      "/alpha/:id",
+      "/zeta/:id",
     ]);
     expect(result.refused.map((entry) => entry.endpoint.template)).toEqual([
-      "/beta",
-      "/omega",
+      "/beta/:id",
+      "/omega/:id",
     ]);
   });
 
@@ -758,7 +775,6 @@ describe("inferEndpointRoles — privacy", () => {
       "GET",
       "boolean",
       "candidates",
-      "clients",
       "coach",
       "data",
       "detail",
@@ -767,7 +783,6 @@ describe("inferEndpointRoles — privacy", () => {
       "example",
       "false",
       "https",
-      "id",
       "itemShape",
       "items",
       "itemsPath",
@@ -790,6 +805,7 @@ describe("inferEndpointRoles — privacy", () => {
       "styles",
       "support",
       "template",
+      "unproven_template_literal",
       "windowEvidence",
     ]);
   });
@@ -826,38 +842,51 @@ describe("inferEndpointRoles — C2a pipeline and replay seam", () => {
         entry.roles.join("+"),
       ]),
     ).toEqual([
-      ["/api/clients", "list+paginated"],
       ["/api/clients/:id", "detail"],
+      [null, "list+paginated"],
     ]);
   });
 
-  it("feeds a plain-list candidate into a blueprint normalizeBlueprint accepts", () => {
-    const rows = [observation("/api/clients", { data: [item(1), item(2)] })];
+  it("feeds a proven list candidate into a blueprint normalizeBlueprint accepts", () => {
+    const rows = [101, 202].map((id) =>
+      observation(`/api/clients/${id}/workouts`, {
+        data: [item(1), item(2)],
+      }),
+    );
     const candidate = only(
-      inferEndpointRoles(rows, [cluster("/api/clients", 1)]),
+      inferEndpointRoles(rows, [cluster("/api/clients/:id/workouts", 2)]),
     );
     expect(candidate.replayCompatible).toBe(true);
+    // Step "clients" is hand-written: proving a lone list endpoint is C2b-2.
     const blueprint = normalizeBlueprint(
       {
         platform: "inferred",
         apiBase: candidate.endpoint.origin,
         steps: [
           {
+            id: "clients",
+            entityType: "client",
+            template: "/api/clients",
+            itemsPath: ["data"],
+            collectAs: "clientIds",
+          },
+          {
             id: "list",
             entityType: "record",
             method: candidate.endpoint.method,
             template: candidate.endpoint.template,
             itemsPath: candidate.itemsPath,
+            forEach: "clientIds",
           },
         ],
       },
       { allowedOrigins: [candidate.endpoint.origin] },
     );
-    expect(blueprint.steps[0].template).toBe("/api/clients");
-    expect(blueprint.steps[0].itemsPath).toEqual(["data"]);
-    expect(blueprint.steps[0].pagination).toBeNull();
+    expect(blueprint.steps[1].template).toBe("/api/clients/:id/workouts");
+    expect(blueprint.steps[1].itemsPath).toEqual(["data"]);
+    expect(blueprint.steps[1].pagination).toBeNull();
     expect(
-      extractItems(rows[0].body, blueprint.steps[0].itemsPath),
+      extractItems(rows[0].body, blueprint.steps[1].itemsPath),
     ).toHaveLength(2);
   });
 
@@ -898,7 +927,7 @@ describe("inferEndpointRoles — C2a pipeline and replay seam", () => {
 });
 
 describe("inferEndpointRoles — review closures (B1–B3)", () => {
-  function normalized(entries) {
+  function normalized(entries, templateOptions) {
     const { observations } = normalizeCaptureSnapshot(
       entries.map(([path, body]) => ({
         url: `${ORIGIN}${path}`,
@@ -907,47 +936,88 @@ describe("inferEndpointRoles — review closures (B1–B3)", () => {
         responseBody: JSON.stringify(body),
       })),
     );
-    const { clusters } = inferUrlTemplates(observations);
+    const { clusters } = inferUrlTemplates(observations, templateOptions);
     return inferEndpointRoles(observations, clusters);
   }
+  const workouts = { items: [{ id: 5 }] };
 
-  it("B1: never reuses a one-off id literal from a single normalized list GET", () => {
-    const result = normalized([
-      ["/clients/101/workouts", { items: [{ id: 5 }] }],
-    ]);
-    expect(result.candidates).toEqual([]);
-    expect(result.refused).toEqual([
-      {
-        endpoint: { origin: ORIGIN, method: "GET", template: null },
-        reason: "unproven_template_literal",
-        support: 1,
-      },
-    ]);
-    expect(JSON.stringify(result)).not.toContain("101");
+  it.each([
+    ["/clients/alice/workouts", ["alice"]],
+    ["/clients/jane-doe/workouts", ["jane", "doe"]],
+    ["/clients/101/workouts", ["101"]],
+  ])(
+    "B1: keeps a one-off normalized list GET %s unproven, non-replayable and literal-free",
+    (path, leaks) => {
+      const result = normalized([[path, workouts]]);
+      const candidate = only(result);
+      expect(candidate.endpoint).toEqual({
+        origin: ORIGIN,
+        method: "GET",
+        template: null,
+      });
+      expect(candidate.roles).toEqual(["list"]);
+      expect(candidate.replayCompatible).toBe(false);
+      expect(candidate.reasons).toEqual(["unproven_template_literal"]);
+      for (const leak of [...leaks, "clients", "workouts"])
+        expect(JSON.stringify(result)).not.toContain(leak);
+    },
+  );
+
+  it.each([["/clients"], ["/v2/clients/:id/workouts"]])(
+    "B1: withholds %s when only one distinct dynamic value was seen",
+    (template) => {
+      const path = template.replace(":id", "101");
+      const rows = [observation(path, workouts), observation(path, workouts)];
+      const candidate = only(inferEndpointRoles(rows, [cluster(template, 2)]));
+      expect(candidate.endpoint.template).toBeNull();
+      expect(candidate.replayCompatible).toBe(false);
+    },
+  );
+
+  it("B1: counts decoded values, so an encoded repeat is not variation", () => {
+    const rows = [
+      observation("/clients/101/workouts", workouts),
+      observation("/clients/%31%30%31/workouts", workouts),
+    ];
+    const candidate = only(
+      inferEndpointRoles(rows, [cluster("/clients/:id/workouts", 2)]),
+    );
+    expect(candidate.endpoint.template).toBeNull();
+  });
+
+  it("B1: withholds the template in refusals of an unproven cluster too", () => {
+    const refusal = onlyRefusal(
+      inferEndpointRoles(
+        [observation("/clients/alice/workouts", workouts)],
+        [cluster("/clients/alice/workouts", 3)],
+      ),
+    );
+    expect(refusal).toEqual({
+      endpoint: { origin: ORIGIN, method: "GET", template: null },
+      reason: "template_support_mismatch",
+      support: 1,
+    });
   });
 
   it.each([
-    ["/clients/v2beta9x/log"],
-    ["/clients/2001/log"],
-    ["/clients/ab12cd34/log"],
-    ["/clients/12.5/log"],
-  ])("B1: refuses the non-structural literal in %s", (path) => {
-    const refusal = onlyRefusal(
-      inferEndpointRoles(
-        [observation(path, { data: [item(1)] })],
-        [cluster(path, 1)],
-      ),
+    ["/clients/:id/workouts", ""],
+    ["/v2/clients/:id/workouts", "/v2"],
+  ])("B1: proves %s from two distinct normalized ids", (template, prefix) => {
+    const rows = [101, 202].map((id) => [
+      `${prefix}/clients/${id}/workouts`,
+      workouts,
+    ]);
+    const candidate = only(normalized(rows, { minDistinct: 2 }));
+    expect(candidate.endpoint.template).toBe(template);
+    expect(candidate.support).toBe(2);
+    expect(candidate.replayCompatible).toBe(true);
+    expect(candidate.reasons).toEqual([]);
+    // At C2a's default distinct threshold the pair stays literal: fail closed.
+    const strict = normalized(rows);
+    expect(strict.candidates.every((entry) => !entry.replayCompatible)).toBe(
+      true,
     );
-    expect(refusal.reason).toBe("unproven_template_literal");
-    expect(refusal.endpoint.template).toBeNull();
-  });
-
-  it("B1: still accepts structural literals around a dynamic id", () => {
-    const rows = [observation("/v2/clients/101/workouts", { data: [item(1)] })];
-    const candidate = only(
-      inferEndpointRoles(rows, [cluster("/v2/clients/:id/workouts", 1)]),
-    );
-    expect(candidate.endpoint.template).toBe("/v2/clients/:id/workouts");
+    expect(JSON.stringify(strict)).not.toMatch(/101|202/);
   });
 
   it("B2: refuses a credential-bearing origin without echoing it", () => {

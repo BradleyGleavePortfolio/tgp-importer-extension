@@ -91,19 +91,20 @@ function safeTemplateLiteral(pattern) {
       );
     });
 }
-// A literal segment is reusable structure only when C2a would never read it as
-// an id and it is not numeric/date-like; otherwise it may be one coach's or
-// client's value (C2a keeps literals it lacks distinct evidence to generalize).
-function structuralTemplate(pattern) {
+// Positive structural proof: a template's literals are reusable only when its
+// own joined observations carry at least two DISTINCT values at one dynamic
+// position (C2a variation evidence). Anything else — including every
+// zero-dynamic template — may be one coach's or client's path, so its template
+// is withheld and it is never replay-compatible.
+function provenTemplate(pattern, rows) {
   return pattern
     .split("/")
-    .filter((segment) => segment !== "" && segment !== ":id")
-    .every((segment) => {
-      const once = decodeSegment(segment);
-      return (
-        once !== null && candidateKind(once) === null && !/^[\d.-]+$/.test(once)
-      );
-    });
+    .some(
+      (part, index) =>
+        part === ":id" &&
+        new Set(rows.map((row) => decodeSegment(row.path.split("/")[index])))
+          .size >= 2,
+    );
 }
 function validCluster(cluster) {
   return (
@@ -114,11 +115,11 @@ function validCluster(cluster) {
     cluster.pathPattern.startsWith("/")
   );
 }
-function endpointOf(cluster) {
+function endpointOf(cluster, proven) {
   return {
     origin: cluster.origin,
     method: cluster.method,
-    template: cluster.pathPattern,
+    template: proven ? cluster.pathPattern : null,
   };
 }
 // Bounded key-sorted walk collecting every array within maxDepth object keys.
@@ -227,8 +228,8 @@ function votes({ method, status }) {
       (Number.isInteger(status) && status >= 200 && status < 300))
   );
 }
-function candidateFor(cluster, voting, limits) {
-  const endpoint = endpointOf(cluster),
+function candidateFor(cluster, voting, limits, proven) {
+  const endpoint = endpointOf(cluster, proven),
     support = voting.length,
     deny = (reason) => ({ endpoint, reason, support });
   if (support === 0) return deny("no_successful_get_evidence");
@@ -259,6 +260,7 @@ function candidateFor(cluster, voting, limits) {
   if (paths.size !== 1) return deny("inconsistent_items_path");
   if (shapes.size === 0) return deny("insufficient_shape_evidence");
   if (shapes.size !== 1) return deny("inconsistent_item_shape");
+  if (!proven) reasons.push("unproven_template_literal");
   if (detail) reasons.push("detail_body_not_representable");
   if (window.ambiguous) reasons.push("ambiguous_window_keys");
   if (window.evidence) reasons.push("window_not_representable");
@@ -337,18 +339,15 @@ export function inferEndpointRoles(observations, templateClusters, options) {
   const candidates = [],
     refused = [];
   for (const [index, cluster] of clusters.entries()) {
-    const endpoint = endpointOf(cluster),
+    const endpoint = endpointOf(
+        cluster,
+        provenTemplate(cluster.pathPattern, matched[index]),
+      ),
       support = matched[index].length;
     if (!safeTemplateLiteral(cluster.pathPattern))
       refused.push({
         endpoint: { ...endpoint, template: null },
         reason: "unsafe_template_literal",
-        support,
-      });
-    else if (!structuralTemplate(cluster.pathPattern))
-      refused.push({
-        endpoint: { ...endpoint, template: null },
-        reason: "unproven_template_literal",
         support,
       });
     else if (ambiguous.has(index))
@@ -369,6 +368,7 @@ export function inferEndpointRoles(observations, templateClusters, options) {
         cluster,
         matched[index].filter(votes),
         limits,
+        endpoint.template !== null,
       );
       (result.reason ? refused : candidates).push(result);
     }
