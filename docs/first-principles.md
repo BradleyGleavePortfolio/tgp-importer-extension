@@ -1,3 +1,5 @@
+> SUPERSEDED (2026-09-27) by /NORTH_STAR.md. Historical record, do not follow.
+
 # TGP Importer — First Principles (R136 companion)
 
 This doc frames the extension design against doctrine R130–R137. It is the

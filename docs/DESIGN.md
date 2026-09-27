@@ -1,3 +1,5 @@
+> SUPERSEDED (2026-09-27) by /NORTH_STAR.md. Historical record, do not follow.
+
 # TGP Importer — Design v0.3
 
 > Status: **design** (pre-release). Target `manifest.version = 0.3.0-design`;
