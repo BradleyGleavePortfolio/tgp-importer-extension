@@ -402,13 +402,21 @@ describe("inferEndpointRoles — template join", () => {
 
   it("reports observations that no supplied template describes", () => {
     const rows = [observation("/unknown/1234", { data: [item(1)] })];
-    expect(
-      onlyRefusal(inferEndpointRoles(rows, [cluster("/clients", 0)])),
-    ).toEqual({
-      endpoint: { origin: ORIGIN, method: "GET", template: null },
-      reason: "unmatched_observation",
-      support: 1,
-    });
+    const result = inferEndpointRoles(rows, [cluster("/clients", 0)]);
+    expect(result.candidates).toEqual([]);
+    // The declared-but-unobserved template is refused on its own account.
+    expect(result.refused).toEqual([
+      {
+        endpoint: { origin: ORIGIN, method: "GET", template: "/clients" },
+        reason: "no_successful_get_evidence",
+        support: 0,
+      },
+      {
+        endpoint: { origin: ORIGIN, method: "GET", template: null },
+        reason: "unmatched_observation",
+        support: 1,
+      },
+    ]);
   });
 
   it("refuses a cluster whose declared support disagrees with the join", () => {
@@ -424,7 +432,7 @@ describe("inferEndpointRoles — template join", () => {
 
   it("refuses a template with more than one dynamic segment", () => {
     const rows = [
-      observation("/clients/101/workouts/2001", { data: [item(1)] }),
+      observation("/clients/101/workouts/20001", { data: [item(1)] }),
     ];
     expect(
       onlyRefusal(
@@ -442,7 +450,7 @@ describe("inferEndpointRoles — template join", () => {
     ]);
     expect(result.candidates).toEqual([]);
     expect(result.refused.map((entry) => entry.reason).sort()).toEqual([
-      "no_successful_get_evidence",
+      "template_support_mismatch",
       "unmatched_observation",
     ]);
   });
@@ -709,7 +717,7 @@ describe("inferEndpointRoles — privacy", () => {
     const result = inferEndpointRoles(rows, [cluster("/clients", 1)]);
     expect(JSON.stringify(result)).not.toContain(key);
     expect(result.candidates).toEqual([]);
-    expect(result.refused[0].reason).toBe("metadata_only");
+    expect(result.refused[0].reason).toBe("unsafe_path_key");
   });
 
   it("refuses to echo a contact-like template literal", () => {
@@ -750,6 +758,7 @@ describe("inferEndpointRoles — privacy", () => {
       "GET",
       "boolean",
       "candidates",
+      "clients",
       "coach",
       "data",
       "detail",
@@ -760,16 +769,18 @@ describe("inferEndpointRoles — privacy", () => {
       "https",
       "id",
       "itemShape",
+      "items",
       "itemsPath",
       "list",
       "method",
+      "null",
       "number",
       "object",
       "origin",
-      "paginated",
-      "pagination_descriptor_required",
-      "paginationEvidence",
       "page",
+      "paginated",
+      "paginationEvidence",
+      "pagination_descriptor_required",
       "queryKeys",
       "reasons",
       "refused",
@@ -779,7 +790,6 @@ describe("inferEndpointRoles — privacy", () => {
       "styles",
       "support",
       "template",
-      "true",
       "windowEvidence",
     ]);
   });
