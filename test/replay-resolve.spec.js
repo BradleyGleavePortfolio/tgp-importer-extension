@@ -1,77 +1,135 @@
 import { describe, it, expect } from "vitest";
 import {
+  register,
+  registerExtractor,
   resolveBlueprint,
+  resolveExtractor,
   isUnknownPlatform,
   UnknownPlatformError,
 } from "../shared/replay/resolve.js";
 import { normalizeBlueprint } from "../shared/replay/blueprint.js";
+// Importing the quarantined oracle registers it, exactly as background.js does.
+import { matchesTrueCoachOrigin } from "../legacy/index.js";
 
-// The resolver is the ONLY site-specific seam in the replay path: platform id ->
-// data-only blueprint, with every unregistered platform failing closed. These
-// tests pin (1) known-platform resolution to a normalizable blueprint, (2)
-// per-call freshness so concurrent runs never alias one steps array, and (3)
-// the fail-closed unknown-platform contract that PR-C2 later replaces with
-// inference.
+// The registry is the ONLY site-specific seam in the replay path and it is
+// vendor-free: an ORIGIN is looked up against registered origin matchers and
+// every unregistered origin fails closed. These tests pin (1) resolution of a
+// registered origin to a normalizable blueprint confined to that origin, (2)
+// per-call freshness so concurrent runs never alias one steps array, (3) the
+// fail-closed unknown-origin contract the learning chain later replaces, and
+// (4) that the extractor binding is a registry lookup too.
 
 const TRUECOACH_ORIGIN = "https://app.truecoach.co";
 
-describe("resolveBlueprint — known platform", () => {
-  it("returns a TrueCoach blueprint for the 'truecoach' id", () => {
-    const bp = resolveBlueprint("truecoach");
+describe("resolveBlueprint — registered origin", () => {
+  it("returns the oracle's blueprint for its flagship https origin", () => {
+    const bp = resolveBlueprint(TRUECOACH_ORIGIN);
     expect(bp.platform).toBe("truecoach");
     expect(bp.apiBase).toBe("https://app.truecoach.co/proxy/api");
     expect(Array.isArray(bp.steps)).toBe(true);
     expect(bp.steps.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("returns a blueprint that normalizes cleanly under the tab-origin allowlist", () => {
-    const bp = resolveBlueprint("truecoach");
-    // The observed tab origin is what background.js injects; the apiBase
+  it("matches a white-label brand subdomain by hostname suffix, never a look-alike", () => {
+    expect(matchesTrueCoachOrigin("https://brand.truecoach.co")).toBe(true);
+    expect(matchesTrueCoachOrigin("https://truecoach.co")).toBe(true);
+    expect(matchesTrueCoachOrigin("http://app.truecoach.co")).toBe(false);
+    expect(
+      matchesTrueCoachOrigin("https://app.truecoach.co.evil.example"),
+    ).toBe(false);
+    expect(matchesTrueCoachOrigin("https://nottruecoach.co")).toBe(false);
+    expect(matchesTrueCoachOrigin("not a url")).toBe(false);
+  });
+
+  it("returns a blueprint that normalizes cleanly under the authorized-origin allowlist", () => {
+    const bp = resolveBlueprint(TRUECOACH_ORIGIN);
+    // The run's authorized origin is what background.js injects; the apiBase
     // origin must be on it, and every step must be structurally valid.
     expect(() =>
       normalizeBlueprint(bp, { allowedOrigins: [TRUECOACH_ORIGIN] }),
     ).not.toThrow();
   });
 
-  it("fails closed at normalization when the tab origin does not cover apiBase", () => {
-    const bp = resolveBlueprint("truecoach");
+  it("fails closed at normalization when the authorized origin does not cover apiBase", () => {
+    const bp = resolveBlueprint(TRUECOACH_ORIGIN);
     expect(() =>
       normalizeBlueprint(bp, { allowedOrigins: ["https://evil.example.com"] }),
     ).toThrow(/allowed-origins/);
   });
 
   it("hands back a FRESH blueprint each call (no shared mutable state)", () => {
-    const a = resolveBlueprint("truecoach");
-    const b = resolveBlueprint("truecoach");
+    const a = resolveBlueprint(TRUECOACH_ORIGIN);
+    const b = resolveBlueprint(TRUECOACH_ORIGIN);
     expect(a).not.toBe(b);
     expect(a.steps).not.toBe(b.steps);
     // Mutating one must not leak into the other.
-    // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     a.steps.push({ id: "injected" });
     expect(b.steps.some((s) => s.id === "injected")).toBe(false);
   });
 });
 
-describe("resolveBlueprint — unknown platform fails closed", () => {
-  it("throws UnknownPlatformError for an unregistered platform id", () => {
-    expect(() => resolveBlueprint("trainerize")).toThrow(UnknownPlatformError);
+describe("resolveBlueprint — unknown origin fails closed", () => {
+  it("throws UnknownPlatformError for an origin nobody registered", () => {
+    expect(() => resolveBlueprint("https://example.com")).toThrow(
+      UnknownPlatformError,
+    );
   });
 
-  it("carries the offending platform id and matches isUnknownPlatform", () => {
+  it("carries the offending origin and matches isUnknownPlatform", () => {
     try {
-      resolveBlueprint("mypthub");
+      resolveBlueprint("https://unlearned.example");
       throw new Error("should have thrown");
     } catch (err) {
       expect(isUnknownPlatform(err)).toBe(true);
       expect(err.message).toBe("unknown_platform");
-      expect(err.platform).toBe("mypthub");
+      expect(err.origin).toBe("https://unlearned.example");
     }
   });
 
-  it("throws for null / undefined / non-string ids too", () => {
+  it("throws for null / undefined / non-string / empty ids too", () => {
     expect(() => resolveBlueprint(null)).toThrow(UnknownPlatformError);
     expect(() => resolveBlueprint(undefined)).toThrow(UnknownPlatformError);
     expect(() => resolveBlueprint(42)).toThrow(UnknownPlatformError);
+    expect(() => resolveBlueprint("")).toThrow(UnknownPlatformError);
+  });
+});
+
+describe("register / registerExtractor — vendor-free registration contract", () => {
+  it("rejects a non-function matcher or factory before touching the registry", () => {
+    expect(() => register("truecoach", () => ({}))).toThrow(TypeError);
+    expect(() => register(() => true, "not a factory")).toThrow(TypeError);
+    expect(() => registerExtractor(() => true, "p", null)).toThrow(TypeError);
+    expect(() =>
+      registerExtractor(
+        () => true,
+        7,
+        () => ({}),
+      ),
+    ).toThrow(TypeError);
+  });
+
+  it("resolves a matcher-registered origin and only that origin", () => {
+    const origin = "https://learned.example";
+    register(
+      (candidate) => candidate === origin,
+      () => ({ platform: "learned", apiBase: `${origin}/api`, steps: [] }),
+    );
+    expect(resolveBlueprint(origin).platform).toBe("learned");
+    expect(() => resolveBlueprint("https://learned.example.evil")).toThrow(
+      UnknownPlatformError,
+    );
+  });
+
+  it("resolveExtractor is a registry lookup that fails closed with null", () => {
+    const deps = {
+      sendEntities: async () => undefined,
+      broadcastStatus: () => undefined,
+    };
+    const hit = resolveExtractor(TRUECOACH_ORIGIN, deps);
+    expect(hit?.platform).toBe("truecoach");
+    expect(typeof hit?.extractor.run).toBe("function");
+    expect(resolveExtractor("https://example.com", deps)).toBeNull();
+    expect(resolveExtractor(null, deps)).toBeNull();
   });
 });
 

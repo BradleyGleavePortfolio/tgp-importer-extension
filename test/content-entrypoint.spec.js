@@ -1,12 +1,20 @@
 import { readFileSync } from "node:fs";
 import { Script } from "node:vm";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
+import { collectShipping } from "../scripts/lib/shipping.mjs";
 import { fakePageStore } from "./helpers/source-tab.js";
 
+// The collector is no longer a manifest content script: background.js
+// registers it dynamically for the ONE granted origin. The shipping closure
+// is the authority on which classic scripts Chrome will load, so boot every
+// classic file it reaches (today exactly content/main.js).
+const root = fileURLToPath(new URL("..", import.meta.url));
+const classicScripts = collectShipping(root)
+  .files.filter((file) => file.kind === "classic")
+  .map((file) => file.path);
+
 function boot(overrides = {}) {
-  const manifest = JSON.parse(
-    readFileSync(new URL("../manifest.json", import.meta.url), "utf8"),
-  );
   const listeners = [];
   const runtime = {
     id: "this-extension",
@@ -20,16 +28,16 @@ function boot(overrides = {}) {
     localStorage: fakePageStore(),
   };
   Object.defineProperties(globals, Object.getOwnPropertyDescriptors(overrides));
-  for (const entry of manifest.content_scripts) {
-    for (const file of entry.js) {
-      // Manifest content scripts are classic scripts, not ES modules. Execute
-      // the exact shipping bytes without Vitest's module transformation.
-      const script = new Script(
-        readFileSync(new URL(`../${file}`, import.meta.url), "utf8"),
-        { filename: file },
-      );
-      script.runInNewContext(globals, { timeout: 1000 });
-    }
+  expect(classicScripts).toEqual(["content/main.js"]);
+  for (const file of classicScripts) {
+    // Dynamically registered content scripts are classic scripts, not ES
+    // modules. Execute the exact shipping bytes without Vitest's module
+    // transformation.
+    const script = new Script(
+      readFileSync(new URL(`../${file}`, import.meta.url), "utf8"),
+      { filename: file },
+    );
+    script.runInNewContext(globals, { timeout: 1000 });
   }
   return {
     runtime,
@@ -45,7 +53,7 @@ function boot(overrides = {}) {
   };
 }
 
-describe("manifest content script entrypoint", () => {
+describe("dynamically registered content script entrypoint", () => {
   it("keeps the credential listener available after a failed announcement without logging secrets", async () => {
     const listeners = [];
     const warn = vi.fn();

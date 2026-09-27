@@ -41,14 +41,21 @@ function storageArea(seed) {
 // makeBgMock({ session }) — `session` seeds chrome.storage.session so a test can
 // simulate a service-worker restart (session survives) vs a browser restart
 // (session empty).
-// makeBgMock({ session, tab }) — `tab` models the coach's live source tab that
-// collectSourceToken interrogates: `tab.url` is what chrome.tabs.get returns (so
-// the live-origin allowlist check runs), and the reply to a collect_source_token
-// tabs.sendMessage is `tab.sendMessage(id, msg)` when provided, else `{ ok: true,
-// token }` when `tab.token` is set, else `{ ok: false }`. tabs.get / sendMessage
-// may be overridden with `tab.get` / `tab.sendMessage` to model failures.
-// @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
-export function makeBgMock({ session, tab } = {}) {
+// makeBgMock({ session, tab, granted }) — `tab` models the coach's live source
+// tab that collectSourceToken interrogates: `tab.url` is what chrome.tabs.get
+// returns (so the live-origin confinement check runs), and the reply to a
+// collect_source_token tabs.sendMessage is `tab.sendMessage(id, msg)` when
+// provided, else `{ ok: true, token }` when `tab.token` is set, else
+// `{ ok: false }`. tabs.get / sendMessage may be overridden with `tab.get` /
+// `tab.sendMessage` to model failures. `granted` (default true) is what
+// chrome.permissions.contains answers for ANY https origin: the coach's Start
+// gesture already granted the tab's origin. Pass false to model a revoked or
+// never-granted origin. chrome.scripting records dynamic collector
+// registrations/injections in `scripting` for inspection.
+/**
+ * @param {{ session?: any, tab?: any, granted?: boolean }} [options]
+ */
+export function makeBgMock({ session, tab, granted = true } = {}) {
   const onMessage = eventHub();
   const sessionStore = storageArea(session);
   const localStore = storageArea();
@@ -56,6 +63,8 @@ export function makeBgMock({ session, tab } = {}) {
   const notifications = [];
   const syncSet = [];
   const tabMessages = [];
+  const scripting = { registered: [], executed: [], unregistered: [] };
+  const permissionRequests = [];
 
   const chrome = {
     i18n: {
@@ -122,6 +131,29 @@ export function makeBgMock({ session, tab } = {}) {
         notifications.push(opts);
       },
     },
+    permissions: {
+      contains: async ({ origins }) =>
+        granted === true &&
+        Array.isArray(origins) &&
+        origins.every((o) => o.startsWith("https://")),
+      // The popup's Start-gesture prompt; records what was asked for.
+      request: async (request) => {
+        permissionRequests.push(request);
+        return granted === true;
+      },
+    },
+    scripting: {
+      registerContentScripts: async (scripts) => {
+        scripting.registered.push(...scripts);
+      },
+      executeScript: async (injection) => {
+        scripting.executed.push(injection);
+        return [];
+      },
+      unregisterContentScripts: async (filter) => {
+        scripting.unregistered.push(filter);
+      },
+    },
   };
 
   // Invoke the registered onMessage listener and resolve to the value the
@@ -156,6 +188,8 @@ export function makeBgMock({ session, tab } = {}) {
     notifications,
     syncSet,
     tabMessages,
+    scripting,
+    permissionRequests,
     sessionMap: sessionStore.map,
     localMap: localStore.map,
   };

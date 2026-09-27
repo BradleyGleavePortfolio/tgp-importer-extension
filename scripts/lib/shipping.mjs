@@ -142,6 +142,16 @@ export function moduleReferences(source, path) {
     if (ts.isStringLiteral(node) && /^[\w./-]+\.html$/.test(node.text)) {
       references.push({ specifier: node.text, kind: "html" });
     }
+    // A constant extension-root path handed to chrome.scripting (dynamic
+    // content-script registration / executeScript) is a classic script Chrome
+    // loads verbatim; it is part of the closure even without a manifest entry.
+    if (
+      ts.isStringLiteral(node) &&
+      /^(?!\.)[\w-]+(?:\/[\w.-]+)+\.js$/.test(node.text)
+    ) {
+      // chrome.scripting paths are extension-root relative, not module relative.
+      references.push({ specifier: `/${node.text}`, kind: "classic" });
+    }
   });
   return references;
 }

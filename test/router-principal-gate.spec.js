@@ -74,13 +74,13 @@ describe("router: content-script principal is refused on every privileged kind",
 });
 
 describe("router: pre-run error text carries the tab origin only", () => {
-  it("unsupported site", async () => {
+  it("site not learned", async () => {
     const mock = await load();
     const url = "https://example.com/coach/jane.doe/clients?token=abc";
     await mock.dispatch({ kind: "start_import", url });
     await flush();
     const last = snapshots(mock).at(-1);
-    expect(last.lastError).toBe("unsupported site: https://example.com");
+    expect(last.lastError).toBe("site_not_learned: https://example.com");
     expect(last.lastError).not.toContain("jane.doe");
     expect(last.lastError).not.toContain("token=");
   });
@@ -105,7 +105,7 @@ describe("router: pre-run error text carries the tab origin only", () => {
     });
     await flush();
     expect(snapshots(mock).at(-1).lastError).toBe(
-      "unsupported site: https://example.com",
+      "site_not_learned: https://example.com",
     );
   });
 
@@ -114,7 +114,7 @@ describe("router: pre-run error text carries the tab origin only", () => {
     await mock.dispatch({ kind: "start_import", url: "not a url jane.doe" });
     await flush();
     expect(snapshots(mock).at(-1).lastError).toBe(
-      "unsupported site: (invalid url)",
+      "unsafe import origin: (invalid url)",
     );
   });
 });

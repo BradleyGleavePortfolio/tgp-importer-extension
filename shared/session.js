@@ -39,6 +39,30 @@ const REFRESH_ENDPOINT = `${TGP_API_ORIGIN}/api/auth/extension/refresh`;
 // lazily from the refresh token on the first call that needs it.
 let accessTokenInMemory;
 
+// The run's single authorized SOURCE origin: the https origin the coach granted
+// on the Start gesture. Memory only, never persisted (not even to
+// storage.session), set when a run is admitted and cleared when it settles or
+// the session is cleared. Capture and crawl confinement compare against this
+// one value (shared/capture-policy.js, background.js) — there is no host list.
+/** @type {string | null} */
+let authorizedOrigin = null;
+
+// Bind the run to `origin` (an https origin string). Anything else clears it.
+export function setAuthorizedOrigin(origin) {
+  authorizedOrigin =
+    typeof origin === "string" && /^https:\/\/[^/]+$/.test(origin)
+      ? origin
+      : null;
+}
+
+export function getAuthorizedOrigin() {
+  return authorizedOrigin;
+}
+
+export function clearAuthorizedOrigin() {
+  authorizedOrigin = null;
+}
+
 // Monotonic version of the session state. Bumped inside the lock on every
 // establish/clear so an in-flight refresh can detect that the state changed
 // underneath it and refuse to commit (compare-and-swap on transition, not on
@@ -158,6 +182,7 @@ async function clearUnderLock() {
   sessionGeneration += 1;
   detachStaleRefresh();
   accessTokenInMemory = undefined;
+  authorizedOrigin = null;
   await chrome.storage.session.remove(REFRESH_TOKEN_KEY);
 }
 

@@ -2,7 +2,7 @@
 // skeletons. All endpoints are trainer/org-scoped (NOT per-client) and each
 // emits a single logical group per run. Shapes locked from live captures
 // (truecoach_samples/{exercises,warmups,cooldowns,programs,skeletons}.json).
-import { makeEntity } from "../_interface.js";
+import { makeEntity } from "../../extractors/_interface.js";
 import { PLATFORM, isRecord } from "./parse.js";
 export const EXERCISE_CHUNK = 500; // stream the large library in chunks
 function hasNumberId(value) {

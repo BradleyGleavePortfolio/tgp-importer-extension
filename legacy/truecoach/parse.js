@@ -4,7 +4,7 @@
 // trainer account (see /home/user/workspace/truecoach_samples/*.json and
 // OPERATOR_QUESTIONS.md → BLOCKERS_RESOLVED_BY_LIVE_SAMPLES). All functions are
 // side-effect free so they can be exercised directly against fixtures.
-import { makeEntity } from "../_interface.js";
+import { makeEntity } from "../../extractors/_interface.js";
 export const PLATFORM = "truecoach";
 export function isRecord(value) {
     return typeof value === "object" && value !== null;

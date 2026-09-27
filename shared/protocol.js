@@ -16,19 +16,31 @@ export const TGP_API_ORIGIN = "https://api.tgp.coach";
 // flip this to `false` in the SAME change that removes/guards the redeem call.
 export const PAIR_REDEEM_PATH = "/api/extension/pair/redeem";
 export const PAIRING_ENABLED = true;
-export const TRUECOACH_API_BASE = "https://app.truecoach.co/proxy/api";
+// TGP's own origins (the product, not a source). The importer never captures
+// from, crawls, or authorizes one of these as a source: an https origin whose
+// hostname is tgp.coach or one of its subdomains.
+export function isTgpOrigin(origin) {
+  if (typeof origin !== "string") return false;
+  let hostname;
+  try {
+    hostname = new URL(origin).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return hostname === "tgp.coach" || hostname.endsWith(".tgp.coach");
+}
 // Narrowing helpers — avoid `as` casts on untyped chrome.runtime payloads.
 export function isStartIngest(m) {
-    return isRecord(m) && m.kind === "start_ingest";
+  return isRecord(m) && m.kind === "start_ingest";
 }
 export function isBearerFound(m) {
-    return isRecord(m) && m.kind === "bearer_found";
+  return isRecord(m) && m.kind === "bearer_found";
 }
 export function isRequestStatus(m) {
-    return isRecord(m) && m.kind === "request_status";
+  return isRecord(m) && m.kind === "request_status";
 }
 function isRecord(value) {
-    return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null;
 }
 // Build the /api/scout/ingest batch body. The OUTER envelope is snake_case
 // (`intent_id` / `entity_type`) to match the backend ScoutIngestDto verbatim;
@@ -36,5 +48,5 @@ function isRecord(value) {
 // `{ sourceId, sourcePlatform, capturedAt, payload }` per R80-CLARIFY-1
 // (2026-07-07). Entities MUST pass through as-is: no re-mapping, no renaming.
 export function makeScoutIngestBody(intentId, entityType, entities) {
-    return { intent_id: intentId, entity_type: entityType, entities };
+  return { intent_id: intentId, entity_type: entityType, entities };
 }

@@ -1,11 +1,15 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { makeChromeMock, installChrome } from "./helpers/chrome-mock.js";
 import {
-  ALLOWED_CAPTURE_HOSTS,
   BODY_REDACTED,
   assertCaptureTabAllowed,
   redactResponseBody,
 } from "../shared/capture-policy.js";
+import {
+  clearAuthorizedOrigin,
+  getAuthorizedOrigin,
+  setAuthorizedOrigin,
+} from "../shared/session.js";
 import {
   attachDebugger,
   normalizeCapturedSnapshot,
@@ -14,7 +18,7 @@ import {
 
 const TAB = 21;
 
-describe("assertCaptureTabAllowed — debugger origin allowlist", () => {
+describe("assertCaptureTabAllowed — debugger origin confinement", () => {
   let mock;
   beforeEach(() => {
     mock = makeChromeMock();
@@ -52,18 +56,58 @@ describe("assertCaptureTabAllowed — debugger origin allowlist", () => {
     await expectRejected("http://localhost:3000/", "capture_non_https");
   });
 
-  it("rejects an HTTPS host that is not allowlisted", async () => {
+  it("rejects an HTTPS origin that is not the run's authorized origin", async () => {
     await expectRejected(
       "https://evil.example.com/",
-      "capture_host_not_allowed",
+      "capture_origin_not_authorized",
     );
   });
 
-  it("rejects the TGP auth surface — the importer never self-captures", async () => {
+  it("rejects a sibling subdomain of the authorized origin (exact origin, not a suffix)", async () => {
     await expectRejected(
-      "https://api.thegrowthproject.app/",
-      "capture_host_not_allowed",
+      "https://evil.truecoach.co/",
+      "capture_origin_not_authorized",
     );
+  });
+
+  it("rejects everything when no run has authorized an origin", async () => {
+    clearAuthorizedOrigin();
+    try {
+      await expectRejected(
+        "https://app.truecoach.co/clients",
+        "capture_origin_not_authorized",
+      );
+    } finally {
+      setAuthorizedOrigin(mock.defaultOrigin);
+    }
+  });
+
+  it("rejects the authorized origin once Chrome no longer holds its host grant", async () => {
+    mock.revoke(`${mock.defaultOrigin}/*`);
+    await expectRejected(
+      "https://app.truecoach.co/clients",
+      "capture_origin_not_granted",
+    );
+  });
+
+  it("rejects a TGP origin even if a run named it — the importer never self-captures", async () => {
+    setAuthorizedOrigin("https://api.tgp.coach");
+    mock.grant("https://api.tgp.coach/*");
+    try {
+      await expectRejected("https://api.tgp.coach/", "capture_tgp_origin");
+      await expectRejected("https://tgp.coach/", "capture_tgp_origin");
+    } finally {
+      setAuthorizedOrigin(mock.defaultOrigin);
+    }
+  });
+
+  it("holds the authorized origin in memory only, as a bare https origin", () => {
+    expect(getAuthorizedOrigin()).toBe("https://app.truecoach.co");
+    setAuthorizedOrigin("https://other.example/path?x=1");
+    expect(getAuthorizedOrigin()).toBeNull();
+    setAuthorizedOrigin("http://other.example");
+    expect(getAuthorizedOrigin()).toBeNull();
+    setAuthorizedOrigin(mock.defaultOrigin);
   });
 
   it("rejects a tab with no url property", async () => {
@@ -77,7 +121,7 @@ describe("assertCaptureTabAllowed — debugger origin allowlist", () => {
     await expectRejected("not a url at all", "capture_bad_url");
   });
 
-  it("accepts an allowlisted HTTPS TrueCoach tab and returns the tab", async () => {
+  it("accepts the authorized, granted HTTPS tab and returns the tab", async () => {
     mock.setTabUrl(TAB, "https://app.truecoach.co/clients");
     const tab = await assertCaptureTabAllowed(TAB);
     expect(tab).toMatchObject({
@@ -85,28 +129,19 @@ describe("assertCaptureTabAllowed — debugger origin allowlist", () => {
       url: "https://app.truecoach.co/clients",
     });
   });
-
-  it("keeps the allowlist HTTPS-hostname based (no scheme/wildcard entries)", () => {
-    expect(ALLOWED_CAPTURE_HOSTS.has("app.truecoach.co")).toBe(true);
-    for (const host of ALLOWED_CAPTURE_HOSTS) {
-      expect(host).not.toContain("/");
-      expect(host).not.toContain("*");
-      expect(host).not.toContain(":");
-    }
-  });
 });
 
-describe("attachDebugger enforces the allowlist before any debugger call", () => {
+describe("attachDebugger enforces origin confinement before any debugger call", () => {
   let mock;
   beforeEach(() => {
     mock = makeChromeMock();
     installChrome(mock);
   });
 
-  it("refuses to attach to a non-allowlisted host and leaves no session", async () => {
+  it("refuses to attach to an unauthorized origin and leaves no session", async () => {
     mock.setTabUrl(TAB, "https://evil.example.com/steal");
     await expect(attachDebugger(TAB)).rejects.toThrow(
-      "capture_host_not_allowed",
+      "capture_origin_not_authorized",
     );
     // chrome.debugger.attach was never invoked and no listener leaked.
     expect(mock.calls.attach).toHaveLength(0);
@@ -120,7 +155,7 @@ describe("attachDebugger enforces the allowlist before any debugger call", () =>
     expect(mock.calls.attach).toHaveLength(0);
   });
 
-  it("attaches normally to an allowlisted TrueCoach tab", async () => {
+  it("attaches normally to the authorized source tab", async () => {
     mock.setTabUrl(TAB, "https://app.truecoach.co/clients");
     await attachDebugger(TAB);
     expect(mock.calls.attach).toEqual([

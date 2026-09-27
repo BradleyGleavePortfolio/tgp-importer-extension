@@ -16,7 +16,7 @@ import { fakePageStore, realSourceTab } from "./helpers/source-tab.js";
 //     authenticates (end-to-end, not a source grep).
 //   - a source 401/403 fails closed via AuthLostError WITHOUT clearing the TGP
 //     tokens (source auth loss != TGP logout).
-//   - the pre-run guards (unsupported site, unsafe origin, no TGP session).
+//   - the pre-run guards (site not learned, unsafe origin, no TGP session).
 
 const REFRESH_KEY = "tgp_refresh_token";
 const REFRESH_URL = "https://api.tgp.coach/api/auth/extension/refresh";
@@ -142,7 +142,7 @@ describe("start_import — single-flight guard", () => {
 
   it("clears the guard after a run settles so a later run may start", async () => {
     const { mock } = await load({ session: new Map([[REFRESH_KEY, "seed"]]) });
-    // First run fails fast on an unsupported site, releasing the guard.
+    // First run fails fast on a site that is not learned, releasing the guard.
     const ack1 = await mock.dispatch({
       kind: "start_import",
       url: "https://example.com/x",
@@ -159,7 +159,7 @@ describe("start_import — single-flight guard", () => {
 });
 
 describe("start_import — pre-run guards", () => {
-  it("rejects an unsupported site without touching the network", async () => {
+  it("rejects a site that is not learned without touching the network", async () => {
     const { mock } = await load({ session: new Map([[REFRESH_KEY, "seed"]]) });
     const ack = await mock.dispatch({
       kind: "start_import",
@@ -167,7 +167,9 @@ describe("start_import — pre-run guards", () => {
     });
     expect(ack).toEqual({ ok: true });
     await flush();
-    expect(snapshots(mock).at(-1).lastError).toContain("unsupported site");
+    expect(snapshots(mock).at(-1).lastError).toBe(
+      "site_not_learned: https://example.com",
+    );
     expect(global.fetch).not.toHaveBeenCalled();
   });
 

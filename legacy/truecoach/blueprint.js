@@ -6,7 +6,7 @@
 // multi-page traversal (list -> paginate -> fan-out over ids) against a real
 // platform. apiBase origin (https://app.truecoach.co) must appear in the injected
 // allowedOrigins, enforced by normalizeBlueprint before any fetch.
-import { TRUECOACH_API_BASE } from "../../shared/protocol.js";
+import { TRUECOACH_API_BASE } from "./api-base.js";
 
 // ~2 req/s — mirrors the extractor's RATE_LIMIT_MS so the generic crawl paces
 // identically to the verified hand-mapped walk.

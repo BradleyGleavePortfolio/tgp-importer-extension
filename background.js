@@ -5,8 +5,11 @@
 //   - On `session_established`: hand the token pair to shared/session.js, the
 //     single session-ownership boundary. The pairing view (popup/pair.js) is
 //     the ONLY producer of this message.
-//   - On `start_ingest`: verify token, pick the extractor via detectPlatform,
-//     wire sendEntities (bearer POST) + broadcastStatus (runtime message).
+//   - On `start_ingest` / `start_import`: confine the run to the ONE https
+//     origin the coach authorized on Start (chrome.permissions.contains, held
+//     in shared/session.js), pick the reader by registry lookup on that origin
+//     (shared/replay/resolve.js; the quarantined oracle under legacy/ is the
+//     only registrant), wire sendEntities (bearer POST) + broadcastStatus.
 //   - On `request_status` / `request_session_state`: return the snapshot / a
 //     non-secret hasSession boolean.
 //   - Token lifecycle lives entirely in shared/session.js (memory-only access
@@ -23,7 +26,11 @@
 //     backend de-dupes, so a re-emitted completed batch is harmless).
 //
 // R75: zero banned type-assertions — every narrowing is a real guard.
-import { TGP_API_ORIGIN, makeScoutIngestBody } from "./shared/protocol.js";
+import {
+  TGP_API_ORIGIN,
+  isTgpOrigin,
+  makeScoutIngestBody,
+} from "./shared/protocol.js";
 import { readIngestAcknowledgement } from "./shared/ingest-ack.js";
 import {
   establishSession,
@@ -32,9 +39,12 @@ import {
   refreshAccessToken,
   clearTokensIfSession,
   getSessionGeneration,
+  setAuthorizedOrigin,
+  clearAuthorizedOrigin,
 } from "./shared/session.js";
-import { detectPlatform } from "./extractors/detect.js";
-import { TrueCoachExtractor } from "./extractors/truecoach.js";
+// The ONLY core import of the quarantined legacy oracle: it registers itself
+// with the vendor-free registry and core never names it again.
+import "./legacy/index.js";
 import {
   runReplay,
   AuthLostError,
@@ -42,6 +52,7 @@ import {
 } from "./shared/replay/engine.js";
 import {
   resolveBlueprint,
+  resolveExtractor,
   isUnknownPlatform,
 } from "./shared/replay/resolve.js";
 import {
@@ -584,13 +595,37 @@ function notifyOutcome(platform, engineStatus) {
 
 // ---- ingest run -------------------------------------------------------------
 
-function extractorFor(platform, deps) {
-  if (platform === "truecoach") {
-    return new TrueCoachExtractor(deps);
+// ---- origin authorization (Authorization = Start) ---------------------------
+
+// The tab's https origin becomes the run's single authorized origin ONLY if it
+// is not a TGP origin and Chrome holds the host permission requested on the
+// Start gesture (the worker never trusts the popup's claim; it asks Chrome).
+async function authorizeSourceOrigin(url) {
+  const origin = tabOriginAllowlist(url)?.[0] ?? null;
+  if (origin === null) {
+    return { error: `unsafe import origin: ${describedOrigin(url)}` };
   }
-  // v0.3: other platforms currently return null from detectPlatform, so this
-  // branch is unreachable until the next platform's extractor lands.
-  return null;
+  if (isTgpOrigin(origin)) {
+    return { error: `origin_is_tgp: ${origin}` };
+  }
+  let granted = false;
+  try {
+    granted =
+      (await chrome.permissions.contains({ origins: [`${origin}/*`] })) ===
+      true;
+  } catch {
+    granted = false;
+  }
+  if (!granted) {
+    return { error: `origin_not_granted: ${origin}` };
+  }
+  setAuthorizedOrigin(origin);
+  return { origin };
+}
+
+// Not learned yet: no registered reader describes this origin.
+function notLearned(origin) {
+  return `site_not_learned: ${origin}`;
 }
 
 // Persisted/displayed error text carries the tab ORIGIN only: a full source URL
@@ -611,11 +646,23 @@ async function handleStartIngest(message) {
   // sessionLossError); the run never adopts a session that appears later.
   const generation = getSessionGeneration();
   const url = typeof message.url === "string" ? message.url : "";
-  const platform = detectPlatform(url);
-  if (platform === null) {
+  const authorized = await authorizeSourceOrigin(url);
+  if (authorized.error !== undefined) {
+    broadcastStatus({ ...emptySnapshot(), lastError: authorized.error });
+    return;
+  }
+  // Reader by registry lookup on the authorized origin, resolved before the
+  // TGP session is consulted so an unlearned site is never a sign-in problem.
+  const resolved = resolveExtractor(authorized.origin, {
+    sendEntities: (entityType, entities) => sendEntities(entityType, entities),
+    broadcastStatus: (snap) =>
+      broadcastStatus({ ...currentSnapshot, ...snap, intent }),
+    now: () => new Date(),
+  });
+  if (resolved === null) {
     broadcastStatus({
       ...emptySnapshot(),
-      lastError: `unsupported site: ${describedOrigin(url)}`,
+      lastError: notLearned(authorized.origin),
     });
     return;
   }
@@ -628,6 +675,9 @@ async function handleStartIngest(message) {
   }
 
   const controller = new AbortController();
+  const tally = new Map();
+  const staging = new Map();
+  const { platform, extractor } = resolved;
   const intent = {
     intentId: `ext-${Date.now()}`,
     platform,
@@ -636,8 +686,6 @@ async function handleStartIngest(message) {
   broadcastStatus({ ...emptySnapshot(), intent, progress: [] });
 
   // The extractor keeps no tally of its own, so the sender keeps one for it.
-  const tally = new Map();
-  const staging = new Map();
   const sendEntities = makeSender(
     intent,
     {
@@ -651,26 +699,11 @@ async function handleStartIngest(message) {
     tally,
     staging,
   );
-  const wrappedBroadcast = (snap) =>
-    broadcastStatus({ ...currentSnapshot, ...snap, intent });
 
-  // The source-platform bearer token (e.g. TrueCoach) is captured in-tab and
-  // passed on the start message; the extractor reuses the coach's session.
+  // The source-platform bearer token is captured in-tab and passed on the
+  // start message; the extractor reuses the coach's session.
   const sourceToken =
     typeof message.sourceToken === "string" ? message.sourceToken : "";
-
-  const extractor = extractorFor(platform, {
-    sendEntities,
-    broadcastStatus: wrappedBroadcast,
-    now: () => new Date(),
-  });
-  if (extractor === null) {
-    broadcastStatus({
-      ...emptySnapshot(),
-      lastError: `no extractor for ${platform}`,
-    });
-    return;
-  }
 
   let settlementSent = false;
   try {
@@ -733,6 +766,14 @@ async function handleStartIngest(message) {
 // handler runs (so a pre-await race cannot pass) and SHARED across BOTH ingest
 // entrypoints (start_import + legacy start_ingest). Cleared when the run settles.
 let importInFlight = false;
+
+// A run's authorization ends with the run: origin dropped, collector
+// unregistered, then the single-flight guard released.
+async function settleRun() {
+  clearAuthorizedOrigin();
+  await unregisterSourceCollector();
+  importInFlight = false;
+}
 
 // Confine the crawl to the origin the coach is looking at: the observed tab
 // origin (https only) is the injected SSRF allowlist the blueprint's apiBase must
@@ -802,6 +843,41 @@ function makeSourceFetch(sourceToken) {
   };
 }
 
+// The classic collector (content/main.js) is not declared in the manifest: it
+// is registered for the ONE granted origin for the run only, and injected into
+// the already-loaded tab (a registration applies to future loads). Both calls
+// need the host permission the coach granted on Start.
+const SOURCE_COLLECTOR_ID = "tgp-source-collector";
+const SOURCE_COLLECTOR_SCRIPT = "content/main.js";
+
+async function registerSourceCollector(origin, tabId) {
+  await unregisterSourceCollector();
+  await chrome.scripting.registerContentScripts([
+    {
+      id: SOURCE_COLLECTOR_ID,
+      matches: [`${origin}/*`],
+      js: [SOURCE_COLLECTOR_SCRIPT],
+      runAt: "document_idle",
+      persistAcrossSessions: false,
+    },
+  ]);
+  await chrome.scripting.executeScript({
+    target: { tabId },
+    files: [SOURCE_COLLECTOR_SCRIPT],
+  });
+}
+
+// Never throws: a missing registration is not a fault; cleanup cannot fail a run.
+async function unregisterSourceCollector() {
+  try {
+    await chrome.scripting.unregisterContentScripts({
+      ids: [SOURCE_COLLECTOR_ID],
+    });
+  } catch {
+    logNetworkEvent("source_collector_unregister_skipped");
+  }
+}
+
 // Obtain the SOURCE bearer from the coach's own tab WITHOUT exposing it to
 // popup/storage/logs/payload: re-read the tab's LIVE origin and require it in the
 // allowlist (fail closed on a navigated tab), accept only { ok, token }. Memory only.
@@ -821,11 +897,12 @@ async function collectSourceToken(tabId, allowedOrigins) {
   }
   let reply;
   try {
+    await registerSourceCollector(origin, tabId);
     reply = await chrome.tabs.sendMessage(tabId, {
       kind: "collect_source_token",
     });
   } catch {
-    return ""; // no content script / port closed — proceed token-less (fails closed downstream)
+    return ""; // no collector / port closed — proceed token-less (fails closed downstream)
   }
   return isRecord(reply) && reply.ok === true && typeof reply.token === "string"
     ? reply.token
@@ -839,32 +916,28 @@ async function handleStartImport(message) {
   // sessionLossError); the run never adopts a session that appears later.
   const generation = getSessionGeneration();
   const url = typeof message.url === "string" ? message.url : "";
-  const platform = detectPlatform(url);
-  if (platform === null) {
-    broadcastStatus({
-      ...emptySnapshot(),
-      lastError: `unsupported site: ${describedOrigin(url)}`,
-    });
+  const authorized = await authorizeSourceOrigin(url);
+  if (authorized.error !== undefined) {
+    broadcastStatus({ ...emptySnapshot(), lastError: authorized.error });
     return;
   }
-  const allowedOrigins = tabOriginAllowlist(url);
-  if (allowedOrigins === null) {
-    broadcastStatus({
-      ...emptySnapshot(),
-      lastError: `unsafe import origin: ${describedOrigin(url)}`,
-    });
-    return;
-  }
+  // Crawl confinement: the run's ONE authorized origin is the injected SSRF
+  // allowlist the blueprint's apiBase must match (normalizeBlueprint).
+  const allowedOrigins = [authorized.origin];
   let blueprint;
   try {
-    blueprint = resolveBlueprint(platform);
+    blueprint = resolveBlueprint(authorized.origin);
   } catch (err) {
     const detail = isUnknownPlatform(err)
-      ? `no blueprint for ${platform}`
+      ? notLearned(authorized.origin)
       : "blueprint resolve failed";
     broadcastStatus({ ...emptySnapshot(), lastError: detail });
     return;
   }
+  const platform =
+    typeof blueprint.platform === "string"
+      ? blueprint.platform
+      : new URL(authorized.origin).hostname;
   // A TGP access token of the OWNING session is required for ingest before we
   // start crawling. The owner is re-checked synchronously at the report.
   const preflight = await preflightOwnedSession(generation);
@@ -1155,9 +1228,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
     importInFlight = true;
-    void handleStartIngest(message).finally(() => {
-      importInFlight = false;
-    });
+    void handleStartIngest(message).finally(settleRun);
     sendResponse({ ok: true });
     return false;
   }
@@ -1175,9 +1246,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return false;
     }
     importInFlight = true;
-    void handleStartImport(message).finally(() => {
-      importInFlight = false;
-    });
+    void handleStartImport(message).finally(settleRun);
     sendResponse({ ok: true });
     return false;
   }

@@ -21,24 +21,25 @@ describe("background ingest transport is bounded", () => {
     expect(src).not.toMatch(/fetch\(`\$\{TGP_API_ORIGIN\}\/api\/scout\//);
   });
 
-  it("manifest drops unused cookies/scripting and cleartext truecoach wildcard", () => {
+  it("manifest holds no cookies permission, no vendor host and no static content script", () => {
     const m = JSON.parse(
       readFileSync(join(process.cwd(), "manifest.json"), "utf8"),
     );
     expect(m.permissions).not.toContain("cookies");
-    expect(m.permissions).not.toContain("scripting");
-    expect(m.host_permissions).not.toContain("*://*.truecoach.co/*");
-    expect(m.host_permissions).toContain("https://*.truecoach.co/*");
-    const matches = m.content_scripts[0].matches;
-    expect(matches).not.toContain("*://*.truecoach.co/*");
-    expect(matches).toContain("https://*.truecoach.co/*");
+    // Only TGP's own API is granted at install; every source origin is an
+    // optional https grant the coach gives on the Start gesture.
+    expect(m.host_permissions).toEqual(["https://api.tgp.coach/*"]);
+    expect(m.optional_host_permissions).toEqual(["https://*/*"]);
+    expect(m.content_scripts).toBeUndefined();
+    // The collector is registered dynamically for the granted origin only.
+    expect(m.permissions).toContain("scripting");
   });
 });
 
 describe("truecoach source fetch is bounded", () => {
   it("routes rawFetch through fetchWithTimeout", () => {
     const src = readFileSync(
-      join(process.cwd(), "extractors/truecoach/net.js"),
+      join(process.cwd(), "legacy/truecoach/net.js"),
       "utf8",
     );
     expect(src).toMatch(/fetchWithTimeout/);

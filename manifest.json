@@ -25,21 +25,9 @@
     "storage",
     "activeTab",
     "notifications",
-    "debugger"
+    "debugger",
+    "scripting"
   ],
-  "host_permissions": [
-    "https://app.truecoach.co/*",
-    "https://*.truecoach.co/*",
-    "https://api.tgp.coach/*"
-  ],
-  "optional_host_permissions": [
-    "*://*/*"
-  ],
-  "content_scripts": [
-    {
-      "matches": ["https://app.truecoach.co/*", "https://*.truecoach.co/*"],
-      "js": ["content/main.js"],
-      "run_at": "document_idle"
-    }
-  ]
+  "host_permissions": ["https://api.tgp.coach/*"],
+  "optional_host_permissions": ["https://*/*"]
 }

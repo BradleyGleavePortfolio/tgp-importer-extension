@@ -133,14 +133,16 @@ export function preStartIssue(lastError, message) {
         error.includes("login required to import") ||
         error.includes("session expired")
       ? "prestart_pairing_needed"
-      : error.startsWith("unsafe import origin")
+      : error.startsWith("unsafe import origin") ||
+          error.startsWith("origin_not_https") ||
+          error.startsWith("origin_is_tgp")
         ? "prestart_unsafe_origin"
-        : error.startsWith("unsupported site")
-          ? "prestart_page_unsupported"
-          : error.startsWith("no extractor for")
-            ? "prestart_no_reader"
-            : error.startsWith("no blueprint for") ||
-                error === "blueprint resolve failed"
+        : error.startsWith("origin_not_authorized") ||
+            error.startsWith("origin_not_granted")
+          ? "prestart_origin_not_authorized"
+          : error.startsWith("site_not_learned")
+            ? "prestart_site_not_learned"
+            : error === "blueprint resolve failed"
               ? "prestart_site_setup_unavailable"
               : "prestart_unknown";
   return message(key);

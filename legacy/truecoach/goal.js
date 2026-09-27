@@ -4,7 +4,7 @@
 // the macro values (calories, protein, carbs, fat, weight, sleep, steps,
 // energy, hunger, stress). When no goals are set every cell is `<p>--</p>` (or
 // the goal-row is absent entirely) — in that case we emit ZERO entities.
-import { makeEntity } from "../_interface.js";
+import { makeEntity } from "../../extractors/_interface.js";
 import { PLATFORM, isRecord } from "./parse.js";
 // Macro fields we attempt to read from the goal-row, in cell order.
 export const GOAL_FIELDS = [

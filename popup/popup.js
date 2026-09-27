@@ -2,6 +2,7 @@
 // Requests a snapshot from the background worker and renders intent +
 // per-entity progress + the last error. Re-renders on every broadcast.
 import { outcomeView, preStartIssue, serverStatusView } from "./outcome.js";
+import { isTgpOrigin } from "../shared/protocol.js";
 
 let latestSnapshot = null;
 let snapshotVersion = 0;
@@ -134,17 +135,49 @@ function isOk(value) {
   return typeof value === "object" && value !== null && value.ok === true;
 }
 
-// Ask the worker to import the ACTIVE tab; its URL is the only input (the worker
-// detects platform, resolves blueprint, injects origin allowlist). Exported so a
-// test can drive the REAL send path.
-export function requestStartImport(runtime, tabs) {
+// Authorization = Start. The https origin of the ACTIVE tab is the only site
+// this run may touch; nothing else is authorized. Returns null for anything
+// that is not an https page (chrome://, file://, http://, no tab).
+function sourceOriginOf(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  return parsed.protocol === "https:" ? parsed.origin : null;
+}
+
+// Stable pre-start codes decided in the popup, before the worker is asked.
+const START_ISSUE_CODES = new Set([
+  "origin_not_https",
+  "origin_is_tgp",
+  "origin_not_authorized",
+]);
+
+// On the Start gesture: ask Chrome for the active tab's origin (denial starts
+// nothing), then ask the worker to import that tab. Its URL + id are the only
+// inputs: the worker re-checks the grant, holds the origin for the run and
+// collects the source bearer itself — the popup never handles the token.
+export function requestStartImport(runtime, tabs, permissions) {
   return tabs.query({ active: true, currentWindow: true }).then((result) => {
     const tab = Array.isArray(result) && result.length > 0 ? result[0] : null;
     const url = tab && typeof tab.url === "string" ? tab.url : "";
-    // The tab id lets the worker ask this tab's content script for the source
-    // bearer; the popup never sees or handles the token.
     const tabId = tab && typeof tab.id === "number" ? tab.id : null;
-    return runtime.sendMessage({ kind: "start_import", url, tabId });
+    const origin = sourceOriginOf(url);
+    if (origin === null) {
+      return { ok: false, error: "origin_not_https" };
+    }
+    if (isTgpOrigin(origin)) {
+      return { ok: false, error: "origin_is_tgp" };
+    }
+    return permissions
+      .request({ origins: [`${origin}/*`] })
+      .then((granted) =>
+        granted === true
+          ? runtime.sendMessage({ kind: "start_import", url, tabId })
+          : { ok: false, error: "origin_not_authorized" },
+      );
   });
 }
 
@@ -156,24 +189,37 @@ export function wireStartImport(
   tabs,
   doc,
   getMessage = (key) => chrome.i18n.getMessage(key),
+  permissions = undefined,
 ) {
   const btn = doc.getElementById("start-import");
   if (!btn) {
     return;
   }
-  function showUnconfirmedStart() {
+  function showStartIssue(text) {
     const errorBox = doc.getElementById("error");
     if (errorBox) {
       errorBox.hidden = false;
-      errorBox.textContent = getMessage("start_import_unconfirmed");
+      errorBox.textContent = text;
     }
+  }
+  function showUnconfirmedStart() {
+    showStartIssue(getMessage("start_import_unconfirmed"));
   }
   btn.addEventListener("click", () => {
     if (btn.disabled) return;
     btn.disabled = true;
-    requestStartImport(runtime, tabs)
+    requestStartImport(runtime, tabs, permissions)
       .then((response) => {
-        if (!isOk(response)) showUnconfirmedStart();
+        if (isOk(response)) return;
+        // A code the popup itself decided is an honest no-run fact: approved
+        // copy for it, never the raw code. Anything else stays "unconfirmed".
+        const code =
+          response && typeof response.error === "string" ? response.error : "";
+        if (START_ISSUE_CODES.has(code)) {
+          showStartIssue(preStartIssue(code, getMessage));
+        } else {
+          showUnconfirmedStart();
+        }
       })
       .catch(() => {
         // A lost reply is not proof that Start was rejected or that no records
@@ -274,7 +320,13 @@ if (
       render(message);
     }
   });
-  wireStartImport(chrome.runtime, chrome.tabs, document);
+  wireStartImport(
+    chrome.runtime,
+    chrome.tabs,
+    document,
+    (key) => chrome.i18n.getMessage(key),
+    chrome.permissions,
+  );
   wireOutcomeActions(
     chrome.runtime,
     document,

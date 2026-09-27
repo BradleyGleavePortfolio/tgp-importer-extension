@@ -33,8 +33,8 @@ function authRequired(mock) {
   return mock.sent.filter((m) => m && m.kind === "auth_required");
 }
 
-describe("start_ingest — unsupported site", () => {
-  it("rejects a non-TrueCoach URL without touching auth", async () => {
+describe("start_ingest — site not learned", () => {
+  it("rejects an origin no reader is registered for without touching auth", async () => {
     const { mock } = await load();
     const ack = await mock.dispatch({
       kind: "start_ingest",
@@ -43,7 +43,7 @@ describe("start_ingest — unsupported site", () => {
     expect(ack).toEqual({ ok: true });
     await flush();
     const last = snapshots(mock).at(-1);
-    expect(last.lastError).toContain("unsupported site");
+    expect(last.lastError).toBe("site_not_learned: https://example.com");
     expect(global.fetch).not.toHaveBeenCalled();
     expect(authRequired(mock)).toHaveLength(0);
   });

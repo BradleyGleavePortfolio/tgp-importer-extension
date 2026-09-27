@@ -1,7 +1,7 @@
 // Runtime networking + date-window helpers for the TrueCoach extractor.
 // Kept separate from the pure parsers so the parse layer stays DOM/fetch-free.
 import { fetchWithTimeout } from "../../shared/net.js";
-import { TRUECOACH_API_BASE } from "../../shared/protocol.js";
+import { TRUECOACH_API_BASE } from "./api-base.js";
 export const RATE_LIMIT_MS = 500; // ~2 requests/second
 export const CLIENTS_PER_PAGE = 25;
 export const WORKOUTS_PER_PAGE = 1000;
