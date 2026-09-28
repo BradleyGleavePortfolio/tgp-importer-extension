@@ -21,6 +21,8 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
+      - name: Vendor-name guard
+        run: npm run guard:vendors
       - name: Run tests
         run: npm test
       - name: Dependency audit (HIGH/CRITICAL block)

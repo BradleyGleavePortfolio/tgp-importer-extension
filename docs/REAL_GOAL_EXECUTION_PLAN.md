@@ -1,3 +1,5 @@
+> SUPERSEDED (2026-09-27) by /NORTH_STAR.md. Historical record, do not follow.
+
 # TGP Importer Real-Goal Execution Plan
 
 > **Status:** binding operator baton, effective 2026-09-09.
