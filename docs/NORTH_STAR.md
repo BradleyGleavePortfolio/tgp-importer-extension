@@ -23,6 +23,18 @@ Zero routine coach actions after Start. No human ever writes platform-specific w
   AI never decides `complete`.
 - **Credentials are capabilities, not data.** They are never stored, never learned and never sent to a model.
 
+## The AI step (owner, 2026-09-27)
+- **A great prompt, built live:** every call explains the goal: move this coach's business into TGP faithfully, map only, never invent, and mark unknowns.
+  It also explains how TGP data is structured: families, fields, types, identity rules and relationships, generated at call time from the same contract the validators use,
+  with verified example mappings. When TGP's structure changes, the prompt changes with it automatically. The prompt version and contract hash are recorded on each run.
+- **Prompt-injection defence:** all source-site content is hostile. The model sees structure plus minimal redacted samples as delimited, untrusted data, never as instructions.
+  It has no tools and no network. Its output is schema-constrained, and it may only reference fields actually observed. Deterministic validators and conformance checks
+  against the real records are the gate. An adversarial injection corpus is a required CI test.
+- **Clear usage limits:** hard caps on calls and tokens per run, a per-coach daily cap, a global daily spend cap with a kill switch, and timeouts. Every limit fails closed to an honest
+  result. Remembered sites use zero AI calls.
+- **Always the best model:** the model comes from config, defaulting to the strongest available frontier model, and a model must pass the eval harness before it is used.
+  There is never a silent downgrade; the model used is recorded with every run.
+
 ## The coach experience: Roman
 The coach-facing journey is the **Roman importer journey** in mobile (`src/screens/coach/import-journey/`, Roman on/off, neutral by default).
 The steps are: pick or enter the site → authorize → Start → live progress → the truthful verdict. The extension popup is a status surface only.
