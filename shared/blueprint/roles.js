@@ -4,10 +4,12 @@
 // plus window/pagination hints from supported query NAMES. It never emits a
 // runnable blueprint, confidence score, id field, edge, or pagination
 // descriptor; ambiguity always fails closed into `refused`. Output carries only
-// origin, method, a value-free template (see sessionSlotTemplate), conservative
-// structural path keys, C2a shape
-// signatures (which omit property names), query names, and counts — never
-// response values, ids, query values, headers, timestamps, or bodies.
+// origin, method, a value-free template (see sessionSlotTemplate), a
+// value-free items path (see publicItemsPath: every container key is a typed
+// slot or a dynamic-key marker, never its raw name), C2a shape signatures
+// (which omit property names), query names from a fixed supported set, and
+// counts — never response values, ids, JSON keys, query values, headers,
+// timestamps, or bodies.
 import { isCredentialKey } from "../credential-policy.js";
 import { compareText } from "./order.js";
 import { shapeSignature } from "./shapes.js";
@@ -22,7 +24,13 @@ const HARD = Object.freeze({
     maxCandidateArrays: 16,
   }),
   SAFE_KEY = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/,
-  PROTOTYPE_KEY = /^(?:__proto__|prototype|constructor)$/;
+  PROTOTYPE_KEY = /^(?:__proto__|prototype|constructor)$/,
+  // Internal-only path marker for a map-shaped level. It fails SAFE_KEY, so no
+  // walked (non-map) key can ever equal it, and it is never emitted.
+  DYNAMIC_KEY = "\u0000*",
+  // A map needs this many keys to be recognized from homogeneity alone; fewer
+  // name-like keys under equal values may be structure, and stay slots.
+  MAP_MIN_KEYS = 3;
 const WINDOW_PAIRS = [
     ["from", "to"],
     ["since", "until"],
@@ -45,6 +53,55 @@ function option(options, key) {
 function safePathKey(key) {
   return (
     SAFE_KEY.test(key) && !PROTOTYPE_KEY.test(key) && !isCredentialKey(key)
+  );
+}
+// A key that is never acceptable, even as map data: a prototype name or a
+// credential name aborts the endpoint rather than being walked or summarized.
+function forbiddenKey(key) {
+  return PROTOTYPE_KEY.test(key) || isCredentialKey(key);
+}
+// Name-like: syntactically a safe identifier AND not an id C2a recognizes.
+// Everything else (ids, emails, spaces, dots, Unicode, leading digits) reads
+// as data, never as a name.
+function nameLikeKey(key) {
+  return safePathKey(key) && candidateKind(key) === null;
+}
+// Map-shaped object: its keys are data, not structure. Recognized positively
+// from the values — every value is an array, or every value is an object, and
+// all values share ONE shape signature — plus either a data-like key (any key
+// that is not name-like) or at least MAP_MIN_KEYS distinct keys. A map level
+// is summarized as one DYNAMIC_KEY step whose items are the values (or, for a
+// map of arrays, the arrays' items). Ambiguous objects are not maps; they are
+// walked, and their keys still leave only as slots.
+function mapShaped(node) {
+  const keys = Object.keys(node);
+  if (keys.length === 0) return false;
+  const values = keys.map((key) => node[key]);
+  if (!values.every(Array.isArray) && !values.every(isRecord)) return false;
+  const shapes = new Set(values.map((value) => shapeSignature(value)));
+  if (shapes.size !== 1 || UNINSPECTED_SHAPE.test([...shapes][0])) return false;
+  return keys.length >= MAP_MIN_KEYS || !keys.every(nameLikeKey);
+}
+// Positive-structural-proof rule for JSON keys (same rule as path literals):
+// within one coach's capture, a response key such as "alice" is constant
+// exactly like a structural name such as "items", so no key's structural
+// status is ever positively established here. Every walked key is emitted as a
+// typed slot {type:"key", slot:"kN"} (numbered left to right per path) and
+// every map level as {type:"dynamic_key"}; raw key names stay in the local
+// capture. A path with any key slot is never replay-compatible (the slot must
+// be rebound from the current coach's own traffic: KEY_SLOT_REASON); a dynamic
+// key has no replay-engine representation (DYNAMIC_KEY_REASON). Seam for X2: a
+// shared, reviewed structural-key vocabulary could later promote a slot to a
+// proven name; C2b implements no vocabulary and emits no key name.
+const KEY_SLOT_REASON = "session_key_rebinding_required",
+  DYNAMIC_KEY_REASON = "dynamic_key_not_representable";
+function publicItemsPath(path) {
+  if (path === null) return null;
+  let slots = 0;
+  return path.map((key) =>
+    key === DYNAMIC_KEY
+      ? { type: "dynamic_key" }
+      : { type: "key", slot: `k${(slots += 1)}` },
   );
 }
 function decodeSegment(raw) {
@@ -148,7 +205,9 @@ function endpointOf(cluster, proven) {
 }
 // Bounded key-sorted walk collecting every array within maxDepth object keys.
 // A branch stops at its first array (an array inside an array is item structure,
-// not a container path); an unsafe key aborts the endpoint instead of leaking.
+// not a container path) or at a map-shaped object (its values are the items);
+// a forbidden key anywhere, or a data-like key outside a recognized map, aborts
+// the endpoint instead of being walked.
 function collectArrays(body, limits) {
   const found = [];
   let unsafe = false;
@@ -156,7 +215,16 @@ function collectArrays(body, limits) {
     if (found.length > limits.maxCandidateArrays) return;
     if (Array.isArray(node)) return void found.push({ path, items: node });
     if (!isRecord(node) || path.length >= limits.maxDepth) return;
-    for (const key of Object.keys(node).sort(compareText))
+    const keys = Object.keys(node).sort(compareText);
+    if (keys.some(forbiddenKey)) return void (unsafe = true);
+    if (mapShaped(node)) {
+      const values = keys.map((key) => node[key]);
+      return void found.push({
+        path: [...path, DYNAMIC_KEY],
+        items: values.every(Array.isArray) ? values.flat() : values,
+      });
+    }
+    for (const key of keys)
       if (safePathKey(key)) walk(node[key], [...path, key]);
       else unsafe = true;
   };
@@ -284,9 +352,14 @@ function candidateFor(cluster, voting, limits, proven) {
   if (paths.size !== 1) return deny("inconsistent_items_path");
   if (shapes.size === 0) return deny("insufficient_shape_evidence");
   if (shapes.size !== 1) return deny("inconsistent_item_shape");
+  const itemsPath = publicItemsPath(JSON.parse([...paths][0]));
   if (!proven) reasons.push("unproven_template_literal");
   else if (sessionSlotTemplate(cluster.pathPattern).slots > 0)
     reasons.push(SESSION_SLOT_REASON);
+  if (itemsPath?.some(({ type }) => type === "key"))
+    reasons.push(KEY_SLOT_REASON);
+  if (itemsPath?.some(({ type }) => type === "dynamic_key"))
+    reasons.push(DYNAMIC_KEY_REASON);
   if (detail) reasons.push("detail_body_not_representable");
   if (window.ambiguous) reasons.push("ambiguous_window_keys");
   if (window.evidence) reasons.push("window_not_representable");
@@ -303,7 +376,7 @@ function candidateFor(cluster, voting, limits, proven) {
           ...(window.evidence ? ["windowed"] : []),
           ...(pagination.evidence ? ["paginated"] : []),
         ],
-    itemsPath: JSON.parse([...paths][0]),
+    itemsPath,
     itemShape: [...shapes][0],
     support,
     windowEvidence: window.evidence,
@@ -311,6 +384,35 @@ function candidateFor(cluster, voting, limits, proven) {
     replayCompatible: reasons.length === 0,
     reasons: reasons.sort(compareText),
   };
+}
+// X3 seam, made visible here: slot numbering is per template, so two distinct
+// observed routes (e.g. "/coaches/alice/clients/:id/workouts" and
+// "/groups/bob/members/:id/workouts") can collapse to one emitted
+// (origin, method, template). They are never merged: each stays its own entry,
+// and every candidate in such a group carries COLLISION_REASON (so it is not
+// replay-compatible) even when the colliding partner was refused. Origin,
+// method, arity and :id positions are NOT sufficient for rebinding; X3 must
+// fail closed on 0 or >1 bindings unless independently validated evidence
+// disambiguates. (Origin itself may carry a tenant name — see the X2 seam in
+// the PR notes; C2b scopes by origin but does not parameterize it.)
+const COLLISION_REASON = "slot_template_collision";
+function flagSlotCollisions(candidates, refused) {
+  const keyOf = ({ endpoint }) =>
+      endpoint?.template
+        ? JSON.stringify([endpoint.origin, endpoint.method, endpoint.template])
+        : null,
+    counts = new Map();
+  for (const entry of [...candidates, ...refused]) {
+    const key = keyOf(entry);
+    if (key !== null) counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  for (const candidate of candidates)
+    if ((counts.get(keyOf(candidate)) ?? 0) > 1) {
+      candidate.reasons = [...candidate.reasons, COLLISION_REASON].sort(
+        compareText,
+      );
+      candidate.replayCompatible = false;
+    }
 }
 export function inferEndpointRoles(observations, templateClusters, options) {
   const limits = {
@@ -414,10 +516,17 @@ export function inferEndpointRoles(observations, templateClusters, options) {
       reason: "invalid_origin",
       support: badOrigins,
     });
+  flagSlotCollisions(candidates, refused);
   const order = (a, b) => compareText(JSON.stringify(a), JSON.stringify(b));
   return {
     candidates: candidates.sort(order),
     refused: refused.sort(order),
   };
 }
-export { HARD as ROLE_HARD_LIMITS, SESSION_SLOT_REASON };
+export {
+  COLLISION_REASON,
+  DYNAMIC_KEY_REASON,
+  HARD as ROLE_HARD_LIMITS,
+  KEY_SLOT_REASON,
+  SESSION_SLOT_REASON,
+};
