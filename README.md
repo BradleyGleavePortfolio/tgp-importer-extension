@@ -34,6 +34,8 @@ docs/
   export-recipes/          # per-platform user-assisted export walkthroughs
 ```
 
+> SUPERSEDED — see [NORTH_STAR.md](docs/NORTH_STAR.md) and canonical AGENT_RULES G01–G22.
+
 ## Design v0.3 — see docs/DESIGN.md
 
 The design has moved from the Day-1 TGP-initiated handshake, through the v0.2
@@ -64,6 +66,8 @@ Highlights of the redesign:
 - Size: no line cap; reviewability decides (R76 retired by the governance refactor).
 - Interface in `extractors/_interface.js` is **locked**; changes require an
   operator ruling because they break every downstream extractor.
+
+> SUPERSEDED — see [NORTH_STAR.md](docs/NORTH_STAR.md) and canonical AGENT_RULES G01–G22.
 
 ## Backend dependencies (TGP-side)
 
