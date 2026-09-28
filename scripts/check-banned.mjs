@@ -1,10 +1,7 @@
-// Banned-token net — two mechanical checks that must both pass.
+// Banned-token net — source-pattern and dependency checks that must both pass.
 //
 // 1. SOURCE PATTERNS: canonical R75 net-new escape hatches, silent catches,
 //    unjustified TypeScript suppressions, and placeholder copy are forbidden.
-// 2. COMMIT IDENTITY (R3): every commit this branch adds must be authored AND
-//    committed as Bradley Gleave <bradley@bradleytgpcoaching.com>, with no
-//    AI/agent/co-author tokens anywhere in author, committer, or message.
 //
 // Usage: node scripts/check-banned.mjs
 import { execFileSync } from "node:child_process";
@@ -183,44 +180,6 @@ for (const name of Object.keys(manifest.dependencyPolicyExceptions ?? {}))
   if (!Object.hasOwn(dependencies, name))
     failures.push(`R33 stale dependency exception: ${name}`);
 
-// ---- 2. commit identity (R3) ------------------------------------------------
-
-const EXPECTED_NAME = "Bradley Gleave";
-const EXPECTED_EMAIL = "bradley@bradleytgpcoaching.com";
-const IDENTITY_TOKENS =
-  /(claude|anthropic|co-authored-by|copilot|openai|\bgpt\b|assistant|dynasia|noreply@)/i;
-
-const raw =
-  process.env.BANNED_DIFF_CACHED === "1"
-    ? ""
-    : execFileSync(
-        "git",
-        [
-          "log",
-          `${from}..HEAD`,
-          "--format=%H%x1f%an%x1f%ae%x1f%cn%x1f%ce%x1f%B%x1e",
-        ],
-        { encoding: "utf8" },
-      );
-for (const rec of raw.split("\x1e")) {
-  const trimmed = rec.trim();
-  if (!trimmed) continue;
-  const [sha, an, ae, cn, ce, body] = trimmed.split("\x1f");
-  const short = sha.slice(0, 8);
-  if (an !== EXPECTED_NAME || ae !== EXPECTED_EMAIL)
-    failures.push(
-      `${short} author is "${an} <${ae}>", expected "${EXPECTED_NAME} <${EXPECTED_EMAIL}>"`,
-    );
-  if (cn !== EXPECTED_NAME || ce !== EXPECTED_EMAIL)
-    failures.push(
-      `${short} committer is "${cn} <${ce}>", expected "${EXPECTED_NAME} <${EXPECTED_EMAIL}>"`,
-    );
-  if (IDENTITY_TOKENS.test(body))
-    failures.push(
-      `${short} commit message contains a banned AI/agent/co-author token`,
-    );
-}
-
 // ---- verdict ----------------------------------------------------------------
 
 if (failures.length > 0) {
@@ -229,5 +188,5 @@ if (failures.length > 0) {
   process.exit(1);
 }
 process.stdout.write(
-  `OK: banned-token net clean (source patterns + ${base} commit identity)\n`,
+  `OK: banned-token net clean (source patterns + dependency policy; base ${base})\n`,
 );

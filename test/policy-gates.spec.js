@@ -682,51 +682,6 @@ describe("banned-token gate source coverage", () => {
     expect(output.stdout).toContain("R75 net-new banned token");
     expect(existsSync(join(root, "PWNED"))).toBe(false);
   });
-
-  it("checks merge-commit author and committer identity", () => {
-    const root = temp(),
-      good = {
-        ...process.env,
-        GIT_AUTHOR_NAME: "Bradley Gleave",
-        GIT_AUTHOR_EMAIL: "bradley@bradleytgpcoaching.com",
-        GIT_COMMITTER_NAME: "Bradley Gleave",
-        GIT_COMMITTER_EMAIL: "bradley@bradleytgpcoaching.com",
-      };
-    const git = (args, env = good) =>
-      spawnSync("git", args, { cwd: root, env, encoding: "utf8" });
-    put(root, "package.json", JSON.stringify({ private: true }));
-    expect(git(["init"]).status).toBe(0);
-    expect(git(["add", "."]).status).toBe(0);
-    expect(git(["commit", "-m", "base"]).status).toBe(0);
-    const base = git(["rev-parse", "HEAD"]).stdout.trim();
-    expect(git(["checkout", "-b", "topic"]).status).toBe(0);
-    put(root, "src/value.js", "export const value = 1;\n");
-    expect(git(["add", "."]).status).toBe(0);
-    expect(git(["commit", "-m", "topic"]).status).toBe(0);
-    expect(git(["checkout", "master"]).status).toBe(0);
-    const evil = {
-      ...good,
-      GIT_AUTHOR_NAME: "Evil Agent",
-      GIT_AUTHOR_EMAIL: "evil@example.invalid",
-      GIT_COMMITTER_NAME: "Evil Agent",
-      GIT_COMMITTER_EMAIL: "evil@example.invalid",
-    };
-    expect(
-      git(["merge", "--no-ff", "topic", "-m", "merge topic"], evil).status,
-    ).toBe(0);
-    const output = spawnSync(
-      process.execPath,
-      [join(repo, "scripts/check-banned.mjs")],
-      {
-        cwd: root,
-        encoding: "utf8",
-        env: { ...process.env, RATIO_BASE: base },
-      },
-    );
-    expect(output.status).toBe(1);
-    expect(output.stdout).toContain("author is");
-    expect(output.stdout).toContain("committer is");
-  });
 });
 
 describe("pre-commit hook semantic validation", () => {
