@@ -1,3 +1,5 @@
+> SUPERSEDED (2026-09-27) by /NORTH_STAR.md. Historical record, do not follow.
+
 # TGP Importer — Roadmap & Platform Matrix
 
 Companion to `DESIGN.md`, `AUTO_DISCOVERY.md`, and
