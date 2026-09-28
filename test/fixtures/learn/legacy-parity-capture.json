@@ -1,0 +1,140 @@
+{
+  "description": "Synthetic, NON-PRODUCTION redacted capture shaped like the quarantined legacy oracle's clients -> notes walk (L04 parity input). The roster page reuses the real recorded CDP clients body (ids 7 and 8); notes, the trainer profile and the auth session are hand-authored with placeholder people. Every string value here is a planted value the digest must never transmit.",
+  "authorizedOrigin": "https://app.truecoach.co",
+  "capture": [
+    {
+      "url": "https://app.truecoach.co/proxy/api/clients?per_page=25&page=1&access_token=eyJraWQ",
+      "method": "GET",
+      "statusCode": 200,
+      "capturedAt": "2026-07-15T12:00:00.000Z",
+      "requestHeaders": {
+        "Accept": "application/json, text/html",
+        "Role": "Trainer",
+        "Authorization": "<redacted>",
+        "Cookie": "<redacted>",
+        "Referer": "https://app.truecoach.co/clients",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        "X-Request-Id": "3f1c9d2e-8a41-4c2f-9b7d-0f5e6a7b8c00",
+        "Sec-Fetch-Mode": "cors"
+      },
+      "responseBody": "{\"clients\":[{\"id\":7,\"name\":\"Dana Coach\",\"email\":\"dana@example.com\"},{\"id\":8,\"name\":\"Sam Lift\",\"email\":\"sam@example.com\"}],\"page\":1,\"total\":2}"
+    },
+    {
+      "url": "https://app.truecoach.co/proxy/api/clients?per_page=25&page=2",
+      "method": "GET",
+      "statusCode": 200,
+      "capturedAt": "2026-07-15T12:00:00.500Z",
+      "requestHeaders": {
+        "Accept": "application/json, text/html",
+        "Role": "Trainer",
+        "Authorization": "<redacted>",
+        "Cookie": "<redacted>",
+        "Referer": "https://app.truecoach.co/clients",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        "X-Request-Id": "3f1c9d2e-8a41-4c2f-9b7d-0f5e6a7b8c01",
+        "Sec-Fetch-Mode": "cors"
+      },
+      "responseBody": "{\"clients\":[],\"page\":2,\"total\":2}"
+    },
+    {
+      "url": "https://app.truecoach.co/proxy/api/clients/7/notes",
+      "method": "GET",
+      "statusCode": 200,
+      "capturedAt": "2026-07-15T12:00:01.000Z",
+      "requestHeaders": {
+        "Accept": "application/json, text/html",
+        "Role": "Trainer",
+        "Authorization": "<redacted>",
+        "Cookie": "<redacted>",
+        "Referer": "https://app.truecoach.co/clients",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        "X-Request-Id": "3f1c9d2e-8a41-4c2f-9b7d-0f5e6a7b8c02",
+        "Sec-Fetch-Mode": "cors"
+      },
+      "responseBody": "{\"notes\":[{\"id\":701,\"body\":\"Knee felt fine after warm-up\",\"created_at\":\"2026-07-01T10:00:00Z\"},{\"id\":702,\"body\":\"Deload next week\",\"created_at\":\"2026-07-08T10:00:00Z\"}]}"
+    },
+    {
+      "url": "https://app.truecoach.co/proxy/api/clients/8/notes",
+      "method": "GET",
+      "statusCode": 200,
+      "capturedAt": "2026-07-15T12:00:01.500Z",
+      "requestHeaders": {
+        "Accept": "application/json, text/html",
+        "Role": "Trainer",
+        "Authorization": "<redacted>",
+        "Cookie": "<redacted>",
+        "Referer": "https://app.truecoach.co/clients",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        "X-Request-Id": "3f1c9d2e-8a41-4c2f-9b7d-0f5e6a7b8c03",
+        "Sec-Fetch-Mode": "cors"
+      },
+      "responseBody": "{\"notes\":[{\"id\":801,\"body\":\"PR on deadlift 140kg\",\"created_at\":\"2026-07-02T09:30:00Z\"}]}"
+    },
+    {
+      "url": "https://app.truecoach.co/proxy/api/trainers/me",
+      "method": "GET",
+      "statusCode": 200,
+      "capturedAt": "2026-07-15T12:00:02.000Z",
+      "requestHeaders": {
+        "Accept": "application/json, text/html",
+        "Role": "Trainer",
+        "Authorization": "<redacted>",
+        "Cookie": "<redacted>",
+        "Referer": "https://app.truecoach.co/clients",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        "X-Request-Id": "3f1c9d2e-8a41-4c2f-9b7d-0f5e6a7b8c04",
+        "Sec-Fetch-Mode": "cors"
+      },
+      "responseBody": "{\"id\":4711,\"first_name\":\"Bradley\",\"email\":\"coach@example.com\",\"organization\":{\"id\":90210,\"name\":\"Gleave Coaching\"}}"
+    },
+    {
+      "url": "https://app.truecoach.co/proxy/api/auth/session",
+      "method": "GET",
+      "statusCode": 200,
+      "capturedAt": "2026-07-15T12:00:02.500Z",
+      "requestHeaders": {
+        "Accept": "application/json, text/html",
+        "Role": "Trainer",
+        "Authorization": "<redacted>",
+        "Cookie": "<redacted>",
+        "Referer": "https://app.truecoach.co/clients",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        "X-Request-Id": "3f1c9d2e-8a41-4c2f-9b7d-0f5e6a7b8c05",
+        "Sec-Fetch-Mode": "cors"
+      },
+      "responseBody": "{\"session\":\"[REDACTED]\",\"expires_at\":\"2026-07-16T12:00:00Z\"}"
+    }
+  ],
+  "notesByClient": {
+    "7": [
+      {
+        "id": 701,
+        "body": "Knee felt fine after warm-up",
+        "created_at": "2026-07-01T10:00:00Z"
+      },
+      {
+        "id": 702,
+        "body": "Deload next week",
+        "created_at": "2026-07-08T10:00:00Z"
+      }
+    ],
+    "8": [
+      {
+        "id": 801,
+        "body": "PR on deadlift 140kg",
+        "created_at": "2026-07-02T09:30:00Z"
+      }
+    ]
+  },
+  "links": [
+    "/clients",
+    "/clients/7",
+    "/clients/8",
+    "/clients/7/notes",
+    "/clients/8/notes",
+    "/trainers/me/settings",
+    "/dashboard",
+    "https://app.truecoach.co/clients/8?tab=notes#top",
+    "https://help.example.com/articles/1"
+  ]
+}

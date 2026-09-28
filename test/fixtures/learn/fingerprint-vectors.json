@@ -1,0 +1,1012 @@
+{
+  "description": "Canonical structure-fingerprint vectors (L0 D-L0-5). fingerprint = lower-case hex sha256 over material.join('\\n') encoded as UTF-8; material = sorted, de-duplicated JSON tuples [method, template, itemShapeSignature(itemShape, depth 2)] for every template with role 'collection'. itemShape = the `items` node of the array at collectionPaths[0] (a missing or non-array node signs as 'unsupported'). itemShapeSignature follows shared/blueprint/shapes.js: object{child*count,...} with children sorted, array[items], map[values] for objects keyed by data, scalars by kind, and object(*)/array(*)/map(*) once depth 2 is reached. Vectors 'two-collections' and 'two-collections-reordered-refs' must hash identically; the backend copy of this file must be byte-equal (test/fixtures/scout/learn/fingerprint-vectors.json).",
+  "vectors": [
+    {
+      "name": "legacy-parity-fixture",
+      "digest": {
+        "digestVersion": 1,
+        "vocabularyVersion": 1,
+        "sourcePlatform": "app.truecoach.co",
+        "round": 1,
+        "templates": [
+          {
+            "ref": "t0",
+            "method": "GET",
+            "template": "/proxy/api/auth/session",
+            "queryKeys": [],
+            "queryVariants": {},
+            "withheldQueryKeys": 0,
+            "statuses": [200],
+            "observations": 1,
+            "role": "refused",
+            "refusal": "unsafe_path_key",
+            "collectionPaths": [],
+            "shape": {
+              "kind": "map",
+              "values": {
+                "kind": "string",
+                "class": "text",
+                "lengthBucket": "≤32"
+              }
+            }
+          },
+          {
+            "ref": "t1",
+            "method": "GET",
+            "template": "/proxy/api/clients",
+            "queryKeys": ["page", "per_page"],
+            "queryVariants": {
+              "page": 2,
+              "per_page": 1
+            },
+            "withheldQueryKeys": 1,
+            "statuses": [200],
+            "observations": 2,
+            "role": "collection",
+            "refusal": null,
+            "collectionPaths": [["clients"]],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "clients": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "email": {
+                        "kind": "string",
+                        "class": "email_like",
+                        "lengthBucket": "≤32"
+                      },
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      },
+                      "name": {
+                        "kind": "string",
+                        "class": "text",
+                        "lengthBucket": "≤32"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "page": {
+                  "kind": "number",
+                  "class": "int"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          },
+          {
+            "ref": "t2",
+            "method": "GET",
+            "template": "/proxy/api/clients/:p1/notes",
+            "queryKeys": [],
+            "queryVariants": {},
+            "withheldQueryKeys": 0,
+            "statuses": [200],
+            "observations": 2,
+            "role": "collection",
+            "refusal": null,
+            "collectionPaths": [["notes"]],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "notes": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "body": {
+                        "kind": "string",
+                        "class": "text",
+                        "lengthBucket": "≤32"
+                      },
+                      "created_at": {
+                        "kind": "string",
+                        "class": "iso_date",
+                        "lengthBucket": "≤32"
+                      },
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                }
+              }
+            }
+          },
+          {
+            "ref": "t3",
+            "method": "GET",
+            "template": "/proxy/api/trainers/me",
+            "queryKeys": [],
+            "queryVariants": {},
+            "withheldQueryKeys": 0,
+            "statuses": [200],
+            "observations": 1,
+            "role": "refused",
+            "refusal": "metadata_only",
+            "collectionPaths": [],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "email": {
+                  "kind": "string",
+                  "class": "email_like",
+                  "lengthBucket": "≤32"
+                },
+                "first_name": {
+                  "kind": "string",
+                  "class": "text",
+                  "lengthBucket": "≤8"
+                },
+                "id": {
+                  "kind": "number",
+                  "class": "int"
+                },
+                "organization": {
+                  "kind": "object",
+                  "keys": {
+                    "id": {
+                      "kind": "number",
+                      "class": "int"
+                    },
+                    "name": {
+                      "kind": "string",
+                      "class": "text",
+                      "lengthBucket": "≤32"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        ],
+        "linkTemplates": [
+          "/clients",
+          "/clients/:p1",
+          "/clients/:p1/notes",
+          "/dashboard",
+          "/trainers/me/settings"
+        ],
+        "exploredLinkTemplates": [],
+        "constantHeaders": {
+          "accept": "application/json, text/html",
+          "role": ":h1"
+        },
+        "missingFamilies": [],
+        "truncated": false,
+        "withheld": [
+          {
+            "reason": "foreign_link",
+            "count": 1
+          }
+        ]
+      },
+      "material": [
+        "[\"GET\",\"/proxy/api/clients\",\"object{number*1,string*2}\"]",
+        "[\"GET\",\"/proxy/api/clients/:p1/notes\",\"object{number*1,string*2}\"]"
+      ],
+      "fingerprint": "710034c07bb6a09069465b6cf41624b209449bcacbdb55c5fdea1f264dfc19da"
+    },
+    {
+      "name": "two-collections",
+      "digest": {
+        "digestVersion": 1,
+        "sourcePlatform": "site.example",
+        "round": 1,
+        "templates": [
+          {
+            "ref": "t0",
+            "method": "GET",
+            "template": "/:s1/clients",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "collection",
+            "collectionPaths": [["rows"]],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "rows": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      },
+                      "name": {
+                        "kind": "string",
+                        "class": "text",
+                        "lengthBucket": "≤32"
+                      },
+                      "email": {
+                        "kind": "string",
+                        "class": "email_like",
+                        "lengthBucket": "≤32"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          },
+          {
+            "ref": "t1",
+            "method": "GET",
+            "template": "/:s1/clients/:p1/notes",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "collection",
+            "collectionPaths": [["rows"]],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "rows": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      },
+                      "body": {
+                        "kind": "string",
+                        "class": "text",
+                        "lengthBucket": "≤256"
+                      },
+                      "created_at": {
+                        "kind": "string",
+                        "class": "iso_date",
+                        "lengthBucket": "≤32"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          }
+        ],
+        "linkTemplates": [],
+        "constantHeaders": {},
+        "missingFamilies": [],
+        "truncated": false
+      },
+      "material": [
+        "[\"GET\",\"/:s1/clients\",\"object{number*1,string*2}\"]",
+        "[\"GET\",\"/:s1/clients/:p1/notes\",\"object{number*1,string*2}\"]"
+      ],
+      "fingerprint": "0979d8c8389518367251c768411f0dfdad8491148ee2925348e9b4495301c116"
+    },
+    {
+      "name": "two-collections-reordered-refs",
+      "digest": {
+        "digestVersion": 1,
+        "sourcePlatform": "site.example",
+        "round": 1,
+        "templates": [
+          {
+            "ref": "t0",
+            "method": "GET",
+            "template": "/:s1/clients/:p1/notes",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "collection",
+            "collectionPaths": [["rows"]],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "rows": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      },
+                      "body": {
+                        "kind": "string",
+                        "class": "text",
+                        "lengthBucket": "≤256"
+                      },
+                      "created_at": {
+                        "kind": "string",
+                        "class": "iso_date",
+                        "lengthBucket": "≤32"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          },
+          {
+            "ref": "t1",
+            "method": "GET",
+            "template": "/:s1/clients",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "collection",
+            "collectionPaths": [["rows"]],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "rows": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      },
+                      "name": {
+                        "kind": "string",
+                        "class": "text",
+                        "lengthBucket": "≤32"
+                      },
+                      "email": {
+                        "kind": "string",
+                        "class": "email_like",
+                        "lengthBucket": "≤32"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          }
+        ],
+        "linkTemplates": [],
+        "constantHeaders": {},
+        "missingFamilies": [],
+        "truncated": false
+      },
+      "material": [
+        "[\"GET\",\"/:s1/clients\",\"object{number*1,string*2}\"]",
+        "[\"GET\",\"/:s1/clients/:p1/notes\",\"object{number*1,string*2}\"]"
+      ],
+      "fingerprint": "0979d8c8389518367251c768411f0dfdad8491148ee2925348e9b4495301c116"
+    },
+    {
+      "name": "single-and-refused-ignored",
+      "digest": {
+        "digestVersion": 1,
+        "sourcePlatform": "site.example",
+        "round": 1,
+        "templates": [
+          {
+            "ref": "t0",
+            "method": "GET",
+            "template": "/:s1/clients",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "collection",
+            "collectionPaths": [["rows"]],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "rows": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      },
+                      "name": {
+                        "kind": "string",
+                        "class": "text",
+                        "lengthBucket": "≤32"
+                      },
+                      "email": {
+                        "kind": "string",
+                        "class": "email_like",
+                        "lengthBucket": "≤32"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          },
+          {
+            "ref": "t1",
+            "method": "GET",
+            "template": "/:s1/clients/:p1/notes",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "collection",
+            "collectionPaths": [["rows"]],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "rows": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      },
+                      "body": {
+                        "kind": "string",
+                        "class": "text",
+                        "lengthBucket": "≤256"
+                      },
+                      "created_at": {
+                        "kind": "string",
+                        "class": "iso_date",
+                        "lengthBucket": "≤32"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          },
+          {
+            "ref": "t2",
+            "method": "GET",
+            "template": "/:s1/:s2",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "single",
+            "collectionPaths": [],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "id": {
+                  "kind": "number",
+                  "class": "int"
+                },
+                "name": {
+                  "kind": "string",
+                  "class": "text",
+                  "lengthBucket": "≤32"
+                }
+              }
+            }
+          },
+          {
+            "ref": "t3",
+            "method": "GET",
+            "template": "/:s1/:s2/:s3",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "refused",
+            "collectionPaths": [],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "rows": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          }
+        ],
+        "linkTemplates": [],
+        "constantHeaders": {},
+        "missingFamilies": [],
+        "truncated": false
+      },
+      "material": [
+        "[\"GET\",\"/:s1/clients\",\"object{number*1,string*2}\"]",
+        "[\"GET\",\"/:s1/clients/:p1/notes\",\"object{number*1,string*2}\"]"
+      ],
+      "fingerprint": "0979d8c8389518367251c768411f0dfdad8491148ee2925348e9b4495301c116"
+    },
+    {
+      "name": "item-key-added-changes",
+      "digest": {
+        "digestVersion": 1,
+        "sourcePlatform": "site.example",
+        "round": 1,
+        "templates": [
+          {
+            "ref": "t0",
+            "method": "GET",
+            "template": "/:s1/clients",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "collection",
+            "collectionPaths": [["rows"]],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "rows": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      },
+                      "name": {
+                        "kind": "string",
+                        "class": "text",
+                        "lengthBucket": "≤32"
+                      },
+                      "email": {
+                        "kind": "string",
+                        "class": "email_like",
+                        "lengthBucket": "≤32"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          },
+          {
+            "ref": "t1",
+            "method": "GET",
+            "template": "/:s1/clients/:p1/notes",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "collection",
+            "collectionPaths": [["rows"]],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "rows": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      },
+                      "body": {
+                        "kind": "string",
+                        "class": "text",
+                        "lengthBucket": "≤256"
+                      },
+                      "created_at": {
+                        "kind": "string",
+                        "class": "iso_date",
+                        "lengthBucket": "≤32"
+                      },
+                      "pinned": {
+                        "kind": "boolean"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          }
+        ],
+        "linkTemplates": [],
+        "constantHeaders": {},
+        "missingFamilies": [],
+        "truncated": false
+      },
+      "material": [
+        "[\"GET\",\"/:s1/clients\",\"object{number*1,string*2}\"]",
+        "[\"GET\",\"/:s1/clients/:p1/notes\",\"object{boolean*1,number*1,string*2}\"]"
+      ],
+      "fingerprint": "b766d0b951805d8d95f28ea82cb02243f55461dbd8b189d81c3fbf0bba576931"
+    },
+    {
+      "name": "template-renamed-changes",
+      "digest": {
+        "digestVersion": 1,
+        "sourcePlatform": "site.example",
+        "round": 1,
+        "templates": [
+          {
+            "ref": "t0",
+            "method": "GET",
+            "template": "/:s1/clients",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "collection",
+            "collectionPaths": [["rows"]],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "rows": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      },
+                      "name": {
+                        "kind": "string",
+                        "class": "text",
+                        "lengthBucket": "≤32"
+                      },
+                      "email": {
+                        "kind": "string",
+                        "class": "email_like",
+                        "lengthBucket": "≤32"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          },
+          {
+            "ref": "t1",
+            "method": "GET",
+            "template": "/:s1/clients/:p1/comments",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "collection",
+            "collectionPaths": [["rows"]],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "rows": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      },
+                      "body": {
+                        "kind": "string",
+                        "class": "text",
+                        "lengthBucket": "≤256"
+                      },
+                      "created_at": {
+                        "kind": "string",
+                        "class": "iso_date",
+                        "lengthBucket": "≤32"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          }
+        ],
+        "linkTemplates": [],
+        "constantHeaders": {},
+        "missingFamilies": [],
+        "truncated": false
+      },
+      "material": [
+        "[\"GET\",\"/:s1/clients\",\"object{number*1,string*2}\"]",
+        "[\"GET\",\"/:s1/clients/:p1/comments\",\"object{number*1,string*2}\"]"
+      ],
+      "fingerprint": "a4c02e3f5c71be884ce9d32d501722f9ce653ad6378bbd4d17c188fb6cd9110b"
+    },
+    {
+      "name": "depth-two-cutoff-and-bare-array",
+      "digest": {
+        "digestVersion": 1,
+        "sourcePlatform": "site.example",
+        "round": 1,
+        "templates": [
+          {
+            "ref": "t0",
+            "method": "GET",
+            "template": "/:s1/programs",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "collection",
+            "collectionPaths": [["rows"]],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "rows": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "id": {
+                        "kind": "string",
+                        "class": "uuid",
+                        "lengthBucket": "≤256"
+                      },
+                      "title": {
+                        "kind": "string",
+                        "class": "text",
+                        "lengthBucket": "≤32"
+                      },
+                      "weeks": {
+                        "kind": "array",
+                        "items": {
+                          "kind": "object",
+                          "keys": {
+                            "id": {
+                              "kind": "number",
+                              "class": "int"
+                            },
+                            "days": {
+                              "kind": "array",
+                              "items": {
+                                "kind": "object",
+                                "keys": {
+                                  "id": {
+                                    "kind": "number",
+                                    "class": "int"
+                                  }
+                                }
+                              },
+                              "lengthBucket": "2-9"
+                            }
+                          }
+                        },
+                        "lengthBucket": "2-9"
+                      },
+                      "owner": {
+                        "kind": "object",
+                        "keys": {
+                          "id": {
+                            "kind": "number",
+                            "class": "int"
+                          },
+                          "name": {
+                            "kind": "string",
+                            "class": "text",
+                            "lengthBucket": "≤32"
+                          }
+                        }
+                      },
+                      "flags": {
+                        "kind": "mixed"
+                      },
+                      "archived": {
+                        "kind": "boolean"
+                      },
+                      "note": {
+                        "kind": "null"
+                      },
+                      "byDay": {
+                        "kind": "map",
+                        "values": {
+                          "kind": "number",
+                          "class": "int"
+                        }
+                      },
+                      "byWeek": {
+                        "kind": "map",
+                        "values": {
+                          "kind": "map",
+                          "values": {
+                            "kind": "boolean"
+                          }
+                        }
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          },
+          {
+            "ref": "t1",
+            "method": "GET",
+            "template": "/:s1/exercises",
+            "queryKeys": ["page"],
+            "statuses": [200],
+            "observations": 1,
+            "role": "collection",
+            "collectionPaths": [[]],
+            "shape": {
+              "kind": "array",
+              "items": {
+                "kind": "object",
+                "keys": {
+                  "id": {
+                    "kind": "number",
+                    "class": "int"
+                  },
+                  "name": {
+                    "kind": "string",
+                    "class": "text",
+                    "lengthBucket": "≤32"
+                  }
+                }
+              },
+              "lengthBucket": "10-99"
+            }
+          }
+        ],
+        "linkTemplates": [],
+        "constantHeaders": {},
+        "missingFamilies": [],
+        "truncated": false
+      },
+      "material": [
+        "[\"GET\",\"/:s1/exercises\",\"object{number*1,string*1}\"]",
+        "[\"GET\",\"/:s1/programs\",\"object{array[object(*)]*1,boolean*1,map[map(*)]*1,map[number]*1,mixed*1,null*1,object{number*1,string*1}*1,string*2}\"]"
+      ],
+      "fingerprint": "8a5d0f136a0f32c54a8e375ed5c77b72c40dc677c28060bf07d0217a8446fa6c"
+    },
+    {
+      "name": "no-collections",
+      "digest": {
+        "digestVersion": 1,
+        "sourcePlatform": "site.example",
+        "round": 1,
+        "templates": [
+          {
+            "ref": "t2",
+            "method": "GET",
+            "template": "/:s1/:s2",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "single",
+            "collectionPaths": [],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "id": {
+                  "kind": "number",
+                  "class": "int"
+                },
+                "name": {
+                  "kind": "string",
+                  "class": "text",
+                  "lengthBucket": "≤32"
+                }
+              }
+            }
+          },
+          {
+            "ref": "t3",
+            "method": "GET",
+            "template": "/:s1/:s2/:s3",
+            "queryKeys": [],
+            "statuses": [200],
+            "observations": 2,
+            "role": "refused",
+            "collectionPaths": [],
+            "shape": {
+              "kind": "object",
+              "keys": {
+                "rows": {
+                  "kind": "array",
+                  "items": {
+                    "kind": "object",
+                    "keys": {
+                      "id": {
+                        "kind": "number",
+                        "class": "int"
+                      }
+                    }
+                  },
+                  "lengthBucket": "2-9"
+                },
+                "total": {
+                  "kind": "number",
+                  "class": "int"
+                }
+              }
+            }
+          }
+        ],
+        "linkTemplates": [],
+        "constantHeaders": {},
+        "missingFamilies": [],
+        "truncated": false
+      },
+      "material": [],
+      "fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "name": "empty",
+      "digest": {
+        "digestVersion": 1,
+        "sourcePlatform": "site.example",
+        "round": 1,
+        "templates": [],
+        "linkTemplates": [],
+        "constantHeaders": {},
+        "missingFamilies": [],
+        "truncated": false
+      },
+      "material": [],
+      "fingerprint": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ]
+}
