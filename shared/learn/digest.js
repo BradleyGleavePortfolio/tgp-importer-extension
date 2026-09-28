@@ -53,7 +53,6 @@ export const DIGEST_LIMITS = Object.freeze({
   maxHeaderValueBytes: 64,
 });
 const SAFE_KEY = /^[A-Za-z_][A-Za-z0-9_-]{0,63}$/,
-  SAFE_LITERAL = /^[A-Za-z][A-Za-z0-9_.~-]{0,63}$/,
   UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
   INT_ID = /^(?:0|[1-9]\d{0,17})$/,
   ISO_DATE =
