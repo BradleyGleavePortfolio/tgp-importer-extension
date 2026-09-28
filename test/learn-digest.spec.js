@@ -175,7 +175,12 @@ describe("L03 — the legacy-shaped fixture capture digests to structure only", 
     ]);
     expect(result.digest).toMatchObject({
       digestVersion: 1,
-      sourcePlatform: new URL(fixture.authorizedOrigin).hostname,
+      // Only the last two host labels travel (C2B1-SOL2-C1).
+      sourcePlatform: new URL(fixture.authorizedOrigin).hostname
+        .split(".")
+        .slice(-2)
+        .join("."),
+      originLabelsWithheld: 1,
       round: 1,
       missingFamilies: [],
     });
@@ -224,7 +229,10 @@ describe("L03 — conformance_alpha digests to structure only", () => {
     expect(members.shape.keys.members.items).toEqual({ kind: "mixed" });
     expect(members.collectionPaths).toEqual([]);
     const coaches = templateNamed(result.digest, "/v2/coaches");
-    expect(coaches.shape.keys.coaches.items.optional).toEqual(["region"]);
+    // `region` is not a vocabulary key: it travels as a key slot.
+    expect(coaches.shape.keys.coaches.items.optional).toEqual([":k1"]);
+    expect(result.slots.keys[coaches.ref]).toEqual({ ":k1": "region" });
+    expect(text).not.toMatch(/region/);
     expect(coaches.shape.keys.coaches.items.keys.profile.optional).toEqual([
       "timezone",
     ]);
@@ -271,8 +279,13 @@ describe("C2B1-SOL-A1 — a fixed per-coach literal never leaves the device", ()
     ]);
     expect(digest.templates[0].template).toBe("/:s1/clients");
     expect(slots.templates.t0).toEqual(["zorbix"]);
-    expect(canonicalJson(digest)).toMatch(/"zorbix"/); // the shape KEY, by design
-    expect(digest.templates[0].template).not.toContain("zorbix");
+    // The same word as a response key is a key slot, not proof either way.
+    expect(digest.templates[0].shape.keys.clients.items.keys).toEqual({
+      ":k1": { kind: "number", class: "int" },
+      id: { kind: "number", class: "int" },
+    });
+    expect(slots.keys.t0).toEqual({ ":k1": "zorbix" });
+    expect(canonicalJson(digest)).not.toContain("zorbix");
   });
 
   it("positive control: vocabulary words around the slug stay in clear", () => {
@@ -303,6 +316,47 @@ describe("C2B1-SOL-A1 — a fixed per-coach literal never leaves the device", ()
       entry("/api/clients/8/notes", { notes: [{ id: 2 }] }),
     ]);
     expect(two.digest.templates[0].template).toBe("/api/clients/:p1/notes");
+  });
+
+  it("C2B1-SOL2-A1: a container keyed by the coach's name is a key slot; C2B1-SOL2-C1: a tenant host label is an origin slot", () => {
+    const tenant = "https://alice.site.example";
+    const capture = [101, 202, 303].map((id) => ({
+      url: `${tenant}/coaches/alice/clients/${id}/workouts`,
+      method: "GET",
+      statusCode: 200,
+      requestHeaders: { Accept: "application/json" },
+      responseBody: JSON.stringify({ alice: [{ id: 5 }] }),
+    }));
+    const { digest, slots } = buildStructureDigest(capture, {
+      authorizedOrigin: tenant,
+    });
+    expect(canonicalJson(digest)).not.toContain("alice");
+    expect(digest.sourcePlatform).toBe("site.example");
+    expect(digest.originLabelsWithheld).toBe(1);
+    expect(digest.templates[0]).toMatchObject({
+      template: "/coaches/:s1/clients/:p1/workouts",
+      role: "collection",
+      collectionPaths: [[":k1"]],
+    });
+    expect(digest.templates[0].shape.keys[":k1"].items.keys).toEqual({
+      id: { kind: "number", class: "int" },
+    });
+    expect(slots).toEqual({
+      origin: ["alice"],
+      templates: { t0: ["alice"] },
+      keys: { t0: { ":k1": "alice" } },
+      links: {},
+      headers: {},
+    });
+    // Byte-identical to the same capture keyed by a vocabulary-free word.
+    const other = buildStructureDigest(
+      capture.map((e) => ({
+        ...e,
+        responseBody: e.responseBody.replace("alice", "zorbix"),
+      })),
+      { authorizedOrigin: tenant },
+    );
+    expect(canonicalJson(other.digest)).toBe(canonicalJson(digest));
   });
 
   it("proof seam (b): a slot may carry only what the salted per-run hash returns", () => {

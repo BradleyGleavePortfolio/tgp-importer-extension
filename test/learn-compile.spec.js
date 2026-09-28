@@ -171,6 +171,121 @@ describe("L04 — compiled learned blueprint", () => {
   });
 });
 
+describe("key slots and origin labels are rebound on the device", () => {
+  const TENANT = "https://alice.site.example";
+  const keyed = (body) =>
+    [101, 202].map((id) => ({
+      url: `${TENANT}/api/clients/${id}/workouts`,
+      method: "GET",
+      statusCode: 200,
+      requestHeaders: { Accept: "application/json" },
+      responseBody: JSON.stringify(body(id)),
+    }));
+  const capture = [
+    {
+      url: `${TENANT}/api/clients`,
+      method: "GET",
+      statusCode: 200,
+      requestHeaders: { Accept: "application/json" },
+      responseBody: JSON.stringify({
+        zorbix: [
+          { quux: 101, name: "A" },
+          { quux: 202, name: "B" },
+        ],
+      }),
+    },
+    ...keyed((id) => ({ alice: [{ id: id * 10 }] })),
+  ];
+  const steps = [
+    {
+      templateRef: "t0",
+      entityType: "clients",
+      itemsPath: [":k1"],
+      idField: ":k2",
+      collectAs: "clientIds",
+      pagination: null,
+    },
+    {
+      templateRef: "t1",
+      entityType: "workouts",
+      itemsPath: [":k1"],
+      idField: "id",
+      forEach: "clientIds",
+      pagination: null,
+    },
+  ];
+
+  it("compiles slotted keys back to the raw response keys, under the tenant origin", () => {
+    const built = buildStructureDigest(capture, { authorizedOrigin: TENANT });
+    expect(
+      built.digest.templates.map((t) => [t.ref, t.template, t.collectionPaths]),
+    ).toEqual([
+      ["t0", "/api/clients", [[":k1"]]],
+      ["t1", "/api/clients/:p1/workouts", [[":k1"]]],
+    ]);
+    expect(built.slots.keys).toEqual({
+      t0: { ":k1": "zorbix", ":k2": "quux" },
+      t1: { ":k1": "alice" },
+    });
+    const blueprint = compileLearnedBlueprint({
+      digest: built.digest,
+      hints: { steps },
+      slots: built.slots,
+      authorizedOrigin: TENANT,
+    });
+    expect(blueprint.platform).toBe("alice.site.example");
+    expect(blueprint.apiBase).toBe(`${TENANT}/api`);
+    expect(blueprint.steps.map((s) => [s.itemsPath, s.idField])).toEqual([
+      [["zorbix"], "quux"],
+      [["alice"], "id"],
+    ]);
+    expect(() =>
+      normalizeBlueprint(blueprint, { allowedOrigins: [TENANT] }),
+    ).not.toThrow();
+  });
+
+  it("refuses a missing or unsafe key slot, and an origin outside the digest's platform", () => {
+    const built = buildStructureDigest(capture, { authorizedOrigin: TENANT });
+    const compileWith = (slots, origin = TENANT) =>
+      compileLearnedBlueprint({
+        digest: built.digest,
+        hints: { steps },
+        slots,
+        authorizedOrigin: origin,
+      });
+    expect(() => compileWith({ ...built.slots, keys: {} })).toThrow(
+      "learn_compile_missing_slot",
+    );
+    expect(() =>
+      compileWith({
+        ...built.slots,
+        keys: {
+          ...built.slots.keys,
+          t0: { ":k1": "zorbix", ":k2": "access_token" },
+        },
+      }),
+    ).toThrow("learn_compile_invalid_slot");
+    expect(() =>
+      compileWith({
+        ...built.slots,
+        keys: { ...built.slots.keys, t0: { ":k1": "zorbix", ":k2": "a b" } },
+      }),
+    ).toThrow("learn_compile_invalid_slot");
+    expect(() =>
+      compileWith(built.slots, "https://bob.site.example"),
+    ).not.toThrow();
+    expect(() =>
+      compileWith(built.slots, "https://site.example"),
+    ).not.toThrow();
+    expect(() => compileWith(built.slots, "https://other.example")).toThrow(
+      "learn_compile_invalid_digest",
+    );
+    expect(() => compileWith(built.slots, "https://notsite.example")).toThrow(
+      "learn_compile_invalid_digest",
+    );
+  });
+});
+
 describe("D-L0-4 extension gate — a throw means zero requests", () => {
   const cases = [
     [
@@ -413,7 +528,7 @@ describe("invariant 1 — metamorphic origin rename", () => {
     ),
   }));
 
-  it("digests to identical structure except the platform slug", () => {
+  it("digests to identical structure except the origin slot", () => {
     const a = digestOf(),
       b = buildStructureDigest(renamed, {
         authorizedOrigin: RENAMED,
@@ -422,7 +537,9 @@ describe("invariant 1 — metamorphic origin rename", () => {
     expect(
       canonicalJson({ ...b.digest, sourcePlatform: a.digest.sourcePlatform }),
     ).toBe(canonicalJson(a.digest));
-    expect(b.slots).toEqual(a.slots);
+    expect(b.digest.sourcePlatform).toBe("renamed-site.example");
+    expect(b.slots.origin).toEqual(["coaching"]);
+    expect({ ...b.slots, origin: a.slots.origin }).toEqual(a.slots);
   });
 
   it("compiles to an identical blueprint except apiBase/platform and replays the same set", async () => {

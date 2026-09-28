@@ -33,7 +33,11 @@ import {
   SUPPORTED_QUERY_KEYS,
 } from "../blueprint/url-templates.js";
 import { isCredentialKey, redactCredentialText } from "../credential-policy.js";
-import { isStructuralWord, VOCABULARY_VERSION } from "./vocabulary.js";
+import {
+  isStructuralKey,
+  isStructuralWord,
+  VOCABULARY_VERSION,
+} from "./vocabulary.js";
 
 export const DIGEST_VERSION = 1;
 export const DIGEST_LIMITS = Object.freeze({
@@ -269,27 +273,41 @@ function objectArrayPaths(node, prefix, out, maxDepth) {
   for (const key of Object.keys(node.keys))
     objectArrayPaths(node.keys[key], [...prefix, key], out, maxDepth);
 }
-function normalizeWord(word) {
-  return word.toLowerCase().replace(/s$/, "");
-}
-// Vocabulary = every safe shape key plus its tokens (split on `_`, `-`, digits
-// and camelCase), normalised. These words are transmitted as keys anyway.
-function addWords(key, out) {
-  out.add(normalizeWord(key));
-  for (const token of key
-    .replace(/([a-z])([A-Z])/g, "$1 $2")
-    .split(/[^A-Za-z]+/)
-    .filter((token) => token.length >= 2))
-    out.add(normalizeWord(token));
-}
-function collectVocabulary(node, out) {
-  if (node.kind === "array") collectVocabulary(node.items, out);
-  if (node.kind === "map") collectVocabulary(node.values, out);
-  if (node.kind !== "object") return;
-  for (const key of Object.keys(node.keys)) {
-    addWords(key, out);
-    collectVocabulary(node.keys[key], out);
+// Key slots (C2B1-SOL2-A1): a response key is a site-chosen string. It is
+// transmitted only when isStructuralKey proves it; every other key becomes
+// `:kN`, numbered in walk order (sorted keys, depth first) per template, and
+// its raw name stays on the device in `slots.keys[ref]`.
+function publicShape(node, slotFor) {
+  if (node.kind === "array")
+    return { ...node, items: publicShape(node.items, slotFor) };
+  if (node.kind === "map")
+    return { kind: "map", values: publicShape(node.values, slotFor) };
+  if (node.kind !== "object") return node;
+  const keys = {},
+    optional = [];
+  for (const key of Object.keys(node.keys).sort(compareText)) {
+    const name = slotFor(key);
+    keys[name] = publicShape(node.keys[key], slotFor);
+    if (node.optional?.includes(key)) optional.push(name);
   }
+  const out = { kind: "object", keys };
+  if (optional.length > 0) out.optional = optional.sort(compareText);
+  return out;
+}
+function keySlotter() {
+  const raw = new Map();
+  return {
+    slotFor(key) {
+      if (isStructuralKey(key)) return key;
+      if (!raw.has(key)) raw.set(key, `:k${raw.size + 1}`);
+      return raw.get(key);
+    },
+    slots() {
+      const out = {};
+      for (const [key, slot] of raw) out[slot] = key;
+      return out;
+    },
+  };
 }
 // ---- paths: skeletons, parameters and session slots --------------------------
 function decodeSegment(raw) {
@@ -418,7 +436,7 @@ function roleOf(observations) {
 // observed name is counted as withheld, and each transmitted name carries the
 // number of DISTINCT values observed (a filter such as `?status=` with two
 // variants is two lists, never one), so nothing is dropped silently.
-function queryKeysOf(observations, vocabulary, variants, limits) {
+function queryKeysOf(observations, variants, limits) {
   const names = new Set(),
     withheld = new Set();
   for (const observation of observations)
@@ -429,8 +447,7 @@ function queryKeysOf(observations, vocabulary, variants, limits) {
         typeof key === "string" &&
         SAFE_KEY.test(key) &&
         !isCredentialKey(key) &&
-        (SUPPORTED_QUERY_KEYS.has(key.toLowerCase()) ||
-          vocabulary.has(normalizeWord(key)))
+        (SUPPORTED_QUERY_KEYS.has(key.toLowerCase()) || isStructuralKey(key))
       )
         names.add(key);
       else withheld.add(String(key));
@@ -473,8 +490,9 @@ function queryVariantsOf(entries, origin) {
   }
   return out;
 }
-function templateOf(observations, resolved, vocabulary, variants, limits) {
+function templateOf(observations, resolved, variants, limits) {
   const voting = observations.filter(votes),
+    keys = keySlotter(),
     shape = finalizeShape(
       voting
         .map((observation) => shapeOf(observation.body, 0, limits))
@@ -492,21 +510,18 @@ function templateOf(observations, resolved, vocabulary, variants, limits) {
   paths.sort(
     (a, b) => a.length - b.length || compareText(a.join("/"), b.join("/")),
   );
+  // roles.js decides the role; the candidate paths are ours (object arrays in
+  // the merged shape, public key form). Its typed itemsPath is not consumed:
+  // a `dynamic_key` container is a `map` here and offers no path, so a
+  // collection verdict without a path is refused, never guessed.
   let role = verdict.role,
-    reason = verdict.refusal,
-    collectionPaths = paths;
-  if (role === "collection") {
-    const wanted = JSON.stringify(verdict.itemsPath);
-    if (paths.some((path) => JSON.stringify(path) === wanted))
-      collectionPaths = [
-        verdict.itemsPath,
-        ...paths.filter((path) => JSON.stringify(path) !== wanted),
-      ];
-    else {
-      role = "refused";
-      reason = "items_path_not_in_shape";
-    }
+    reason = verdict.refusal;
+  if (role === "collection" && paths.length === 0) {
+    role = "refused";
+    reason = "items_path_not_in_shape";
   }
+  const collectionPaths = paths.map((path) => path.map(keys.slotFor)),
+    publicShapeNode = publicShape(shape, keys.slotFor);
   const statuses = [
     ...new Set(
       observations
@@ -520,13 +535,14 @@ function templateOf(observations, resolved, vocabulary, variants, limits) {
     ref: "",
     method: observations[0].method,
     template: resolved.template,
-    ...queryKeysOf(observations, vocabulary, variants, limits),
+    ...queryKeysOf(observations, variants, limits),
     statuses,
     observations: observations.length,
     role,
     refusal: reason,
     collectionPaths: collectionPaths.slice(0, limits.maxCollectionPaths),
-    shape,
+    shape: publicShapeNode,
+    keySlots: keys.slots(),
   };
 }
 // ---- constant request headers (deterministic rule, never model output) --------
@@ -614,6 +630,18 @@ function linkPathsOf(links, origin, excluded, limits) {
   }
   return out;
 }
+// C2B1-SOL2-C1: a tenant label inside the origin (`alice.site.example`).
+// Only the last two host labels are transmitted (a registrable-domain
+// approximation without a public-suffix list); every leading label is a
+// device-held origin slot. Replay targets the authorized tab origin, so the
+// package never needs the full host.
+function platformOf(origin) {
+  const labels = new URL(origin).hostname.toLowerCase().split(".");
+  return {
+    name: labels.slice(-2).join("."),
+    withheld: labels.slice(0, -2),
+  };
+}
 function authorizedOriginFrom(options) {
   const origin = isRecord(options) ? options.authorizedOrigin : undefined;
   if (typeof origin !== "string" || !safeOrigin(origin))
@@ -658,12 +686,10 @@ export function buildStructureDigest(capture, options) {
   for (const { reason, count: total } of normalized.excluded)
     count(excluded, reason, total);
   const observations = normalized.observations,
-    variants = queryVariantsOf(Array.isArray(capture) ? capture : [], origin),
-    vocabulary = new Set();
-  for (const observation of observations.filter(votes))
-    collectVocabulary(shapeOf(observation.body, 0, limits), vocabulary);
+    variants = queryVariantsOf(Array.isArray(capture) ? capture : [], origin);
   // API templates: group by method + clear-literal skeleton, resolve slots.
-  const skeletons = new Map(),
+  const templateKeySlots = new Map(),
+    skeletons = new Map(),
     groups = groupBy(observations, (observation) => {
       const skeleton = skeletonOf(observation.path, limits);
       if (skeleton === null) {
@@ -693,13 +719,9 @@ export function buildStructureDigest(capture, options) {
   let templates = [],
     templateSlots = new Map();
   for (const { groups: members, resolved } of byTemplate.values()) {
-    const template = templateOf(
-      members.flat(),
-      resolved,
-      vocabulary,
-      variants,
-      limits,
-    );
+    const template = templateOf(members.flat(), resolved, variants, limits);
+    templateKeySlots.set(template, template.keySlots);
+    delete template.keySlots;
     if (members.length > 1) {
       count(excluded, "template_collision", members.length);
       template.role = "refused";
@@ -766,6 +788,7 @@ export function buildStructureDigest(capture, options) {
     origin,
     limits,
   );
+  const platform = platformOf(origin);
   const assemble = () => {
     const ordered = [...templates].sort((a, b) =>
       compareText(a.method + a.template, b.method + b.template),
@@ -783,7 +806,8 @@ export function buildStructureDigest(capture, options) {
     return {
       digestVersion: DIGEST_VERSION,
       vocabularyVersion: VOCABULARY_VERSION,
-      sourcePlatform: new URL(origin).hostname.toLowerCase(),
+      sourcePlatform: platform.name,
+      originLabelsWithheld: platform.withheld.length,
       round,
       templates: ordered,
       linkTemplates: links.map(({ template }) => template).sort(compareText),
@@ -805,10 +829,19 @@ export function buildStructureDigest(capture, options) {
     else break;
     digest = assemble();
   }
-  const slots = { templates: {}, links: {}, headers: headerSlots };
-  for (const template of digest.templates)
+  const slots = {
+    origin: platform.withheld,
+    templates: {},
+    keys: {},
+    links: {},
+    headers: headerSlots,
+  };
+  for (const template of digest.templates) {
     if (templateSlots.get(template).length > 0)
       slots.templates[template.ref] = templateSlots.get(template);
+    const keySlots = templateKeySlots.get(template) ?? {};
+    if (Object.keys(keySlots).length > 0) slots.keys[template.ref] = keySlots;
+  }
   if (slotProof !== null) {
     const proofs = {};
     for (const ref of Object.keys(slots.templates).sort(compareText))

@@ -6,7 +6,8 @@
       "digest": {
         "digestVersion": 1,
         "vocabularyVersion": 1,
-        "sourcePlatform": "app.truecoach.co",
+        "sourcePlatform": "truecoach.co",
+        "originLabelsWithheld": 1,
         "round": 1,
         "templates": [
           {

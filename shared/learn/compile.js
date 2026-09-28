@@ -47,11 +47,25 @@ function fail(code, cause) {
   if (cause !== undefined) error.cause = cause;
   throw error;
 }
+// Public key names: a clear vocabulary key or a `:kN` key slot.
+const KEY_SLOT = /^:k[1-9]\d{0,2}$/;
+function publicKey(value) {
+  return (
+    typeof value === "string" && (NAME.test(value) || KEY_SLOT.test(value))
+  );
+}
 function keyPath(value) {
-  return Array.isArray(value) &&
-    value.every((key) => typeof key === "string" && NAME.test(key))
-    ? value
-    : null;
+  return Array.isArray(value) && value.every(publicKey) ? value : null;
+}
+// Rebind `:kN` to the raw response key held on the device for this template.
+function rawKey(name, keySlots) {
+  if (!KEY_SLOT.test(name)) return name;
+  const raw = isRecord(keySlots) ? keySlots[name] : undefined;
+  if (typeof raw !== "string" || raw.length === 0)
+    fail("learn_compile_missing_slot");
+  if (!NAME.test(raw) || isCredentialKey(raw))
+    fail("learn_compile_invalid_slot");
+  return raw;
 }
 function readShape(node, path) {
   let current = node;
@@ -115,7 +129,7 @@ function fillSlots(template, values) {
   if (slots !== values.length) fail("learn_compile_missing_slot");
   return { path: `/${filled.join("/")}`, params };
 }
-function compilePagination(raw, template) {
+function compilePagination(raw, template, keySlots) {
   if (raw === null || raw === undefined) return null;
   if (
     !isRecord(raw) ||
@@ -139,7 +153,11 @@ function compilePagination(raw, template) {
     fail("learn_compile_pagination");
   const node = readShape(template.shape, nextPath);
   if (node === null || node.kind !== "string") fail("learn_compile_pagination");
-  return { style: "cursor", param: raw.param, nextPath };
+  return {
+    style: "cursor",
+    param: raw.param,
+    nextPath: nextPath.map((key) => rawKey(key, keySlots)),
+  };
 }
 function compileStep(raw, byRef, slots, produced) {
   if (!isRecord(raw) || !Object.keys(raw).every((key) => STEP_KEYS.has(key)))
@@ -161,9 +179,7 @@ function compileStep(raw, byRef, slots, produced) {
   const array = readShape(template.shape, itemsPath),
     items = array !== null && array.kind === "array" ? array.items : null,
     idNode =
-      typeof raw.idField === "string" &&
-      NAME.test(raw.idField) &&
-      isRecord(items)
+      publicKey(raw.idField) && isRecord(items)
         ? readShape(items, [raw.idField])
         : null;
   if (
@@ -175,9 +191,10 @@ function compileStep(raw, byRef, slots, produced) {
   )
     fail("learn_compile_id_field");
   const { path, params } = fillSlots(
-    template.template,
-    slots.templates?.[template.ref] ?? [],
-  );
+      template.template,
+      slots.templates?.[template.ref] ?? [],
+    ),
+    keySlots = slots.keys?.[template.ref] ?? {};
   const forEach = raw.forEach ?? null,
     collectAs = raw.collectAs ?? null;
   if (
@@ -200,11 +217,11 @@ function compileStep(raw, byRef, slots, produced) {
     entityType: raw.entityType,
     method: template.method,
     template: path,
-    itemsPath,
-    idField: raw.idField,
+    itemsPath: itemsPath.map((key) => rawKey(key, keySlots)),
+    idField: rawKey(raw.idField, keySlots),
     collectAs,
     forEach,
-    pagination: compilePagination(raw.pagination, template),
+    pagination: compilePagination(raw.pagination, template, keySlots),
   };
 }
 // Longest common LITERAL prefix of the filled step paths, never reaching a
@@ -249,8 +266,15 @@ export function compileLearnedBlueprint(input) {
   if (typeof authorizedOrigin !== "string" || !safeOrigin(authorizedOrigin))
     fail("learn_compile_invalid_origin");
   const byRef = templateIndex(digest);
+  // The digest names only the last two host labels; the authorized origin
+  // (the coach's own tab) must sit under them.
+  const hostname = new URL(authorizedOrigin).hostname.toLowerCase();
   if (
-    digest.sourcePlatform !== new URL(authorizedOrigin).hostname.toLowerCase()
+    typeof digest.sourcePlatform !== "string" ||
+    !(
+      hostname === digest.sourcePlatform ||
+      hostname.endsWith(`.${digest.sourcePlatform}`)
+    )
   )
     fail("learn_compile_invalid_digest");
   if (
@@ -271,7 +295,7 @@ export function compileLearnedBlueprint(input) {
   }
   const prefix = commonPrefix(steps.map((step) => step.template)),
     blueprint = {
-      platform: digest.sourcePlatform,
+      platform: hostname,
       apiBase: `${authorizedOrigin}${prefix.map((segment) => `/${segment}`).join("")}`,
       rateLimitMs: LEARNED_RATE_LIMIT_MS,
       headers: compileHeaders(digest, slots),
