@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { normalizeCaptureSnapshot } from "../shared/blueprint/input.js";
 import {
+  COLLISION_REASON,
+  DYNAMIC_KEY_REASON,
   inferEndpointRoles,
+  KEY_SLOT_REASON,
   ROLE_HARD_LIMITS,
   SESSION_SLOT_REASON,
 } from "../shared/blueprint/roles.js";
@@ -57,6 +60,12 @@ function listBodies(path, count, keys = []) {
   );
 }
 
+// Value-free typed items-path steps (C2B1-SOL2-A1): key slots numbered left to
+// right, and a dynamic-key marker for a map-shaped level.
+const K = (n) => ({ type: "key", slot: `k${n}` });
+const DYN = { type: "dynamic_key" };
+const keyed = (count) => Array.from({ length: count }, (_u, i) => K(i + 1));
+
 function only(result) {
   expect(result.refused).toEqual([]);
   expect(result.candidates).toHaveLength(1);
@@ -99,8 +108,11 @@ describe("inferEndpointRoles — collection evidence", () => {
     ];
     const candidate = only(inferEndpointRoles(rows, [cluster("/clients", 1)]));
     expect(candidate.roles).toEqual(["list"]);
-    expect(candidate.itemsPath).toEqual(["data", "items"]);
-    expect(candidate.reasons).toEqual(["unproven_template_literal"]);
+    expect(candidate.itemsPath).toEqual([K(1), K(2)]);
+    expect(candidate.reasons).toEqual([
+      KEY_SLOT_REASON,
+      "unproven_template_literal",
+    ]);
   });
 
   it("classifies a dynamic template with a singleton object as a detail", () => {
@@ -131,11 +143,14 @@ describe("inferEndpointRoles — collection evidence", () => {
       inferEndpointRoles(rows, [cluster("/clients/:id/workouts", 2)]),
     );
     expect(candidate.roles).toEqual(["list"]);
-    expect(candidate.itemsPath).toEqual(["items"]);
+    expect(candidate.itemsPath).toEqual([K(1)]);
     // Both literals are session slots: listed, but not replayable yet (A1).
     expect(candidate.endpoint.template).toBe("/:s1/:id/:s2");
     expect(candidate.replayCompatible).toBe(false);
-    expect(candidate.reasons).toEqual(["session_slot_rebinding_required"]);
+    expect(candidate.reasons).toEqual([
+      KEY_SLOT_REASON,
+      "session_slot_rebinding_required",
+    ]);
   });
 
   it("refuses a static singleton object as metadata rather than a detail", () => {
@@ -172,6 +187,7 @@ describe("inferEndpointRoles — window evidence", () => {
     expect(candidate.windowEvidence).toEqual({ lower, upper });
     expect(candidate.replayCompatible).toBe(false);
     expect(candidate.reasons).toEqual([
+      KEY_SLOT_REASON,
       "unproven_template_literal",
       "window_not_representable",
     ]);
@@ -227,6 +243,7 @@ describe("inferEndpointRoles — pagination evidence", () => {
     });
     expect(candidate.reasons).toEqual([
       "pagination_descriptor_required",
+      KEY_SLOT_REASON,
       "unproven_template_literal",
     ]);
     expect(candidate.replayCompatible).toBe(false);
@@ -254,7 +271,10 @@ describe("inferEndpointRoles — pagination evidence", () => {
       );
       expect(candidate.roles).toEqual(["list"]);
       expect(candidate.paginationEvidence).toBeNull();
-      expect(candidate.reasons).toEqual(["unproven_template_literal"]);
+      expect(candidate.reasons).toEqual([
+        KEY_SLOT_REASON,
+        "unproven_template_literal",
+      ]);
     },
   );
 
@@ -270,6 +290,7 @@ describe("inferEndpointRoles — pagination evidence", () => {
       expect(candidate.roles).toEqual(["list"]);
       expect(candidate.reasons).toEqual([
         "ambiguous_cursor_keys",
+        KEY_SLOT_REASON,
         "unproven_template_literal",
       ]);
       expect(candidate.replayCompatible).toBe(false);
@@ -287,6 +308,7 @@ describe("inferEndpointRoles — pagination evidence", () => {
     expect(candidate.reasons).toEqual([
       "ambiguous_pagination_style",
       "pagination_descriptor_required",
+      KEY_SLOT_REASON,
       "unproven_template_literal",
     ]);
     expect(candidate.replayCompatible).toBe(false);
@@ -301,7 +323,10 @@ describe("inferEndpointRoles — pagination evidence", () => {
     );
     expect(candidate.paginationEvidence).toBeNull();
     expect(candidate.windowEvidence).toBeNull();
-    expect(candidate.reasons).toEqual(["unproven_template_literal"]);
+    expect(candidate.reasons).toEqual([
+      KEY_SLOT_REASON,
+      "unproven_template_literal",
+    ]);
   });
 });
 
@@ -381,7 +406,7 @@ describe("inferEndpointRoles — contradiction refusals", () => {
       observation("/clients", { data: [] }),
     ];
     const candidate = only(inferEndpointRoles(rows, [cluster("/clients", 2)]));
-    expect(candidate.itemsPath).toEqual(["data"]);
+    expect(candidate.itemsPath).toEqual([K(1)]);
     expect(candidate.support).toBe(2);
   });
 });
@@ -512,7 +537,7 @@ describe("inferEndpointRoles — status and method discipline", () => {
     ];
     const candidate = only(inferEndpointRoles(rows, [cluster("/clients", 2)]));
     expect(candidate.support).toBe(1);
-    expect(candidate.itemsPath).toEqual(["data"]);
+    expect(candidate.itemsPath).toEqual([K(1)]);
   });
 });
 
@@ -558,7 +583,7 @@ describe("inferEndpointRoles — bounds", () => {
         [cluster("/clients", 1)],
         { maxDepth: 2 },
       );
-      if (depth <= 2) expect(only(result).itemsPath).toEqual(keys);
+      if (depth <= 2) expect(only(result).itemsPath).toEqual(keyed(depth));
       else expect(onlyRefusal(result).reason).toBe("metadata_only");
     },
   );
@@ -578,7 +603,7 @@ describe("inferEndpointRoles — bounds", () => {
       { maxCandidateArrays: 2 },
     );
     const reason = accepted ? null : "candidate_array_limit";
-    if (accepted) expect(only(result).itemsPath).toEqual(["k0"]);
+    if (accepted) expect(only(result).itemsPath).toEqual([K(1)]);
     else expect(onlyRefusal(result).reason).toBe(reason);
   });
 
@@ -724,24 +749,40 @@ describe("inferEndpointRoles — privacy", () => {
     expect(serialized).toContain("object{number*1,string*3}");
   });
 
-  it.each([
-    ["__proto__"],
-    ["constructor"],
-    ["access_token"],
-    ["session"],
-    ["a b"],
-    ["9leading"],
-  ])("never emits the unsafe container key %s", (key) => {
+  it.each([["__proto__"], ["constructor"], ["access_token"], ["session"]])(
+    "never emits the forbidden container key %s",
+    (key) => {
+      const rows = [
+        observation(
+          "/clients",
+          Object.assign(Object.create(null), { [key]: [item(1)] }),
+        ),
+      ];
+      const result = inferEndpointRoles(rows, [cluster("/clients", 1)]);
+      expect(JSON.stringify(result)).not.toContain(key);
+      expect(result.candidates).toEqual([]);
+      expect(result.refused[0].reason).toBe("unsafe_path_key");
+    },
+  );
+
+  it.each([["a b"], ["9leading"]])(
+    "reads the data-like container key %s as a dynamic key, never raw",
+    (key) => {
+      const rows = [observation("/clients", { [key]: [item(1)] })];
+      const result = inferEndpointRoles(rows, [cluster("/clients", 1)]);
+      expect(JSON.stringify(result)).not.toContain(key);
+      expect(only(result).itemsPath).toEqual([DYN]);
+      expect(only(result).reasons).toContain(DYNAMIC_KEY_REASON);
+    },
+  );
+
+  it("refuses a data-like key outside a recognized map", () => {
     const rows = [
-      observation(
-        "/clients",
-        Object.assign(Object.create(null), { [key]: [item(1)] }),
-      ),
+      observation("/clients", { "a b": [item(1)], meta: { total: 1 } }),
     ];
     const result = inferEndpointRoles(rows, [cluster("/clients", 1)]);
-    expect(JSON.stringify(result)).not.toContain(key);
-    expect(result.candidates).toEqual([]);
-    expect(result.refused[0].reason).toBe("unsafe_path_key");
+    expect(JSON.stringify(result)).not.toContain("a b");
+    expect(onlyRefusal(result).reason).toBe("unsafe_path_key");
   });
 
   it("refuses to echo a contact-like template literal", () => {
@@ -783,7 +824,6 @@ describe("inferEndpointRoles — privacy", () => {
       "boolean",
       "candidates",
       "coach",
-      "data",
       "detail",
       "detail_body_not_representable",
       "endpoint",
@@ -791,8 +831,10 @@ describe("inferEndpointRoles — privacy", () => {
       "false",
       "https",
       "itemShape",
-      "items",
       "itemsPath",
+      "k1",
+      "k2",
+      "key",
       "list",
       "method",
       "null",
@@ -808,10 +850,13 @@ describe("inferEndpointRoles — privacy", () => {
       "refused",
       "replayCompatible",
       "roles",
+      "session_key_rebinding_required",
+      "slot",
       "string",
       "styles",
       "support",
       "template",
+      "type",
       "unproven_template_literal",
       "windowEvidence",
     ]);
@@ -857,8 +902,9 @@ describe("inferEndpointRoles — C2a pipeline and replay seam", () => {
   it("feeds a slot-free proven list candidate into a blueprint normalizeBlueprint accepts", () => {
     // Positive control: a template with no literal is fully proven structure,
     // so it stays emitted and replay-compatible.
+    // A root array has an empty items path: no key to rebind.
     const rows = [101, 202].map((id) =>
-      observation(`/${id}`, { data: [item(1), item(2)] }),
+      observation(`/${id}`, [item(1), item(2)]),
     );
     const candidate = only(inferEndpointRoles(rows, [cluster("/:id", 2)]));
     expect(candidate.endpoint.template).toBe("/:id");
@@ -890,7 +936,7 @@ describe("inferEndpointRoles — C2a pipeline and replay seam", () => {
       { allowedOrigins: [candidate.endpoint.origin] },
     );
     expect(blueprint.steps[1].template).toBe("/:id");
-    expect(blueprint.steps[1].itemsPath).toEqual(["data"]);
+    expect(blueprint.steps[1].itemsPath).toEqual([]);
     expect(blueprint.steps[1].pagination).toBeNull();
     expect(
       extractItems(rows[0].body, blueprint.steps[1].itemsPath),
@@ -906,7 +952,18 @@ describe("inferEndpointRoles — C2a pipeline and replay seam", () => {
     );
     expect(candidate.endpoint.template).toBe("/:s1/:s2/:id/:s3");
     expect(candidate.replayCompatible).toBe(false);
-    expect(candidate.reasons).toEqual([SESSION_SLOT_REASON]);
+    expect(candidate.reasons).toEqual([KEY_SLOT_REASON, SESSION_SLOT_REASON]);
+  });
+
+  it("keeps a slot-free template with a keyed items path out of replay", () => {
+    const rows = [101, 202].map((id) =>
+      observation(`/${id}`, { data: [item(1)] }),
+    );
+    const candidate = only(inferEndpointRoles(rows, [cluster("/:id", 2)]));
+    expect(candidate.endpoint.template).toBe("/:id");
+    expect(candidate.itemsPath).toEqual([K(1)]);
+    expect(candidate.replayCompatible).toBe(false);
+    expect(candidate.reasons).toEqual([KEY_SLOT_REASON]);
   });
 
   it("keeps detail, window, and pagination candidates explicitly non-runnable", () => {
@@ -976,8 +1033,11 @@ describe("inferEndpointRoles — review closures (B1–B3)", () => {
       });
       expect(candidate.roles).toEqual(["list"]);
       expect(candidate.replayCompatible).toBe(false);
-      expect(candidate.reasons).toEqual(["unproven_template_literal"]);
-      for (const leak of [...leaks, "clients", "workouts"])
+      expect(candidate.reasons).toEqual([
+        KEY_SLOT_REASON,
+        "unproven_template_literal",
+      ]);
+      for (const leak of [...leaks, "clients", "workouts", '"items"'])
         expect(JSON.stringify(result)).not.toContain(leak);
     },
   );
@@ -1032,8 +1092,10 @@ describe("inferEndpointRoles — review closures (B1–B3)", () => {
       expect(candidate.endpoint.template).toBe(template);
       expect(candidate.support).toBe(2);
       expect(candidate.replayCompatible).toBe(false);
-      expect(candidate.reasons).toEqual([SESSION_SLOT_REASON]);
-      expect(JSON.stringify(candidate)).not.toMatch(/clients|workouts|v2/);
+      expect(candidate.reasons).toEqual([KEY_SLOT_REASON, SESSION_SLOT_REASON]);
+      expect(JSON.stringify(candidate)).not.toMatch(
+        /clients|workouts|v2|"items"/,
+      );
       // At C2a's default distinct threshold the pair stays literal: fail closed.
       const strict = normalized(rows);
       expect(strict.candidates.every((entry) => !entry.replayCompatible)).toBe(
@@ -1145,19 +1207,25 @@ describe("inferEndpointRoles — review closure C2B1-SOL-A1 (fixed literals)", (
               template: "/:s1/:s2/:s3/:id/:s4",
             },
             roles: ["list"],
-            itemsPath: ["items"],
+            itemsPath: [K(1)],
             itemShape: "object{number*1}",
             support: 3,
             windowEvidence: null,
             paginationEvidence: null,
             replayCompatible: false,
-            reasons: [SESSION_SLOT_REASON],
+            reasons: [KEY_SLOT_REASON, SESSION_SLOT_REASON],
           },
         ],
         refused: [],
       });
       const serialized = JSON.stringify(result);
-      for (const leak of [...leaks, "coaches", "clients", "workouts"])
+      for (const leak of [
+        ...leaks,
+        "coaches",
+        "clients",
+        "workouts",
+        '"items"',
+      ])
         expect(serialized).not.toContain(leak);
       expect(serialized).not.toMatch(/101|202|303/);
     },
@@ -1169,7 +1237,7 @@ describe("inferEndpointRoles — review closure C2B1-SOL-A1 (fixed literals)", (
     );
     const candidate = only(structural);
     expect(candidate.roles).toEqual(["list"]);
-    expect(candidate.itemsPath).toEqual(["items"]);
+    expect(candidate.itemsPath).toEqual([K(1)]);
     expect(candidate.support).toBe(3);
     // Output is a function of structure only: a coach slug and a structural
     // name in the same position are indistinguishable, so neither is emitted.
@@ -1179,8 +1247,18 @@ describe("inferEndpointRoles — review closure C2B1-SOL-A1 (fixed literals)", (
   });
 
   it("A1 positive control: a slot-free proven template stays emitted and replay-compatible", () => {
-    const candidate = only(run(snapshotOf(["/101", "/202", "/303"])));
+    const candidate = only(
+      run(
+        ["/101", "/202", "/303"].map((path) => ({
+          url: `${ORIGIN}${path}`,
+          method: "GET",
+          statusCode: 200,
+          responseBody: JSON.stringify([{ id: 5 }]),
+        })),
+      ),
+    );
     expect(candidate.endpoint.template).toBe("/:id");
+    expect(candidate.itemsPath).toEqual([]);
     expect(candidate.replayCompatible).toBe(true);
     expect(candidate.reasons).toEqual([]);
   });
@@ -1207,6 +1285,335 @@ describe("inferEndpointRoles — review closure C2B1-SOL-A1 (fixed literals)", (
       expect(JSON.stringify(run(snapshotOf(order.map((i) => rows[i]))))).toBe(
         expected,
       );
-    expect(expected).not.toMatch(/alice|coaches|clients|notes|workouts|api/);
+    expect(expected).not.toMatch(
+      /alice|coaches|clients|notes|workouts|api|"items"/,
+    );
+  });
+});
+
+describe("inferEndpointRoles — review closure C2B1-SOL2-A1 (container keys)", () => {
+  const coachPaths = [101, 202, 303].map(
+    (id) => `/coaches/alice/clients/${id}/workouts`,
+  );
+  function run(paths, bodyFor) {
+    const { observations } = normalizeCaptureSnapshot(
+      paths.map((path, index) => ({
+        url: `${ORIGIN}${path}`,
+        method: "GET",
+        statusCode: 200,
+        responseBody: JSON.stringify(bodyFor(index)),
+      })),
+    );
+    const { clusters } = inferUrlTemplates(observations);
+    return inferEndpointRoles(observations, clusters);
+  }
+  // Every string the output may carry comes from a fixed, value-free
+  // vocabulary: the accepted origin, a method, slot templates, C2a shape
+  // signatures, fixed role/reason/query names, and typed key steps.
+  const FIXED = new Set([
+    ORIGIN,
+    "GET",
+    "HEAD",
+    "list",
+    "detail",
+    "windowed",
+    "paginated",
+    "key",
+    "dynamic_key",
+    "page",
+    "cursor",
+  ]);
+  function assertValueFree(result) {
+    const visit = (node, parentKey) => {
+      if (Array.isArray(node))
+        return node.forEach((entry) => visit(entry, parentKey));
+      if (node !== null && typeof node === "object")
+        return Object.entries(node).forEach(([key, value]) => {
+          expect(key).toMatch(/^[a-zA-Z]+$/);
+          visit(value, key);
+        });
+      if (typeof node !== "string") return;
+      if (parentKey === "template")
+        expect(node).toMatch(/^(?:\/(?::s\d+|:id))*$/);
+      else if (parentKey === "slot") expect(node).toMatch(/^k\d+$/);
+      else if (parentKey === "itemShape")
+        expect(node).toMatch(/^[a-z0-9*{}[\](),|.]+$/);
+      else if (parentKey === "reasons" || parentKey === "reason")
+        expect(node).toMatch(/^[a-z_]+$/);
+      else expect(FIXED.has(node)).toBe(true);
+    };
+    visit(result, null);
+    for (const candidate of result.candidates)
+      if (
+        candidate.itemsPath?.length > 0 ||
+        /:s\d/.test(candidate.endpoint.template ?? ":s")
+      )
+        expect(candidate.replayCompatible).toBe(false);
+  }
+
+  it("A1: the reviewer's name-keyed body never emits the name", () => {
+    const result = run(coachPaths, () => ({ alice: [{ id: 5 }] }));
+    const candidate = only(result);
+    expect(candidate.itemsPath).toEqual([K(1)]);
+    expect(candidate.replayCompatible).toBe(false);
+    expect(candidate.reasons).toEqual([KEY_SLOT_REASON, SESSION_SLOT_REASON]);
+    expect(JSON.stringify(result)).not.toContain("alice");
+    assertValueFree(result);
+    // Value-free: identical to the same capture keyed by a structural name.
+    expect(JSON.stringify(result)).toBe(
+      JSON.stringify(run(coachPaths, () => ({ items: [{ id: 5 }] }))),
+    );
+  });
+
+  const NAME_KEYS = ["alice", "jane_doe", "JaneDoe", "private-tenant"];
+  const DATA_KEYS = [
+    "jane.doe@mail.invalid",
+    "person+tag@mail.invalid",
+    "101",
+    "3f2b8c1e-4a5d-4e6f-9a7b-1c2d3e4f5a6b",
+    "José",
+    "Zoë Ångström",
+    "名前",
+    "jane doe",
+  ];
+  const leakParts = (key) =>
+    key.split(/[^\p{L}\p{N}]+/u).filter((part) => part.length >= 2);
+  /** @type {Record<string, (key: string) => object>} */
+  const placements = {
+    "as the container key": (key) => ({ [key]: [{ id: 5 }] }),
+    "nested under a wrapper": (key) => ({ data: { [key]: [{ id: 5 }] } }),
+    "nested above a wrapper": (key) => ({
+      data: { [key]: { rows: [{ id: 5 }] } },
+    }),
+  };
+
+  describe.each(Object.keys(placements))("%s", (label) => {
+    const body = placements[label];
+    it.each(NAME_KEYS)("never emits the name-like key %s raw", (key) => {
+      const result = run(coachPaths, () => body(key));
+      const candidate = only(result);
+      expect(candidate.itemsPath.every((s) => s.type === "key")).toBe(true);
+      for (const part of leakParts(key))
+        expect(JSON.stringify(result)).not.toContain(part);
+      assertValueFree(result);
+      expect(JSON.stringify(result)).toBe(
+        JSON.stringify(run(coachPaths, () => body("items"))),
+      );
+    });
+
+    it.each(DATA_KEYS)("reads the data-like key %s as a dynamic key", (key) => {
+      const result = run(coachPaths, () => body(key));
+      const candidate = only(result);
+      expect(candidate.itemsPath).toContainEqual(DYN);
+      expect(candidate.reasons).toContain(DYNAMIC_KEY_REASON);
+      const serialized = JSON.stringify(result);
+      for (const part of leakParts(key)) expect(serialized).not.toContain(part);
+      assertValueFree(result);
+      // Output depends on the key's class only, never on its value.
+      expect(serialized).toBe(
+        JSON.stringify(run(coachPaths, () => body("other@mail.invalid"))),
+      );
+    });
+  });
+
+  it.each([
+    [
+      "id-keyed records",
+      { clients: { 101: item(1), 202: item(2), 303: item(3) } },
+      [K(1), DYN],
+    ],
+    [
+      "email-keyed arrays",
+      { "a@mail.invalid": [item(1)], "b@mail.invalid": [item(2)] },
+      [DYN],
+    ],
+    [
+      "three homogeneous name-keyed arrays",
+      { alice: [item(1)], bob: [item(2)], carol: [item(3)] },
+      [DYN],
+    ],
+    [
+      "uuid-keyed records under two wrappers",
+      {
+        data: {
+          groups: {
+            "3f2b8c1e-4a5d-4e6f-9a7b-1c2d3e4f5a6b": item(1),
+            "9c1d2e3f-4a5b-4c6d-8e7f-0a1b2c3d4e5f": item(2),
+          },
+        },
+      },
+      [K(1), K(2), DYN],
+    ],
+  ])("represents a map of %s as a dynamic-key marker", (_label, body, path) => {
+    const result = run(coachPaths, () => body);
+    const candidate = only(result);
+    expect(candidate.roles).toEqual(["list"]);
+    expect(candidate.itemsPath).toEqual(path);
+    expect(candidate.itemShape).toBe("object{boolean*1,number*1,string*1}");
+    expect(candidate.replayCompatible).toBe(false);
+    expect(candidate.reasons).toContain(DYNAMIC_KEY_REASON);
+    expect(JSON.stringify(result)).not.toMatch(
+      /alice|bob|carol|@|mail|101|202|303|3f2b|9c1d|groups|clients|"data"/,
+    );
+    assertValueFree(result);
+  });
+
+  it("gives a map the same output under any key order and any key values", () => {
+    const bodies = [
+      { 101: item(1), 202: item(2), 303: item(3) },
+      { 303: item(3), 101: item(1), 202: item(2) },
+      { 7: item(9), 8: item(8), 9: item(7) },
+    ];
+    const outputs = bodies.map((body) =>
+      JSON.stringify(run(coachPaths, () => body)),
+    );
+    expect(new Set(outputs).size).toBe(1);
+  });
+
+  it("refuses two name-keyed arrays rather than guessing, without echoing", () => {
+    const result = run(coachPaths, () => ({
+      alice: [item(1)],
+      bob: [item(2)],
+    }));
+    expect(onlyRefusal(result).reason).toBe("ambiguous_items_path");
+    expect(JSON.stringify(result)).not.toMatch(/alice|bob/);
+    assertValueFree(result);
+  });
+
+  it.each([
+    ["an id-keyed object with unequal values", { 101: item(1), 202: [1] }],
+    ["an email key beside metadata", { "a@mail.invalid": [item(1)], n: 1 }],
+  ])("refuses %s without echoing any key", (_label, body) => {
+    const result = run(coachPaths, () => body);
+    expect(onlyRefusal(result).reason).toBe("unsafe_path_key");
+    expect(JSON.stringify(result)).not.toMatch(/101|202|@|mail|token/);
+    assertValueFree(result);
+  });
+
+  it("refuses a credential key inside a map-shaped object, even un-normalized", () => {
+    // C2a strips credential keys first; C2b refuses on its own as well.
+    const rows = [101, 202].map((id) =>
+      observation(`/coaches/alice/clients/${id}/workouts`, {
+        101: [item(1)],
+        202: [item(2)],
+        token: [item(3)],
+      }),
+    );
+    const result = inferEndpointRoles(rows, [
+      cluster("/coaches/alice/clients/:id/workouts", 2),
+    ]);
+    expect(onlyRefusal(result).reason).toBe("unsafe_path_key");
+    expect(JSON.stringify(result)).not.toMatch(/101|202|token|alice/);
+  });
+
+  it("is byte-identical under every permutation of a capture with keyed and map bodies", () => {
+    const rows = [
+      ...coachPaths.map((path) => [path, { alice: [{ id: 5 }] }]),
+      ...[7, 8, 9].map((id) => [
+        `/api/clients/${id}/notes`,
+        { "x@mail.invalid": { id: 1 }, "y@mail.invalid": { id: 2 } },
+      ]),
+    ];
+    const permute = (list) =>
+      list.length <= 1
+        ? [list]
+        : list.flatMap((head, index) =>
+            permute([...list.slice(0, index), ...list.slice(index + 1)]).map(
+              (tail) => [head, ...tail],
+            ),
+          );
+    const runRows = (ordered) =>
+      JSON.stringify(
+        run(
+          ordered.map(([path]) => path),
+          (index) => ordered[index][1],
+        ),
+      );
+    const expected = runRows(rows);
+    const orders = permute([0, 1, 2, 3, 4, 5]);
+    expect(orders).toHaveLength(720);
+    for (const order of orders)
+      expect(runRows(order.map((i) => rows[i]))).toBe(expected);
+    expect(expected).not.toMatch(/alice|@|mail|coaches|notes|api/);
+    assertValueFree(JSON.parse(expected));
+  });
+});
+
+describe("inferEndpointRoles — X3 seam C2B1-SOL2-X3-1 (slot-template collisions)", () => {
+  function run(paths) {
+    const { observations } = normalizeCaptureSnapshot(
+      paths.map((path) => ({
+        url: `${ORIGIN}${path}`,
+        method: "GET",
+        statusCode: 200,
+        responseBody: JSON.stringify([{ id: 5 }]),
+      })),
+    );
+    const { clusters } = inferUrlTemplates(observations);
+    return inferEndpointRoles(observations, clusters);
+  }
+  const alice = [101, 202, 303].map(
+      (id) => `/coaches/alice/clients/${id}/workouts`,
+    ),
+    bob = [101, 202, 303].map((id) => `/groups/bob/members/${id}/workouts`);
+
+  it("flags, never merges, two routes that collapse to one slot template", () => {
+    const result = run([...alice, ...bob]);
+    expect(result.refused).toEqual([]);
+    expect(result.candidates).toHaveLength(2);
+    for (const candidate of result.candidates) {
+      expect(candidate.endpoint.template).toBe("/:s1/:s2/:s3/:id/:s4");
+      expect(candidate.support).toBe(3);
+      expect(candidate.replayCompatible).toBe(false);
+      expect(candidate.reasons).toEqual(
+        [SESSION_SLOT_REASON, COLLISION_REASON].sort(),
+      );
+    }
+    expect(JSON.stringify(result)).not.toMatch(
+      /alice|bob|coaches|groups|members|workouts/,
+    );
+  });
+
+  it("does not flag a lone route or routes of different arity", () => {
+    for (const paths of [
+      alice,
+      [...alice, ...[7, 8, 9].map((id) => `/api/clients/${id}/notes`)],
+    ]) {
+      const result = run(paths);
+      for (const candidate of result.candidates)
+        expect(candidate.reasons).not.toContain(COLLISION_REASON);
+    }
+  });
+
+  it("flags a candidate whose colliding partner was refused", () => {
+    const rows = [
+      ...alice.map((path) => observation(path, [item(1)])),
+      ...bob.map((path) => observation(path, [item(1)])),
+    ];
+    const result = inferEndpointRoles(rows, [
+      cluster("/coaches/alice/clients/:id/workouts", 3),
+      cluster("/groups/bob/members/:id/workouts", 9),
+    ]);
+    expect(result.refused).toHaveLength(1);
+    expect(result.refused[0].reason).toBe("template_support_mismatch");
+    expect(result.refused[0].endpoint.template).toBe("/:s1/:s2/:s3/:id/:s4");
+    expect(only({ ...result, refused: [] }).reasons).toContain(
+      COLLISION_REASON,
+    );
+  });
+
+  it("keeps collision output byte-identical under every capture order", () => {
+    const rows = [alice[0], alice[1], alice[2], bob[0], bob[1], bob[2]];
+    const permute = (list) =>
+      list.length <= 1
+        ? [list]
+        : list.flatMap((head, index) =>
+            permute([...list.slice(0, index), ...list.slice(index + 1)]).map(
+              (tail) => [head, ...tail],
+            ),
+          );
+    const expected = JSON.stringify(run(rows));
+    for (const order of permute([0, 1, 2, 3, 4, 5]))
+      expect(JSON.stringify(run(order.map((i) => rows[i])))).toBe(expected);
   });
 });
