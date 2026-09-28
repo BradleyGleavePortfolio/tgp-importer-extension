@@ -47,6 +47,19 @@ describe("preStartIssue — no-run error family mapping", () => {
       "origin_not_granted: https://example.com",
       "prestart_origin_not_authorized",
     ],
+    [
+      "start_not_authorized: https://example.com",
+      "prestart_origin_not_authorized",
+    ],
+    ["origin_revoked: https://example.com", "prestart_origin_not_authorized"],
+    [
+      "source_tab_navigated: https://example.com",
+      "prestart_source_tab_changed",
+    ],
+    [
+      "source_token_not_accepted: https://example.com",
+      "prestart_source_tab_changed",
+    ],
     ["blueprint resolve failed", "prestart_site_setup_unavailable"],
   ])("maps %j to the approved key %s", (lastError, key) => {
     expect(preStartIssue(lastError, message)).toBe(message(key));

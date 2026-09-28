@@ -40,6 +40,8 @@ export function makeChromeMock() {
 
   const onDetach = eventHub();
   const onRemoved = eventHub();
+  const onUpdated = eventHub();
+  const onPermissionRemoved = eventHub();
   const onSuspend = eventHub();
 
   const chrome = {
@@ -63,6 +65,7 @@ export function makeChromeMock() {
     },
     tabs: {
       onRemoved: onRemoved.api,
+      onUpdated: onUpdated.api,
       get: async (tabId) => {
         calls.tabsGet.push(tabId);
         if (tabUrls.has(tabId)) {
@@ -76,6 +79,7 @@ export function makeChromeMock() {
       onSuspend: onSuspend.api,
     },
     permissions: {
+      onRemoved: onPermissionRemoved.api,
       contains: async ({ origins }) =>
         Array.isArray(origins) && origins.every((o) => granted.has(o)),
     },
@@ -90,7 +94,10 @@ export function makeChromeMock() {
     setTabUrl: (tabId, url) => tabUrls.set(tabId, url),
     // Edit the live host-permission grant set (origin match patterns).
     grant: (pattern) => granted.add(pattern),
-    revoke: (pattern) => granted.delete(pattern),
+    revoke: (pattern) => {
+      granted.delete(pattern);
+      onPermissionRemoved.emit({ origins: [pattern] });
+    },
     defaultOrigin: DEFAULT_ORIGIN,
     // Register a canned response for a CDP method (e.g. Network.getResponseBody).
     onCommand: (method, handler) => commandHandlers.set(method, handler),
@@ -108,6 +115,12 @@ export function makeChromeMock() {
     emitDetach: (source) => onDetach.emit(source),
     emitTabRemoved: (tabId, info) =>
       onRemoved.emit(tabId, info ?? { isWindowClosing: false }),
+    // The captured tab navigated: chrome.tabs.get now answers the new URL and
+    // Chrome announces it through tabs.onUpdated.
+    navigateTab: (tabId, url) => {
+      tabUrls.set(tabId, url);
+      onUpdated.emit(tabId, { url }, { id: tabId, url });
+    },
     emitSuspend: () => onSuspend.emit(),
   };
 }

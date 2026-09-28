@@ -13,7 +13,8 @@
 // runtime-message boundary.
 //
 // R75: zero banned type-assertions — every narrowing is a real guard.
-// R76: this file stays comfortably under 400 LOC.
+// Capture is a capability of the current run: sessions carry a run generation
+// and are retired on every settlement (see retireCaptureSessions).
 
 import { CaptureBuffer, DEFAULT_MAX_BYTES } from "./capture-buffer.js";
 import {
@@ -25,6 +26,7 @@ import {
   redactCredentialText,
 } from "./credential-policy.js";
 import { normalizeCaptureSnapshot } from "./blueprint/input.js";
+import { getAuthorizedOrigin } from "./session.js";
 
 const DEBUGGER_PROTOCOL_VERSION = "1.3";
 const MAX_PENDING = 1000;
@@ -32,6 +34,29 @@ const MAX_PENDING = 1000;
 // Per-tab capture state, keyed by tabId. Each entry owns its own ring buffer,
 // inflight-request table, and the debugger event listener used to tear down.
 const sessions = new Map();
+
+// Capture is a capability of the CURRENT run only. Every session is stamped
+// with the generation it was attached under; retireCaptureSessions (called on
+// every run settlement / session clear) bumps the generation and drains every
+// debugger, and an event or stop for an obsolete generation is refused.
+let captureGeneration = 0;
+
+function originOf(url) {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
+}
+
+// A session is live only while it is current-generation AND its origin is
+// still the run's authorized origin. Anything else is torn down on sight.
+function isLiveSession(session) {
+  return (
+    session.generation === captureGeneration &&
+    getAuthorizedOrigin() === session.expectedOrigin
+  );
+}
 
 function isRecord(value) {
   return typeof value === "object" && value !== null;
@@ -135,9 +160,9 @@ function redactUrl(url) {
 // re-attaching to a tab that already has a session is a no-op that returns the
 // existing session's buffer. Returns the tab's RingBuffer.
 //
-// The tab URL is validated against the capture allowlist (HTTPS + allowlisted
-// host only) BEFORE chrome.debugger.attach is called, so the debugger handle
-// never exists for chrome://, file://, extension, or non-allowlisted pages.
+// The tab URL is validated against the run's authorized origin (HTTPS, exact
+// origin, live grant) BEFORE chrome.debugger.attach is called, so the debugger
+// handle never exists for chrome://, file://, extension, or foreign pages.
 async function attachDebugger(tabId, options) {
   if (typeof tabId !== "number") {
     throw new Error("attachDebugger: tabId must be a number");
@@ -164,8 +189,28 @@ async function attachDebugger(tabId, options) {
   const exclude = (reason, count = 1) =>
     excluded.set(reason, (excluded.get(reason) ?? 0) + count);
 
+  const generation = captureGeneration;
+
   const onEvent = (source, method, params) => {
     if (source.tabId !== tabId) {
+      return;
+    }
+    const session = sessions.get(tabId);
+    if (session === undefined || session.onEvent !== onEvent) {
+      return; // a torn-down session receives nothing
+    }
+    if (!isLiveSession(session)) {
+      exclude("run_retired");
+      void teardownSession(tabId, { detach: true });
+      return;
+    }
+    // In-band navigation signal: a request issued by a document on another
+    // origin means the tab left the authorized origin. Detach immediately;
+    // the debugger is never exercised for that document.
+    const documentUrl = readString(params, "documentURL");
+    if (documentUrl !== null && originOf(documentUrl) !== expectedOrigin) {
+      exclude("document_navigated");
+      void teardownSession(tabId, { detach: true });
       return;
     }
     if (
@@ -188,19 +233,31 @@ async function attachDebugger(tabId, options) {
     void done.finally(() => finalizers.delete(done));
   };
 
-  sessions.set(tabId, {
+  const session = {
     buffer,
     inflight,
     onEvent,
     finalizers,
     expectedOrigin,
     excluded,
-  });
+    generation,
+  };
+  sessions.set(tabId, session);
   chrome.debugger.onEvent.addListener(onEvent);
 
   try {
     await chrome.debugger.attach(target, DEBUGGER_PROTOCOL_VERSION);
     await chrome.debugger.sendCommand(target, "Network.enable", {});
+    // The tab may have navigated (or the run settled) while attach awaited:
+    // re-check the live document, the grant and the generation before the
+    // handle is allowed to exist.
+    const live = await assertCaptureTabAllowed(tabId);
+    if (originOf(live.url) !== expectedOrigin) {
+      throw new Error("capture_tab_navigated");
+    }
+    if (!isLiveSession(session)) {
+      throw new Error("capture_run_retired");
+    }
   } catch (err) {
     // A partial attach (coach denied the prompt, DevTools already open,
     // Network.enable rejected) must not leak a debugger handle, listener, or
@@ -331,6 +388,13 @@ async function finalizeEntry(target, params, inflight, buffer, exclude) {
     return;
   }
 
+  // No body is read for a session that stopped being live while this entry
+  // was in flight (run settled, origin cleared, tab navigated).
+  const session = sessions.get(target.tabId);
+  if (session === undefined || !isLiveSession(session)) {
+    exclude("run_retired");
+    return;
+  }
   let body;
   try {
     body = await chrome.debugger.sendCommand(
@@ -441,8 +505,28 @@ function normalizeCapturedSnapshot(snapshot) {
 }
 
 // Detach the debugger from a tab and return a snapshot of everything captured.
+// A session that outlived its run (obsolete generation, or the run's origin is
+// no longer authorized) is torn down but yields NO entries: its data belongs to
+// a capability that has ended.
 async function stopCapture(tabId) {
+  const session = sessions.get(tabId);
+  if (session !== undefined && !isLiveSession(session)) {
+    await teardownSession(tabId, { detach: true });
+    return captureSnapshot([], null, new Map([["run_retired", 1]]));
+  }
   return teardownSession(tabId, { detach: true });
+}
+
+// End every capture session of the current run: bump the generation (so any
+// event or stop that races this is refused), then detach and drain each
+// debugger. Called on every run settlement and TGP session clear.
+async function retireCaptureSessions() {
+  captureGeneration += 1;
+  await Promise.allSettled(
+    [...sessions.keys()].map((tabId) =>
+      teardownSession(tabId, { detach: true }),
+    ),
+  );
 }
 
 // Wire the MV3 lifecycle cleanup paths so a session never leaks its debugger
@@ -454,6 +538,36 @@ async function stopCapture(tabId) {
 function registerCaptureLifecycle() {
   chrome.tabs.onRemoved.addListener((tabId) => {
     void teardownSession(tabId, { detach: true });
+  });
+  // The captured tab navigated: the handle must not follow it to another
+  // origin (even one Chrome holds a grant for). Same-origin navigations keep
+  // the session.
+  chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+    const session = sessions.get(tabId);
+    const url = readString(changeInfo, "url");
+    if (session === undefined || url === null) {
+      return;
+    }
+    if (originOf(url) !== session.expectedOrigin) {
+      session.excluded.set(
+        "document_navigated",
+        (session.excluded.get("document_navigated") ?? 0) + 1,
+      );
+      void teardownSession(tabId, { detach: true });
+    }
+  });
+  // Chrome revoked a host grant: any session on that origin ends now, not at
+  // its next event.
+  chrome.permissions.onRemoved.addListener((permissions) => {
+    const origins =
+      isRecord(permissions) && Array.isArray(permissions.origins)
+        ? permissions.origins
+        : [];
+    for (const [tabId, session] of [...sessions]) {
+      if (origins.includes(`${session.expectedOrigin}/*`)) {
+        void teardownSession(tabId, { detach: true });
+      }
+    }
   });
   chrome.debugger.onDetach.addListener((source) => {
     if (isRecord(source) && typeof source.tabId === "number") {
@@ -474,6 +588,7 @@ export {
   recordRequest,
   attachDebugger,
   stopCapture,
+  retireCaptureSessions,
   normalizeCapturedSnapshot,
   registerCaptureLifecycle,
 };

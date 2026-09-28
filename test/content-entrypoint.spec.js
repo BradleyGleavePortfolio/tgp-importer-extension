@@ -23,7 +23,10 @@ function boot(overrides = {}) {
   };
   const globals = {
     chrome: { runtime },
-    location: { href: "https://app.truecoach.co/clients" },
+    location: {
+      href: "https://app.truecoach.co/clients",
+      origin: "https://app.truecoach.co",
+    },
     sessionStorage: fakePageStore(),
     localStorage: fakePageStore(),
   };
@@ -89,6 +92,7 @@ describe("dynamically registered content script entrypoint", () => {
     expect(reply).toHaveBeenCalledExactlyOnceWith({
       ok: true,
       token: "one.two.three",
+      origin: "https://app.truecoach.co",
     });
     expect(kept).toBe(false);
   });
@@ -101,6 +105,7 @@ describe("dynamically registered content script entrypoint", () => {
     expect(page.request().reply).toHaveBeenCalledWith({
       ok: true,
       token: "fresh.session.token",
+      origin: "https://app.truecoach.co",
     });
   });
 
@@ -130,6 +135,7 @@ describe("dynamically registered content script entrypoint", () => {
     expect(page.request().reply).toHaveBeenCalledExactlyOnceWith({
       ok: true,
       token: "local.only.token",
+      origin: "https://app.truecoach.co",
     });
   });
 

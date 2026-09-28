@@ -153,6 +153,7 @@ const START_ISSUE_CODES = new Set([
   "origin_not_https",
   "origin_is_tgp",
   "origin_not_authorized",
+  "origin_request_failed",
 ]);
 
 // On the Start gesture: ask Chrome for the active tab's origin (denial starts
@@ -171,13 +172,15 @@ export function requestStartImport(runtime, tabs, permissions) {
     if (isTgpOrigin(origin)) {
       return { ok: false, error: "origin_is_tgp" };
     }
-    return permissions
-      .request({ origins: [`${origin}/*`] })
-      .then((granted) =>
+    // Chrome's prompt answers true (granted), false (declined) or rejects
+    // (no gesture, prompt unavailable). Each is its own honest no-run fact.
+    return permissions.request({ origins: [`${origin}/*`] }).then(
+      (granted) =>
         granted === true
           ? runtime.sendMessage({ kind: "start_import", url, tabId })
           : { ok: false, error: "origin_not_authorized" },
-      );
+      () => ({ ok: false, error: "origin_request_failed" }),
+    );
   });
 }
 

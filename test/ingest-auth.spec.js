@@ -86,7 +86,10 @@ describe("start_ingest — refresh failure fails closed", () => {
     expect(last.lastError).toBe("login required to import");
   });
 
-  it("recognises a Tier-1 brand subdomain as TrueCoach (auth gate still applies)", async () => {
+  it("a brand subdomain is not the oracle's origin: not learned, and never a sign-in problem (review B, B2)", async () => {
+    // The oracle answers for exactly the origin it fetches. A brand subdomain
+    // used to resolve to it and then fetch the flagship host — an origin the
+    // coach had not authorized — so it now fails closed before the auth gate.
     const { mock } = await load();
     const ack = await mock.dispatch({
       kind: "start_ingest",
@@ -94,8 +97,10 @@ describe("start_ingest — refresh failure fails closed", () => {
     });
     expect(ack).toEqual({ ok: true });
     await flush();
-    // Recognised as truecoach (not "unsupported"), so it reaches the auth gate.
-    expect(authRequired(mock)).toHaveLength(1);
-    expect(snapshots(mock).at(-1).lastError).toBe("login required to import");
+    expect(authRequired(mock)).toHaveLength(0);
+    expect(snapshots(mock).at(-1).lastError).toBe(
+      "site_not_learned: https://brand.truecoach.co",
+    );
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 });

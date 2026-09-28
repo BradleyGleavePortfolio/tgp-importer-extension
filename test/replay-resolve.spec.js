@@ -30,15 +30,28 @@ describe("resolveBlueprint — registered origin", () => {
     expect(bp.steps.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("matches a white-label brand subdomain by hostname suffix, never a look-alike", () => {
-    expect(matchesTrueCoachOrigin("https://brand.truecoach.co")).toBe(true);
-    expect(matchesTrueCoachOrigin("https://truecoach.co")).toBe(true);
+  it("matches exactly the oracle's API origin: no subdomain, scheme, port or look-alike (review B, B2)", () => {
+    // The oracle fetches ONE origin, so it may answer for exactly that origin.
+    // A brand subdomain used to resolve here and then fetch the flagship
+    // host — an origin the coach had not authorized.
+    expect(matchesTrueCoachOrigin(TRUECOACH_ORIGIN)).toBe(true);
+    expect(matchesTrueCoachOrigin("https://brand.truecoach.co")).toBe(false);
+    expect(matchesTrueCoachOrigin("https://truecoach.co")).toBe(false);
+    expect(matchesTrueCoachOrigin("https://app.truecoach.co:8443")).toBe(false);
     expect(matchesTrueCoachOrigin("http://app.truecoach.co")).toBe(false);
     expect(
       matchesTrueCoachOrigin("https://app.truecoach.co.evil.example"),
     ).toBe(false);
     expect(matchesTrueCoachOrigin("https://nottruecoach.co")).toBe(false);
     expect(matchesTrueCoachOrigin("not a url")).toBe(false);
+    expect(matchesTrueCoachOrigin(undefined)).toBe(false);
+  });
+
+  it("a brand subdomain is not learned: blueprint throws UnknownPlatformError, extractor is null", () => {
+    expect(() => resolveBlueprint("https://brand.truecoach.co")).toThrow(
+      UnknownPlatformError,
+    );
+    expect(resolveExtractor("https://brand.truecoach.co", {})).toBeNull();
   });
 
   it("returns a blueprint that normalizes cleanly under the authorized-origin allowlist", () => {
@@ -130,6 +143,24 @@ describe("register / registerExtractor — vendor-free registration contract", (
     expect(typeof hit?.extractor.run).toBe("function");
     expect(resolveExtractor("https://example.com", deps)).toBeNull();
     expect(resolveExtractor(null, deps)).toBeNull();
+  });
+
+  it("a matcher that throws never matches: the origin is unknown, not a resolve failure (review B, C4)", () => {
+    const poison = "https://poison.example";
+    const throwing = (candidate) => {
+      if (candidate === poison) throw new Error("matcher bug");
+      return false;
+    };
+    register(throwing, () => ({ platform: "p", apiBase: poison, steps: [] }));
+    registerExtractor(throwing, "p", () => ({ run: async () => undefined }));
+    expect(() => resolveBlueprint(poison)).toThrow(UnknownPlatformError);
+    expect(resolveExtractor(poison, {})).toBeNull();
+    // Registrants after the faulty one are still consulted.
+    register(
+      (candidate) => candidate === poison,
+      () => ({ platform: "after", apiBase: poison, steps: [] }),
+    );
+    expect(resolveBlueprint(poison).platform).toBe("after");
   });
 });
 

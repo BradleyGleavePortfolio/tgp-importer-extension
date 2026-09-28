@@ -9,24 +9,17 @@ import { register, registerExtractor } from "../shared/replay/resolve.js";
 import { truecoachBlueprint } from "./truecoach/blueprint.js";
 import { TrueCoachExtractor } from "./truecoach/extractor.js";
 import { PLATFORM } from "./truecoach/parse.js";
+import { TRUECOACH_API_BASE } from "./truecoach/api-base.js";
 
-// Hostname SUFFIX match (formerly extractors/detect.js) so cosmetic white-label
-// brand subdomains resolve to the same oracle as the flagship host. Only an
-// https origin ever reaches the registry; a malformed origin never matches.
-const HOST_SUFFIX = "truecoach.co";
+// EXACT origin match on the oracle's API origin (review B, B2). The former
+// hostname-suffix match (extractors/detect.js) let a brand subdomain resolve to
+// an extractor that then fetched the flagship host, i.e. an origin the coach
+// had not authorized. A run is confined to the ONE authorized origin, so the
+// oracle answers for exactly the origin it talks to and nothing else.
+const ORACLE_ORIGIN = new URL(TRUECOACH_API_BASE).origin;
 
 export function matchesTrueCoachOrigin(origin) {
-  let url;
-  try {
-    url = new URL(origin);
-  } catch {
-    return false;
-  }
-  const hostname = url.hostname.toLowerCase();
-  return (
-    url.protocol === "https:" &&
-    (hostname === HOST_SUFFIX || hostname.endsWith(`.${HOST_SUFFIX}`))
-  );
+  return typeof origin === "string" && origin === ORACLE_ORIGIN;
 }
 
 register(matchesTrueCoachOrigin, truecoachBlueprint);

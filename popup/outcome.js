@@ -138,13 +138,19 @@ export function preStartIssue(lastError, message) {
           error.startsWith("origin_is_tgp")
         ? "prestart_unsafe_origin"
         : error.startsWith("origin_not_authorized") ||
-            error.startsWith("origin_not_granted")
+            error.startsWith("origin_request_failed") ||
+            error.startsWith("origin_not_granted") ||
+            error.startsWith("start_not_authorized") ||
+            error.startsWith("origin_revoked")
           ? "prestart_origin_not_authorized"
-          : error.startsWith("site_not_learned")
-            ? "prestart_site_not_learned"
-            : error === "blueprint resolve failed"
-              ? "prestart_site_setup_unavailable"
-              : "prestart_unknown";
+          : error.startsWith("source_tab_navigated") ||
+              error.startsWith("source_token_not_accepted")
+            ? "prestart_source_tab_changed"
+            : error.startsWith("site_not_learned")
+              ? "prestart_site_not_learned"
+              : error === "blueprint resolve failed"
+                ? "prestart_site_setup_unavailable"
+                : "prestart_unknown";
   return message(key);
 }
 

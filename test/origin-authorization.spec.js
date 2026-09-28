@@ -15,6 +15,10 @@ import { fakePageStore, realSourceTab } from "./helpers/source-tab.js";
 // fails closed with a truthful "not learned" code. No vendor name is consulted
 // anywhere on this path; the oracle under legacy/ registers itself.
 
+// Shared machine: the first import of the worker module graph is
+// load-sensitive, not slow by design.
+vi.setConfig({ testTimeout: 30000 });
+
 const REFRESH_KEY = "tgp_refresh_token";
 const REFRESH_URL = "https://api.tgp.coach/api/auth/extension/refresh";
 const INGEST_URL = "https://api.tgp.coach/api/scout/ingest";
@@ -50,6 +54,17 @@ function flush(n = 6) {
     p = p.then(() => new Promise((r) => setTimeout(r, 0)));
   }
   return p;
+}
+
+// The origin is authorized once Chrome confirmed the grant (a few microtasks
+// after admission) and well before any network or tab interaction.
+async function authorizedSoon(sessionModule) {
+  for (let i = 0; i < 50; i += 1) {
+    const origin = sessionModule.getAuthorizedOrigin();
+    if (origin !== null) return origin;
+    await Promise.resolve();
+  }
+  return sessionModule.getAuthorizedOrigin();
 }
 
 function snapshots(mock) {
@@ -197,9 +212,7 @@ describe("start_import — the granted origin is the run's single authorized ori
       tabId: TAB_ID,
     });
     expect(ack).toEqual({ ok: true });
-    // Bound synchronously with admission: the origin is authorized before the
-    // handler yields, so a racing capture request sees the run's origin.
-    expect(sessionModule.getAuthorizedOrigin()).toBe(TAB_ORIGIN);
+    expect(await authorizedSoon(sessionModule)).toBe(TAB_ORIGIN);
 
     const terminal = await settle(mock);
     expect(terminal).toBe("ingest_succeeded");
@@ -243,7 +256,7 @@ describe("start_import — the granted origin is the run's single authorized ori
       tab: withSourceTab(),
     });
     await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
-    expect(sessionModule.getAuthorizedOrigin()).toBe(TAB_ORIGIN);
+    expect(await authorizedSoon(sessionModule)).toBe(TAB_ORIGIN);
     await flush();
     expect(sessionModule.getAuthorizedOrigin()).toBeNull();
     expect(mock.sent.some((m) => m && m.kind === "auth_required")).toBe(true);

@@ -64,6 +64,8 @@ async function rawFetch(path, token, signal, rateMs = RATE_LIMIT_MS) {
             method: "GET",
             headers: authHeaders(token),
             credentials: "include",
+            // Single-origin confinement: a source redirect is never followed.
+            redirect: "error",
             signal,
         },
     );

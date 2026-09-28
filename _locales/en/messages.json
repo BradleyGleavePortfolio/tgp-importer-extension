@@ -150,6 +150,10 @@
     "message": "TGP wasn't given permission to read this site, so nothing started. Press Start again and allow access to this site when Chrome asks.",
     "description": "No-run error: the coach declined Chrome's site-access prompt on Start, or the grant was revoked before the worker checked it. Fact then remedy; the origin is never shown."
   },
+  "prestart_source_tab_changed": {
+    "message": "The source page changed while the import was starting, so nothing started. Return to your source platform page and start again.",
+    "description": "No-run error: the source tab navigated away from the authorized origin (or a token from another document was offered) between Start and collection. Fact then remedy; no origin is shown."
+  },
   "prestart_site_not_learned": {
     "message": "TGP hasn't learned this site yet, so nothing was read or sent.",
     "description": "No-run error: the authorized origin has no registered reader (registry lookup failed closed). No vendor or platform name is shown."

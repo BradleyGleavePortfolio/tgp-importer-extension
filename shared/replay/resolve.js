@@ -50,7 +50,15 @@ function lookup(entries, origin) {
   if (typeof origin !== "string" || origin.length === 0) {
     return undefined;
   }
-  return entries.find((entry) => entry.matches(origin) === true);
+  // A matcher that throws never matches: the origin fails closed as unknown
+  // instead of surfacing a registrant's fault as a resolve failure.
+  return entries.find((entry) => {
+    try {
+      return entry.matches(origin) === true;
+    } catch {
+      return false;
+    }
+  });
 }
 
 // Resolve an https origin to a fresh blueprint, or throw UnknownPlatformError.
