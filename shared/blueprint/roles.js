@@ -4,7 +4,8 @@
 // plus window/pagination hints from supported query NAMES. It never emits a
 // runnable blueprint, confidence score, id field, edge, or pagination
 // descriptor; ambiguity always fails closed into `refused`. Output carries only
-// origin, method, template pattern, conservative structural path keys, C2a shape
+// origin, method, a value-free template (see sessionSlotTemplate), conservative
+// structural path keys, C2a shape
 // signatures (which omit property names), query names, and counts — never
 // response values, ids, query values, headers, timestamps, or bodies.
 import { isCredentialKey } from "../credential-policy.js";
@@ -106,6 +107,29 @@ function provenTemplate(pattern, rows) {
           .size >= 2,
     );
 }
+// Variation at a dynamic position proves THAT position only. It says nothing
+// about the template's literal segments: within one coach's capture a coach or
+// tenant slug is constant exactly like a structural name ("/coaches/alice/
+// clients/:id/workouts"), so no literal's structural status is ever positively
+// established here. Every literal is therefore emitted as a SESSION-SCOPED slot
+// `:s1`, `:s2`, ... (numbered left to right, per template) whose raw value never
+// leaves the local capture; the emitted template keeps only arity and the
+// positions of C2a `:id` values. A template with any slot is never
+// replay-compatible: the slots must first be rebound from the current coach's
+// own observed traffic, which C2b does not do (seam for X2/X3, see
+// SESSION_SLOT_REASON). Feeding a slot template to the replay engine directly
+// would fill every `:param` with one per-item value, so the flag must hold.
+const SESSION_SLOT_REASON = "session_slot_rebinding_required";
+function sessionSlotTemplate(pattern) {
+  let slots = 0;
+  const template = pattern
+    .split("/")
+    .map((segment, index) =>
+      index === 0 || segment === ":id" ? segment : `:s${(slots += 1)}`,
+    )
+    .join("/");
+  return { template, slots };
+}
 function validCluster(cluster) {
   return (
     isRecord(cluster) &&
@@ -119,7 +143,7 @@ function endpointOf(cluster, proven) {
   return {
     origin: cluster.origin,
     method: cluster.method,
-    template: proven ? cluster.pathPattern : null,
+    template: proven ? sessionSlotTemplate(cluster.pathPattern).template : null,
   };
 }
 // Bounded key-sorted walk collecting every array within maxDepth object keys.
@@ -261,6 +285,8 @@ function candidateFor(cluster, voting, limits, proven) {
   if (shapes.size === 0) return deny("insufficient_shape_evidence");
   if (shapes.size !== 1) return deny("inconsistent_item_shape");
   if (!proven) reasons.push("unproven_template_literal");
+  else if (sessionSlotTemplate(cluster.pathPattern).slots > 0)
+    reasons.push(SESSION_SLOT_REASON);
   if (detail) reasons.push("detail_body_not_representable");
   if (window.ambiguous) reasons.push("ambiguous_window_keys");
   if (window.evidence) reasons.push("window_not_representable");
@@ -394,4 +420,4 @@ export function inferEndpointRoles(observations, templateClusters, options) {
     refused: refused.sort(order),
   };
 }
-export { HARD as ROLE_HARD_LIMITS };
+export { HARD as ROLE_HARD_LIMITS, SESSION_SLOT_REASON };
