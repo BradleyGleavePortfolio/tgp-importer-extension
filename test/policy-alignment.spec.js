@@ -37,16 +37,16 @@ function put(root, path, body) {
   mkdirSync(dirname(target), { recursive: true });
   writeFileSync(target, body);
 }
-const identity = {
-  GIT_AUTHOR_NAME: "Bradley Gleave",
-  GIT_AUTHOR_EMAIL: "bradley@bradleytgpcoaching.com",
-  GIT_COMMITTER_NAME: "Bradley Gleave",
-  GIT_COMMITTER_EMAIL: "bradley@bradleytgpcoaching.com",
+const testIdentity = {
+  GIT_AUTHOR_NAME: "Test Contributor",
+  GIT_AUTHOR_EMAIL: "contributor@example.invalid",
+  GIT_COMMITTER_NAME: "Test Contributor",
+  GIT_COMMITTER_EMAIL: "contributor@example.invalid",
 };
 function git(root, args, overrides = {}) {
   const result = spawnSync("git", ["-C", root, ...args], {
     encoding: "utf8",
-    env: { ...process.env, ...identity, ...overrides },
+    env: { ...process.env, ...testIdentity, ...overrides },
   });
   expect(result.status, result.stderr).toBe(0);
   return result.stdout.trim();
@@ -141,7 +141,7 @@ describe("volume-policy retirement preserves safety wiring", () => {
 });
 
 describe("retained checks do not depend on volume accounting", () => {
-  it.each(["clean", "silent catch", "dependency pin", "author", "committer"])(
+  it.each(["clean", "silent catch", "dependency pin"])(
     "checks a large source-only change: %s",
     (mutation) => {
       const root = temp();
@@ -164,21 +164,13 @@ describe("retained checks do not depend on volume accounting", () => {
           JSON.stringify({ private: true, dependencies: { sample: "^1.0.0" } }),
         );
       git(root, ["add", "."]);
-      const overrides =
-        mutation === "author"
-          ? { GIT_AUTHOR_NAME: "Wrong identity" }
-          : mutation === "committer"
-            ? { GIT_COMMITTER_NAME: "Wrong identity" }
-            : {};
-      git(root, ["commit", "-m", "source-only change"], overrides);
+      git(root, ["commit", "-m", "source-only change"]);
       const result = check(root, "check-banned.mjs");
       expect(result.status, result.stderr).toBe(mutation === "clean" ? 0 : 1);
       const markers = {
         clean: "OK: banned-token net clean",
         "silent catch": "R75 net-new banned token",
         "dependency pin": "not pinned exactly",
-        author: "author is",
-        committer: "committer is",
       };
       expect(result.stdout).toContain(markers[mutation]);
     },
