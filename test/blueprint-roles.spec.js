@@ -3,6 +3,7 @@ import { normalizeCaptureSnapshot } from "../shared/blueprint/input.js";
 import {
   inferEndpointRoles,
   ROLE_HARD_LIMITS,
+  SESSION_SLOT_REASON,
 } from "../shared/blueprint/roles.js";
 import { inferUrlTemplates } from "../shared/blueprint/url-templates.js";
 import {
@@ -115,7 +116,10 @@ describe("inferEndpointRoles — collection evidence", () => {
     expect(candidate.itemsPath).toBeNull();
     expect(candidate.itemShape).toBe("object{boolean*1,number*1,string*1}");
     expect(candidate.replayCompatible).toBe(false);
-    expect(candidate.reasons).toEqual(["detail_body_not_representable"]);
+    expect(candidate.reasons).toEqual([
+      "detail_body_not_representable",
+      "session_slot_rebinding_required",
+    ]);
   });
 
   it("classifies a dynamic template returning arrays as a list, not a detail", () => {
@@ -128,7 +132,10 @@ describe("inferEndpointRoles — collection evidence", () => {
     );
     expect(candidate.roles).toEqual(["list"]);
     expect(candidate.itemsPath).toEqual(["items"]);
-    expect(candidate.replayCompatible).toBe(true);
+    // Both literals are session slots: listed, but not replayable yet (A1).
+    expect(candidate.endpoint.template).toBe("/:s1/:id/:s2");
+    expect(candidate.replayCompatible).toBe(false);
+    expect(candidate.reasons).toEqual(["session_slot_rebinding_required"]);
   });
 
   it("refuses a static singleton object as metadata rather than a detail", () => {
@@ -400,7 +407,7 @@ describe("inferEndpointRoles — template join", () => {
         entry.support,
       ]),
     ).toEqual([
-      ["/clients/:id", "detail", 2],
+      ["/:s1/:id", "detail", 2],
       [null, "list", 1],
     ]);
   });
@@ -641,24 +648,24 @@ describe("inferEndpointRoles — determinism", () => {
   });
 
   it("sorts candidates and refusals canonically", () => {
-    const rows = ["zeta", "alpha", "omega", "beta"].flatMap((name, index) =>
+    // Slot templates are value-free, so canonical order is by structure alone.
+    const paths = ["/a/b/c", "/a", "/a/b/c/d", "/a/b"];
+    const rows = paths.flatMap((prefix, index) =>
       [101, 102].map((id) =>
-        observation(`/${name}/${id}`, index < 2 ? { data: [item(id)] } : id),
+        observation(`${prefix}/${id}`, index < 2 ? { data: [item(id)] } : id),
       ),
     );
-    const result = inferEndpointRoles(rows, [
-      cluster("/zeta/:id", 2),
-      cluster("/alpha/:id", 2),
-      cluster("/omega/:id", 2),
-      cluster("/beta/:id", 2),
-    ]);
+    const result = inferEndpointRoles(
+      rows,
+      paths.map((prefix) => cluster(`${prefix}/:id`, 2)),
+    );
     expect(result.candidates.map((entry) => entry.endpoint.template)).toEqual([
-      "/alpha/:id",
-      "/zeta/:id",
+      "/:s1/:id",
+      "/:s1/:s2/:s3/:id",
     ]);
     expect(result.refused.map((entry) => entry.endpoint.template)).toEqual([
-      "/beta/:id",
-      "/omega/:id",
+      "/:s1/:s2/:id",
+      "/:s1/:s2/:s3/:s4/:id",
     ]);
   });
 
@@ -842,21 +849,21 @@ describe("inferEndpointRoles — C2a pipeline and replay seam", () => {
         entry.roles.join("+"),
       ]),
     ).toEqual([
-      ["/api/clients/:id", "detail"],
+      ["/:s1/:s2/:id", "detail"],
       [null, "list+paginated"],
     ]);
   });
 
-  it("feeds a proven list candidate into a blueprint normalizeBlueprint accepts", () => {
+  it("feeds a slot-free proven list candidate into a blueprint normalizeBlueprint accepts", () => {
+    // Positive control: a template with no literal is fully proven structure,
+    // so it stays emitted and replay-compatible.
     const rows = [101, 202].map((id) =>
-      observation(`/api/clients/${id}/workouts`, {
-        data: [item(1), item(2)],
-      }),
+      observation(`/${id}`, { data: [item(1), item(2)] }),
     );
-    const candidate = only(
-      inferEndpointRoles(rows, [cluster("/api/clients/:id/workouts", 2)]),
-    );
+    const candidate = only(inferEndpointRoles(rows, [cluster("/:id", 2)]));
+    expect(candidate.endpoint.template).toBe("/:id");
     expect(candidate.replayCompatible).toBe(true);
+    expect(candidate.reasons).toEqual([]);
     // Step "clients" is hand-written: proving a lone list endpoint is C2b-2.
     const blueprint = normalizeBlueprint(
       {
@@ -882,12 +889,24 @@ describe("inferEndpointRoles — C2a pipeline and replay seam", () => {
       },
       { allowedOrigins: [candidate.endpoint.origin] },
     );
-    expect(blueprint.steps[1].template).toBe("/api/clients/:id/workouts");
+    expect(blueprint.steps[1].template).toBe("/:id");
     expect(blueprint.steps[1].itemsPath).toEqual(["data"]);
     expect(blueprint.steps[1].pagination).toBeNull();
     expect(
       extractItems(rows[0].body, blueprint.steps[1].itemsPath),
     ).toHaveLength(2);
+  });
+
+  it("keeps a slot template out of replay until its slots are rebound", () => {
+    const rows = [101, 202].map((id) =>
+      observation(`/api/clients/${id}/workouts`, { data: [item(1)] }),
+    );
+    const candidate = only(
+      inferEndpointRoles(rows, [cluster("/api/clients/:id/workouts", 2)]),
+    );
+    expect(candidate.endpoint.template).toBe("/:s1/:s2/:id/:s3");
+    expect(candidate.replayCompatible).toBe(false);
+    expect(candidate.reasons).toEqual([SESSION_SLOT_REASON]);
   });
 
   it("keeps detail, window, and pagination candidates explicitly non-runnable", () => {
@@ -1000,25 +1019,29 @@ describe("inferEndpointRoles — review closures (B1–B3)", () => {
   });
 
   it.each([
-    ["/clients/:id/workouts", ""],
-    ["/v2/clients/:id/workouts", "/v2"],
-  ])("B1: proves %s from two distinct normalized ids", (template, prefix) => {
-    const rows = [101, 202].map((id) => [
-      `${prefix}/clients/${id}/workouts`,
-      workouts,
-    ]);
-    const candidate = only(normalized(rows, { minDistinct: 2 }));
-    expect(candidate.endpoint.template).toBe(template);
-    expect(candidate.support).toBe(2);
-    expect(candidate.replayCompatible).toBe(true);
-    expect(candidate.reasons).toEqual([]);
-    // At C2a's default distinct threshold the pair stays literal: fail closed.
-    const strict = normalized(rows);
-    expect(strict.candidates.every((entry) => !entry.replayCompatible)).toBe(
-      true,
-    );
-    expect(JSON.stringify(strict)).not.toMatch(/101|202/);
-  });
+    ["/:s1/:id/:s2", ""],
+    ["/:s1/:s2/:id/:s3", "/v2"],
+  ])(
+    "B1: proves the dynamic position of %s from two distinct normalized ids",
+    (template, prefix) => {
+      const rows = [101, 202].map((id) => [
+        `${prefix}/clients/${id}/workouts`,
+        workouts,
+      ]);
+      const candidate = only(normalized(rows, { minDistinct: 2 }));
+      expect(candidate.endpoint.template).toBe(template);
+      expect(candidate.support).toBe(2);
+      expect(candidate.replayCompatible).toBe(false);
+      expect(candidate.reasons).toEqual([SESSION_SLOT_REASON]);
+      expect(JSON.stringify(candidate)).not.toMatch(/clients|workouts|v2/);
+      // At C2a's default distinct threshold the pair stays literal: fail closed.
+      const strict = normalized(rows);
+      expect(strict.candidates.every((entry) => !entry.replayCompatible)).toBe(
+        true,
+      );
+      expect(JSON.stringify(strict)).not.toMatch(/101|202/);
+    },
+  );
 
   it("B2: refuses a credential-bearing origin without echoing it", () => {
     const origin = "https://person:password@coach.example";
@@ -1085,5 +1108,105 @@ describe("inferEndpointRoles — review closures (B1–B3)", () => {
       expect(onlyRefusal(inferEndpointRoles([row], [template])).reason).toBe(
         "uninspected_item_shape",
       );
+  });
+});
+
+describe("inferEndpointRoles — review closure C2B1-SOL-A1 (fixed literals)", () => {
+  function snapshotOf(paths) {
+    return paths.map((path) => ({
+      url: `${ORIGIN}${path}`,
+      method: "GET",
+      statusCode: 200,
+      responseBody: JSON.stringify({ items: [{ id: 5 }] }),
+    }));
+  }
+  function run(snapshot) {
+    const { observations } = normalizeCaptureSnapshot(snapshot);
+    const { clusters } = inferUrlTemplates(observations);
+    return inferEndpointRoles(observations, clusters);
+  }
+  const parent = (slug) =>
+    [101, 202, 303].map((id) => `/coaches/${slug}/clients/${id}/workouts`);
+
+  it.each([
+    ["alice", ["alice"]],
+    ["jane-doe", ["jane", "doe"]],
+    ["private-tenant", ["private", "tenant"]],
+  ])(
+    "A1: never emits or replays the fixed parent slug %s beside a varied :id",
+    (slug, leaks) => {
+      const result = run(snapshotOf(parent(slug)));
+      expect(result).toEqual({
+        candidates: [
+          {
+            endpoint: {
+              origin: ORIGIN,
+              method: "GET",
+              template: "/:s1/:s2/:s3/:id/:s4",
+            },
+            roles: ["list"],
+            itemsPath: ["items"],
+            itemShape: "object{number*1}",
+            support: 3,
+            windowEvidence: null,
+            paginationEvidence: null,
+            replayCompatible: false,
+            reasons: [SESSION_SLOT_REASON],
+          },
+        ],
+        refused: [],
+      });
+      const serialized = JSON.stringify(result);
+      for (const leak of [...leaks, "coaches", "clients", "workouts"])
+        expect(serialized).not.toContain(leak);
+      expect(serialized).not.toMatch(/101|202|303/);
+    },
+  );
+
+  it("A1 positive control: a structural route keeps its role evidence and gives the same value-free output", () => {
+    const structural = run(
+      snapshotOf([101, 202, 303].map((id) => `/api/v2/clients/${id}/workouts`)),
+    );
+    const candidate = only(structural);
+    expect(candidate.roles).toEqual(["list"]);
+    expect(candidate.itemsPath).toEqual(["items"]);
+    expect(candidate.support).toBe(3);
+    // Output is a function of structure only: a coach slug and a structural
+    // name in the same position are indistinguishable, so neither is emitted.
+    expect(JSON.stringify(structural)).toBe(
+      JSON.stringify(run(snapshotOf(parent("alice")))),
+    );
+  });
+
+  it("A1 positive control: a slot-free proven template stays emitted and replay-compatible", () => {
+    const candidate = only(run(snapshotOf(["/101", "/202", "/303"])));
+    expect(candidate.endpoint.template).toBe("/:id");
+    expect(candidate.replayCompatible).toBe(true);
+    expect(candidate.reasons).toEqual([]);
+  });
+
+  it("A1: output is byte-identical under every permutation of the capture", () => {
+    const rows = [
+      ...parent("alice"),
+      "/api/clients/7/notes",
+      "/api/clients/8/notes",
+      "/api/clients/9/notes",
+    ];
+    const permute = (list) =>
+      list.length <= 1
+        ? [list]
+        : list.flatMap((head, index) =>
+            permute([...list.slice(0, index), ...list.slice(index + 1)]).map(
+              (tail) => [head, ...tail],
+            ),
+          );
+    const expected = JSON.stringify(run(snapshotOf(rows)));
+    const orders = permute([0, 1, 2, 3, 4, 5]);
+    expect(orders).toHaveLength(720);
+    for (const order of orders)
+      expect(JSON.stringify(run(snapshotOf(order.map((i) => rows[i]))))).toBe(
+        expected,
+      );
+    expect(expected).not.toMatch(/alice|coaches|clients|notes|workouts|api/);
   });
 });
