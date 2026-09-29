@@ -60,11 +60,6 @@
     "retire": "Historical record retained"
   },
   {
-    "glob": "scripts/browser-load-proof.mjs",
-    "reason": "Chrome-driven loader proof (not CI) still names a synthetic source host; it must move to the Start-gesture grant flow.",
-    "retire": "browser-load-proof rewrite for the Start-gesture grant flow"
-  },
-  {
     "glob": ".gitleaks.toml",
     "reason": "Scanner allowlist names legacy test spec paths.",
     "retire": "V1 learned-path parity (legacy specs deleted)"

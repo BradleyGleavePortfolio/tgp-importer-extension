@@ -1,18 +1,32 @@
-// Load the packaged extension in an isolated local Chrome and prove the parts a
-// unit test cannot: Chrome's own manifest loader accepts the archive, the module
-// service worker evaluates, the classic content script executes on a synthetic
-// source origin, the popup page loads its module graph, and the source
-// credential travels only over the internal message boundary.
+// Load the PACKAGED extension in an isolated Chromium and prove the parts a
+// unit test cannot, for the Start-grant (X1 r3/r4) flow:
+//   - Chrome's own manifest loader accepts the archive and the module service
+//     worker evaluates with no exception; its message router and the
+//     permissions/tab lifecycle listeners are registered;
+//   - the shipped manifest holds exactly the frozen permission set (no
+//     activeTab), exactly the TGP backend host, https-only optional hosts and
+//     NO static content script;
+//   - the configured backend origin (shared/protocol.js TGP_API_ORIGIN) is the
+//     manifest's one required host;
+//   - a fresh worker holds no optional host grant (startup sweep verified);
+//   - the popup renders as STATUS with exactly one Start button (owner D9),
+//     routes to pairing with no session, and with a session shows the ready
+//     status; a real click on Start (CDP input, a genuine user gesture) on a
+//     non-https active page yields the approved no-run copy and prompts for
+//     nothing.
 //
 // Usage:
 //   node scripts/browser-load-proof.mjs --zip dist/<pkg>.zip --out <evidence.json>
 //                                       [--chrome /path/to/chrome] [--negative-control]
 //
-// Isolation: a throwaway profile, all DNS mapped to NOTFOUND except the
-// synthetic source host, which resolves to a local TLS server whose
-// self-signed certificate is trusted only by SPKI pin for this process. No
-// customer account, cookie, real source site or TGP API is contacted. This is a
-// loader/boundary proof, not evidence that a customer import completes.
+// Isolation: a throwaway profile; every host resolves NOTFOUND, so no customer
+// account, cookie, source site or TGP API is contacted. Nothing here prompts
+// Chrome for a host grant (that needs the real action popup and a coach), so
+// this is a loader/boundary proof, not evidence that a customer import runs.
+//
+// The runtime is whatever `--chrome` / TGP_CHROME / the Playwright cache
+// provides; the evidence records Browser.getVersion verbatim. Playwright
+// Chromium is NOT branded Google Chrome and is labelled as such.
 //
 // Exit codes: 0 all checks passed; 1 a check failed; 2 runtime unavailable.
 import { spawn, execFileSync } from "node:child_process";
@@ -24,13 +38,20 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createServer } from "node:https";
 import { homedir, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { extractEntries, readZip, sha256 } from "./lib/shipping.mjs";
 
-const SOURCE_HOST = "app.truecoach.co";
-const SYNTHETIC_TOKEN = "synthetic.header.payload-not-a-real-credential";
+const EXPECTED_BACKEND_ORIGIN = "https://backend-spring-lake-3890.fly.dev";
+const EXPECTED_PERMISSIONS = [
+  "debugger",
+  "notifications",
+  "scripting",
+  "storage",
+  "tabs",
+];
+const EXPECTED_OPTIONAL_HOSTS = ["https://*/*"];
+const SYNTHETIC_REFRESH = "proof-synthetic-refresh-token-not-a-credential";
 
 function argument(flag, fallback) {
   const index = process.argv.indexOf(flag);
@@ -73,6 +94,7 @@ function readInventory(zipPath) {
     path,
     source: inventory.source ?? null,
     zipSha256: inventory.zip?.sha256 ?? null,
+    files: Array.isArray(inventory.files) ? inventory.files.length : null,
   };
 }
 
@@ -166,6 +188,9 @@ async function evaluate(cdp, sessionId, expression, awaitPromise = false) {
   return result.result.value;
 }
 
+/** @type {string | null} */
+let lastPollError = null;
+
 /**
  * Poll an async predicate every 250 ms until it returns a truthy value or
  * `timeoutMs` elapses; returns null on timeout (never throws) so the caller
@@ -190,73 +215,40 @@ async function waitForAsync(predicate, timeoutMs) {
     await new Promise((ok) => setTimeout(ok, 250));
   }
 }
-/** @type {string | null} */
-let lastPollError = null;
 
-// ---- synthetic source origin --------------------------------------------------
-
-function makeCertificate(dir) {
-  const key = join(dir, "key.pem");
-  const cert = join(dir, "cert.pem");
-  execFileSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-nodes",
-      "-keyout",
-      key,
-      "-out",
-      cert,
-      "-subj",
-      `/CN=${SOURCE_HOST}`,
-      "-addext",
-      `subjectAltName=DNS:${SOURCE_HOST}`,
-      "-days",
-      "1",
-    ],
-    { stdio: ["ignore", "ignore", "ignore"] },
+function sameSet(actual, expected) {
+  return (
+    Array.isArray(actual) &&
+    [...actual].sort().join("\n") === [...expected].sort().join("\n")
   );
-  const spkiDer = execFileSync("openssl", [
-    "x509",
-    "-in",
-    cert,
-    "-pubkey",
-    "-noout",
-  ]);
-  const der = execFileSync("openssl", ["pkey", "-pubin", "-outform", "der"], {
-    input: spkiDer,
-  });
-  const spki = execFileSync("openssl", ["dgst", "-sha256", "-binary"], {
-    input: der,
-  }).toString("base64");
-  return { key: readFileSync(key), cert: readFileSync(cert), spki };
 }
 
-const PAGE_WITH_TOKEN = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>synthetic source</title></head>
-<body><h1>Synthetic source page</h1>
-<script>localStorage.setItem("auth", ${JSON.stringify(SYNTHETIC_TOKEN)});</script>
-</body></html>`;
-const PAGE_WITHOUT_TOKEN = `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>synthetic empty</title></head>
-<body><h1>Synthetic page without a session</h1><script>localStorage.clear();sessionStorage.clear();</script></body></html>`;
-
-function startOrigin(tls) {
-  /** @type {{ host: string | undefined, url: string | undefined }[]} */
-  const requests = [];
-  const server = createServer({ key: tls.key, cert: tls.cert }, (req, res) => {
-    requests.push({ host: req.headers.host, url: req.url });
-    res.setHeader("content-type", "text/html; charset=utf-8");
-    res.end(req.url === "/empty" ? PAGE_WITHOUT_TOKEN : PAGE_WITH_TOKEN);
-  });
-  return new Promise((ok) => {
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      const port = typeof address === "object" && address ? address.port : 0;
-      ok({ server, port, requests });
-    });
-  });
+// A REAL click (trusted input event through CDP) on the centre of an element,
+// so Chrome sees a user gesture, exactly as the coach's click would.
+async function clickElement(cdp, sessionId, selector) {
+  const box = JSON.parse(
+    await evaluate(
+      cdp,
+      sessionId,
+      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return JSON.stringify(null); el.scrollIntoView(); const r = el.getBoundingClientRect(); return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2, disabled: el.disabled === true }); })()`,
+    ),
+  );
+  if (box === null) throw new Error(`no element ${selector}`);
+  for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
+    await cdp.send(
+      "Input.dispatchMouseEvent",
+      {
+        type,
+        x: box.x,
+        y: box.y,
+        button: "left",
+        clickCount: 1,
+        ...(type === "mouseMoved" ? {} : { buttons: 1 }),
+      },
+      sessionId,
+    );
+  }
+  return box;
 }
 
 // ---- proof ----------------------------------------------------------------------
@@ -282,17 +274,25 @@ async function main() {
   const extensionDir = join(scratch, "extension");
   mkdirSync(extensionDir);
   extractEntries(readZip(zip), extensionDir, { mkdirSync, writeFileSync });
+  /** @type {null | { file: string, appended: string, sha256AfterMutation: string }} */
+  let mutation = null;
   if (negativeControl) {
-    // Reintroduce the historical main-branch defect so the proof demonstrably
-    // detects a broken classic content script rather than passing vacuously.
-    const target = join(extensionDir, "content", "main.js");
-    writeFileSync(
-      target,
-      `${readFileSync(target, "utf8")}\nexport const readSourceBearer = () => "";\n`,
-    );
+    // Break the packaged worker's module graph the way a bad package would:
+    // a static import of a file that is not in the archive. Chrome must
+    // refuse to evaluate the worker, and the proof must SEE that (router
+    // never registered) rather than pass vacuously.
+    const target = join(extensionDir, "background.js");
+    const appended = 'import "./shared/not-shipped-by-anyone.js";\n';
+    writeFileSync(target, `${readFileSync(target, "utf8")}\n${appended}`);
+    mutation = {
+      file: "background.js",
+      appended,
+      sha256AfterMutation: sha256(readFileSync(target)),
+    };
   }
-  const tls = makeCertificate(scratch);
-  const origin = await startOrigin(tls);
+  const shippedManifest = JSON.parse(
+    readFileSync(join(extensionDir, "manifest.json"), "utf8"),
+  );
 
   /** @type {{ name: string, pass: boolean, detail: unknown }[]} */
   const checks = [];
@@ -316,9 +316,7 @@ async function main() {
       `--user-data-dir=${join(scratch, "profile")}`,
       `--disable-extensions-except=${extensionDir}`,
       `--load-extension=${extensionDir}`,
-      `--host-resolver-rules=MAP ${SOURCE_HOST} 127.0.0.1, MAP * ~NOTFOUND`,
-      `--testing-fixed-https-port=${origin.port}`,
-      `--ignore-certificate-errors-spki-list=${tls.spki}`,
+      "--host-resolver-rules=MAP * ~NOTFOUND",
       "--no-first-run",
       "--no-default-browser-check",
       "--disable-background-networking",
@@ -364,14 +362,35 @@ async function main() {
   let evidence;
   /** @type {string | undefined} */
   let abortError;
+  /** @type {Record<string, unknown>} */
+  let version = {};
   try {
-    const version = await cdp.send("Browser.getVersion");
+    version = await cdp.send("Browser.getVersion");
     await cdp.send("Target.setDiscoverTargets", { discover: true });
-    // Select OUR worker by the manifest's declared service worker path; Chrome
-    // also runs component extensions with their own service workers.
-    const shippedManifest = JSON.parse(
-      readFileSync(join(extensionDir, "manifest.json"), "utf8"),
+
+    // ---- 1. shipped manifest surface (bytes Chrome was handed) -------------
+    check(
+      "shipped manifest: exact permission set (no activeTab), exact TGP host, https-only optional hosts, no static content script",
+      sameSet(shippedManifest.permissions, EXPECTED_PERMISSIONS) &&
+        sameSet(shippedManifest.host_permissions, [
+          `${EXPECTED_BACKEND_ORIGIN}/*`,
+        ]) &&
+        sameSet(
+          shippedManifest.optional_host_permissions,
+          EXPECTED_OPTIONAL_HOSTS,
+        ) &&
+        shippedManifest.content_scripts === undefined &&
+        shippedManifest.optional_permissions === undefined &&
+        shippedManifest.background?.type === "module",
+      {
+        permissions: shippedManifest.permissions,
+        host_permissions: shippedManifest.host_permissions,
+        optional_host_permissions: shippedManifest.optional_host_permissions,
+        content_scripts: shippedManifest.content_scripts ?? null,
+      },
     );
+
+    // ---- 2. worker target appears and evaluates ---------------------------
     const workerPath = `/${shippedManifest.background.service_worker}`;
     const worker = await waitFor(
       () =>
@@ -392,223 +411,311 @@ async function main() {
       })
     ).sessionId;
     await cdp.send("Runtime.enable", {}, workerSession);
+    await cdp.send("Network.enable", {}, workerSession);
     progress.worker = { url: worker.url, targetId: worker.targetId };
-    // Attaching on target discovery can precede the worker's extension
-    // bindings and the module graph's top-level evaluation. Poll until the
-    // runtime binding exists and the router has registered (or time out with
-    // the last observed state so a failure here is diagnosable).
     const readiness = await waitForAsync(async () => {
       const state = await evaluate(
         cdp,
         workerSession,
-        "JSON.stringify({ hasChrome: typeof chrome !== 'undefined', hasRuntime: typeof chrome !== 'undefined' && typeof chrome.runtime === 'object' && typeof chrome.runtime.id === 'string', listeners: typeof chrome !== 'undefined' && typeof chrome.runtime === 'object' && typeof chrome.runtime.onMessage === 'object' ? chrome.runtime.onMessage.hasListeners() : false })",
+        `JSON.stringify((() => {
+          const has = (ev) => typeof ev === "object" && ev !== null && ev.hasListeners();
+          const rt = typeof chrome !== "undefined" && typeof chrome.runtime === "object";
+          return {
+            hasChrome: typeof chrome !== "undefined",
+            hasRuntime: rt && typeof chrome.runtime.id === "string",
+            onMessage: rt && has(chrome.runtime.onMessage),
+            permissionsOnAdded: rt && typeof chrome.permissions === "object" && has(chrome.permissions.onAdded),
+            permissionsOnRemoved: rt && typeof chrome.permissions === "object" && has(chrome.permissions.onRemoved),
+            tabsOnRemoved: rt && typeof chrome.tabs === "object" && has(chrome.tabs.onRemoved),
+            tabsOnUpdated: rt && typeof chrome.tabs === "object" && has(chrome.tabs.onUpdated),
+          };
+        })())`,
       ).then((value) => JSON.parse(value));
       progress.workerReadiness = state;
-      return state.hasRuntime && state.listeners ? state : null;
+      return state.hasRuntime && state.onMessage ? state : null;
     }, 15_000);
     check(
-      "worker runtime bindings present and message router registered within 15s",
+      "worker evaluated: runtime bindings present and the message router registered within 15 s",
       readiness !== null,
       progress.workerReadiness,
     );
-    const workerState = JSON.parse(
-      await evaluate(
-        cdp,
-        workerSession,
-        "JSON.stringify({ id: chrome.runtime.id, name: chrome.runtime.getManifest().name, version: chrome.runtime.getManifest().version, versionName: chrome.runtime.getManifest().version_name, worker: chrome.runtime.getManifest().background?.service_worker, listeners: chrome.runtime.onMessage.hasListeners() })",
-      ),
+    check(
+      "worker registered the Start-grant lifecycle listeners (permissions.onAdded/onRemoved, tabs.onRemoved/onUpdated)",
+      readiness !== null &&
+        readiness.permissionsOnAdded === true &&
+        readiness.permissionsOnRemoved === true &&
+        readiness.tabsOnRemoved === true &&
+        readiness.tabsOnUpdated === true,
+      progress.workerReadiness,
+    );
+    const workerExceptions = exceptions.filter(
+      (entry) => entry.target === workerSession,
     );
     check(
-      "attached worker is the packaged extension (id, URL path and manifest identity agree)",
-      workerState.id === extensionId &&
-        new URL(worker.url).host === extensionId &&
-        new URL(worker.url).pathname === workerPath &&
-        workerState.worker === shippedManifest.background.service_worker &&
-        workerState.name === shippedManifest.name &&
-        workerState.version === shippedManifest.version &&
-        workerState.versionName === shippedManifest.version_name,
-      { workerUrl: worker.url, extensionId, workerState },
-    );
-    check(
-      "worker registered its message router",
-      workerState.listeners === true,
-      workerState.listeners,
+      "no exception thrown while the worker's module graph evaluated",
+      readiness !== null && workerExceptions.length === 0,
+      workerExceptions,
     );
 
-    // Popup page: the module graph must load without exceptions.
-    const popupTarget = await cdp.send("Target.createTarget", {
-      url: `chrome-extension://${extensionId}/popup/popup.html`,
-    });
-    const popupSession = (
-      await cdp.send("Target.attachToTarget", {
-        targetId: popupTarget.targetId,
-        flatten: true,
-      })
-    ).sessionId;
-    await cdp.send("Runtime.enable", {}, popupSession);
-    await cdp.send("Page.enable", {}, popupSession);
-    // Fresh profile => no paired session. The truthful popup behaviour is:
-    // popup.js loads its module graph, asks the worker for session state, and
-    // redirects to pair.html, whose module graph renders the pairing form.
-    const pairUrl = `chrome-extension://${extensionId}/popup/pair.html`;
-    const redirected = await waitFor(
-      () => targets.get(popupTarget.targetId)?.url === pairUrl || null,
-      10_000,
-      "popup redirect to pair.html",
-    ).catch(() => false);
-    const popup = JSON.parse(
-      await evaluate(
-        cdp,
-        popupSession,
-        "new Promise((ok) => { const done = () => ok(JSON.stringify({ href: location.href, ready: document.readyState, pairForm: Boolean(document.getElementById('pair-form')), code: Boolean(document.getElementById('code')), start: Boolean(document.getElementById('start-import')) })); if (document.readyState === 'complete') done(); else window.addEventListener('load', done); })",
-        true,
-      ),
-    );
-    check(
-      "popup loaded, learned there is no session, and redirected to the pairing view",
-      redirected === true &&
-        popup.href === pairUrl &&
-        popup.ready === "complete" &&
-        popup.pairForm === true &&
-        popup.code === true &&
-        popup.start === false,
-      { redirected, popup },
-    );
-
-    // Synthetic source tab: content script must execute in an isolated world.
-    /** @type {Set<string>} */
-    const isolatedOrigins = new Set();
-    const pageTarget = await cdp.send("Target.createTarget", {
-      url: "about:blank",
-    });
-    const pageSession = (
-      await cdp.send("Target.attachToTarget", {
-        targetId: pageTarget.targetId,
-        flatten: true,
-      })
-    ).sessionId;
-    cdp.on((event) => {
-      if (
-        event.sessionId === pageSession &&
-        event.method === "Runtime.executionContextCreated" &&
-        event.params.context.auxData?.type === "isolated"
-      ) {
-        isolatedOrigins.add(event.params.context.origin);
-      }
-    });
-    await cdp.send("Runtime.enable", {}, pageSession);
-    await cdp.send("Page.enable", {}, pageSession);
-    await cdp.send("Network.enable", {}, pageSession);
-    await cdp.send("Network.enable", {}, workerSession);
-    await cdp.send("Network.enable", {}, popupSession);
-    await cdp.send(
-      "Page.navigate",
-      { url: `https://${SOURCE_HOST}/clients` },
-      pageSession,
-    );
-    await waitFor(
-      () => origin.requests.some((request) => request.url === "/clients"),
-      10_000,
-      "synthetic origin request",
-    );
-    const contentWorld = await waitFor(
-      () => isolatedOrigins.has(`chrome-extension://${extensionId}`) || null,
-      10_000,
-      "content script isolated world",
-    ).catch((error) => error);
-    check(
-      "content script isolated world created on the synthetic source origin",
-      contentWorld === true,
-      [...isolatedOrigins],
-    );
-
-    // Boundary: the worker asks the tab for the source credential; the reply
-    // must carry exactly the synthetic token, and nothing else may see it.
-    const collect = async (expected) => {
-      return JSON.parse(
+    if (readiness !== null) {
+      const workerState = JSON.parse(
         await evaluate(
           cdp,
           workerSession,
           `(async () => {
-            const tabs = await chrome.tabs.query({ url: "https://${SOURCE_HOST}/*" });
-            if (tabs.length !== 1) return JSON.stringify({ tabs: tabs.length });
-            const deadline = Date.now() + 8000;
-            let last = null;
-            while (Date.now() < deadline) {
-              try {
-                last = await chrome.tabs.sendMessage(tabs[0].id, { kind: "collect_source_token" });
-                if (last && last.ok === ${expected}) break;
-              } catch (error) {
-                last = { thrown: error instanceof Error ? error.message : String(error) };
-              }
-              await new Promise((r) => setTimeout(r, 200));
-            }
-            return JSON.stringify({ tabs: 1, reply: last });
+            const m = chrome.runtime.getManifest();
+            const all = await chrome.permissions.getAll();
+            return JSON.stringify({
+              id: chrome.runtime.id,
+              name: m.name, version: m.version, versionName: m.version_name,
+              worker: m.background && m.background.service_worker,
+              permissions: m.permissions, hostPermissions: m.host_permissions,
+              optionalHostPermissions: m.optional_host_permissions,
+              contentScripts: m.content_scripts ?? null,
+              heldOrigins: all.origins ?? [], heldPermissions: all.permissions ?? [],
+            });
           })()`,
           true,
         ),
       );
-    };
-    const withToken = await collect(true);
-    check(
-      "worker collects the synthetic source token over the internal message boundary",
-      withToken.reply?.ok === true &&
-        withToken.reply?.token === SYNTHETIC_TOKEN,
-      {
-        tabs: withToken.tabs,
-        ok: withToken.reply?.ok,
-        tokenMatches: withToken.reply?.token === SYNTHETIC_TOKEN,
-        thrown: withToken.reply?.thrown,
-      },
-    );
-    await cdp.send(
-      "Page.navigate",
-      { url: `https://${SOURCE_HOST}/empty` },
-      pageSession,
-    );
-    await waitFor(
-      () => origin.requests.some((request) => request.url === "/empty"),
-      10_000,
-      "synthetic empty page request",
-    );
-    const withoutToken = await collect(false);
-    check(
-      "worker receives an honest { ok: false } when the page holds no session",
-      withoutToken.reply?.ok === false &&
-        !("token" in (withoutToken.reply ?? {})),
-      { ok: withoutToken.reply?.ok, thrown: withoutToken.reply?.thrown },
-    );
+      check(
+        "attached worker is the packaged extension (id, URL path and manifest identity agree)",
+        workerState.id === extensionId &&
+          new URL(worker.url).pathname === workerPath &&
+          workerState.worker === shippedManifest.background.service_worker &&
+          workerState.name === shippedManifest.name &&
+          workerState.version === shippedManifest.version &&
+          workerState.versionName === shippedManifest.version_name,
+        { workerUrl: worker.url, extensionId, workerState },
+      );
+      check(
+        "Chrome installed exactly the frozen permission set: no activeTab, required host is the TGP backend only",
+        sameSet(workerState.permissions, EXPECTED_PERMISSIONS) &&
+          sameSet(workerState.hostPermissions, [
+            `${EXPECTED_BACKEND_ORIGIN}/*`,
+          ]) &&
+          sameSet(
+            workerState.optionalHostPermissions,
+            EXPECTED_OPTIONAL_HOSTS,
+          ) &&
+          workerState.contentScripts === null,
+        {
+          permissions: workerState.permissions,
+          hostPermissions: workerState.hostPermissions,
+          optionalHostPermissions: workerState.optionalHostPermissions,
+        },
+      );
+      // Startup sweep: a fresh worker holds no optional host grant; the only
+      // origin Chrome reports held is the required backend host.
+      check(
+        "fresh worker holds no optional host grant (permissions.getAll origins = required TGP host only)",
+        sameSet(workerState.heldOrigins, [`${EXPECTED_BACKEND_ORIGIN}/*`]) &&
+          !workerState.heldPermissions.includes("activeTab"),
+        {
+          heldOrigins: workerState.heldOrigins,
+          heldPermissions: workerState.heldPermissions,
+        },
+      );
+    }
 
-    const persisted = JSON.parse(
+    // ---- 3. popup with NO session: routes to pairing ------------------------
+    const popupUrl = `chrome-extension://${extensionId}/popup/popup.html`;
+    const pairUrl = `chrome-extension://${extensionId}/popup/pair.html`;
+    const openPage = async (url) => {
+      const target = await cdp.send("Target.createTarget", { url });
+      const sessionId = (
+        await cdp.send("Target.attachToTarget", {
+          targetId: target.targetId,
+          flatten: true,
+        })
+      ).sessionId;
+      await cdp.send("Runtime.enable", {}, sessionId);
+      await cdp.send("Page.enable", {}, sessionId);
+      await cdp.send("Network.enable", {}, sessionId);
+      return { targetId: target.targetId, sessionId };
+    };
+    const popup1 = await openPage(popupUrl);
+    const redirected = await waitFor(
+      () => targets.get(popup1.targetId)?.url === pairUrl || null,
+      10_000,
+      "popup redirect to pair.html",
+    ).catch(() => false);
+    const pairing = JSON.parse(
       await evaluate(
         cdp,
-        workerSession,
-        `(async () => {
-          const out = { storageType: typeof chrome.storage, apis: Object.keys(chrome).sort() };
-          if (chrome.storage) {
-            out.local = await chrome.storage.local.get(null);
-            out.session = await chrome.storage.session.get(null);
-          }
-          return JSON.stringify(out);
-        })()`,
+        popup1.sessionId,
+        "new Promise((ok) => { const done = () => ok(JSON.stringify({ href: location.href, ready: document.readyState, pairForm: Boolean(document.getElementById('pair-form')), start: document.querySelectorAll('#start-import').length })); if (document.readyState === 'complete') done(); else window.addEventListener('load', done); })",
         true,
       ),
     );
-    const persistedText = JSON.stringify([persisted.local, persisted.session]);
     check(
-      "chrome.storage is bound in the worker (storage permission honoured)",
-      persisted.storageType === "object",
-      { storageType: persisted.storageType, apis: persisted.apis },
+      "popup with no session: module graph loads, learns there is no session, routes to the pairing view (no Start there)",
+      redirected === true &&
+        pairing.href === pairUrl &&
+        pairing.ready === "complete" &&
+        pairing.pairForm === true &&
+        pairing.start === 0,
+      { redirected, pairing },
+    );
+    await cdp.send("Target.closeTarget", { targetId: popup1.targetId });
+
+    // ---- 4. the configured backend origin, read from the shipped module ----
+    // (a page context may import() the shipped module; a worker may not.)
+    const probe = await openPage(
+      `chrome-extension://${extensionId}/popup/pair.html`,
+    );
+    const backend = JSON.parse(
+      await evaluate(
+        cdp,
+        probe.sessionId,
+        `import(${JSON.stringify(`chrome-extension://${extensionId}/shared/protocol.js`)}).then((m) => JSON.stringify({ origin: m.TGP_API_ORIGIN, isTgp: m.isTgpOrigin(m.TGP_API_ORIGIN), siblingIsTgp: m.isTgpOrigin("https://someone-else.fly.dev") }))`,
+        true,
+      ),
     );
     check(
-      "synthetic token never reaches extension storage or console output",
-      !persistedText.includes(SYNTHETIC_TOKEN) &&
-        !consoleLines.some((line) => line.includes(SYNTHETIC_TOKEN)) &&
-        !exceptions.some((entry) => entry.text.includes(SYNTHETIC_TOKEN)),
-      { storageKeys: Object.keys(persisted.local ?? {}) },
+      `configured backend origin is exactly ${EXPECTED_BACKEND_ORIGIN} (shared/protocol.js TGP_API_ORIGIN in the shipped bytes) and equals the manifest's one required host`,
+      backend.origin === EXPECTED_BACKEND_ORIGIN &&
+        backend.isTgp === true &&
+        backend.siblingIsTgp === false &&
+        sameSet(shippedManifest.host_permissions, [`${backend.origin}/*`]),
+      backend,
+    );
+    await cdp.send("Target.closeTarget", { targetId: probe.targetId });
+
+    // ---- 5. popup WITH a session: status view, exactly one Start ------------
+    // A synthetic refresh token in chrome.storage.session is what a paired
+    // extension holds; it is never presented (no network leaves this process:
+    // every host resolves NOTFOUND) and it is a nonsense string.
+    if (readiness !== null) {
+      await evaluate(
+        cdp,
+        workerSession,
+        `chrome.storage.session.set({ tgp_refresh_token: ${JSON.stringify(SYNTHETIC_REFRESH)} }).then(() => "ok")`,
+        true,
+      );
+    }
+    const popup2 = await openPage(popupUrl);
+    const rendered = await waitForAsync(async () => {
+      const state = JSON.parse(
+        await evaluate(
+          cdp,
+          popup2.sessionId,
+          `JSON.stringify((() => {
+            const buttons = [...document.querySelectorAll('button')].map((b) => ({ id: b.id, text: (b.textContent || '').trim(), i18n: b.getAttribute('data-i18n'), disabled: b.disabled, hidden: b.hidden || b.closest('[hidden]') !== null }));
+            const start = document.querySelectorAll('#start-import');
+            const empty = document.getElementById('empty');
+            const error = document.getElementById('error');
+            return {
+              href: location.href, ready: document.readyState,
+              startButtons: start.length,
+              startText: start[0] ? (start[0].textContent || '').trim() : null,
+              startDisabled: start[0] ? start[0].disabled : null,
+              startLocked: start[0] ? start[0].dataset.outcomeLocked : null,
+              buttons,
+              statusText: empty ? (empty.textContent || '').trim() : null,
+              errorHidden: error ? error.hidden : null,
+              errorText: error ? (error.textContent || '').trim() : null,
+            };
+          })())`,
+        ),
+      );
+      progress.popup = state;
+      // The worker's status reply has landed once Start is unlocked.
+      return state.ready === "complete" && state.startLocked === "false"
+        ? state
+        : null;
+    }, 10_000);
+    const popupState = rendered ?? progress.popup;
+    const statusButtons = Array.isArray(popupState?.buttons)
+      ? popupState.buttons.filter((b) => b.id !== "start-import")
+      : [];
+    check(
+      "popup with a session renders as status with EXACTLY ONE Start button (owner D9); every other button is a status action",
+      rendered !== null &&
+        popupState.href === popupUrl &&
+        popupState.startButtons === 1 &&
+        popupState.startText === "Start Import" &&
+        statusButtons.length === (popupState.buttons?.length ?? 0) - 1 &&
+        statusButtons.every(
+          (b) => typeof b.i18n === "string" && b.i18n.startsWith("outcome_"),
+        ),
+      popupState,
     );
     check(
-      "no runtime exceptions in worker, popup or content script",
+      "popup shows the worker's status (no recorded transfer) and Start is enabled, with no error shown",
+      rendered !== null &&
+        popupState.startDisabled === false &&
+        popupState.errorHidden === true &&
+        typeof popupState.statusText === "string" &&
+        popupState.statusText.startsWith("No recorded transfer"),
+      popupState,
+    );
+
+    // ---- 6. a REAL click on Start with a non-https active page -------------
+    // The popup opened as a tab is itself the active tab of its window, and a
+    // chrome-extension:// page is not https: the approved no-run copy must
+    // appear, nothing may be registered or prompted, no exception.
+    let clicked = null;
+    if (rendered !== null) {
+      const exceptionsBefore = exceptions.length;
+      const requestsBefore = attemptedUrls.length;
+      await clickElement(cdp, popup2.sessionId, "#start-import");
+      clicked = await waitForAsync(async () => {
+        const state = JSON.parse(
+          await evaluate(
+            cdp,
+            popup2.sessionId,
+            "JSON.stringify({ errorHidden: document.getElementById('error').hidden, errorText: (document.getElementById('error').textContent || '').trim(), startDisabled: document.getElementById('start-import').disabled })",
+          ),
+        );
+        progress.afterClick = state;
+        return state.errorHidden === false && state.errorText.length > 0
+          ? state
+          : null;
+      }, 5_000);
+      const newRequests = attemptedUrls
+        .slice(requestsBefore)
+        .filter((url) => !url.startsWith("chrome-extension://"));
+      check(
+        "a real click on Start from a non-https active page shows the approved no-run copy, starts nothing, prompts for nothing, makes no network request",
+        clicked !== null &&
+          clicked.errorText.startsWith(
+            "This page isn't a safe place to start an import from",
+          ) &&
+          clicked.startDisabled === false &&
+          exceptions.length === exceptionsBefore &&
+          newRequests.length === 0,
+        { afterClick: progress.afterClick, newRequests },
+      );
+    }
+
+    // ---- 7. boundaries -----------------------------------------------------
+    const persisted =
+      readiness === null
+        ? null
+        : JSON.parse(
+            await evaluate(
+              cdp,
+              workerSession,
+              `(async () => JSON.stringify({ local: await chrome.storage.local.get(null), sessionKeys: Object.keys(await chrome.storage.session.get(null)) }))()`,
+              true,
+            ),
+          );
+    check(
+      "the synthetic session secret never reaches disk storage, console output or an exception text",
+      persisted !== null &&
+        !JSON.stringify(persisted.local).includes(SYNTHETIC_REFRESH) &&
+        !consoleLines.some((line) => line.includes(SYNTHETIC_REFRESH)) &&
+        !exceptions.some((entry) => entry.text.includes(SYNTHETIC_REFRESH)),
+      persisted === null
+        ? null
+        : {
+            localKeys: Object.keys(persisted.local),
+            sessionKeys: persisted.sessionKeys,
+          },
+    );
+    check(
+      "no runtime exception in the worker or any extension page for the whole session",
       exceptions.length === 0,
       exceptions,
     );
@@ -627,42 +734,50 @@ async function main() {
       ),
     ].sort();
     check(
-      "every network request observed on page, popup and worker sessions targeted the synthetic host or the extension origin (all other hosts resolve NOTFOUND by resolver rule)",
+      "every network request observed on worker and popup sessions targeted the extension origin only (all hosts resolve NOTFOUND by resolver rule)",
       attemptedHosts.length > 0 &&
-        attemptedHosts.every(
-          (host) => host === SOURCE_HOST || host === "chrome-extension:",
-        ) &&
-        origin.requests.every((request) => request.host === SOURCE_HOST),
-      { attemptedHosts, served: origin.requests },
+        attemptedHosts.every((host) => host === "chrome-extension:"),
+      { attemptedHosts },
     );
 
     evidence = {
       kind: negativeControl
         ? "browser-load-proof:negative-control"
         : "browser-load-proof",
+      flow: "x1-r4 Start-grant (register-first) flow",
       generatedAt: new Date().toISOString(),
-      chrome: { path: chrome, ...version },
+      runtime: {
+        path: chrome,
+        label:
+          typeof version.product === "string" &&
+          /^Chrome\//.test(version.product) &&
+          /ms-playwright|chromium/.test(chrome)
+            ? "Playwright Chromium (not branded Google Chrome)"
+            : "as reported by Browser.getVersion",
+        headless: "--headless=new",
+        ...version,
+      },
       package: {
         path: zipPath,
         sha256: zipSha256,
         bytes: zip.length,
         inventory: readInventory(zipPath),
       },
-      mutation: negativeControl
-        ? {
-            file: "content/main.js",
-            appended: 'export const readSourceBearer = () => "";',
-            sha256AfterMutation: sha256(
-              readFileSync(join(extensionDir, "content", "main.js")),
-            ),
-          }
-        : null,
+      mutation,
       extensionId,
       isolation: {
-        hostResolverRules: `MAP ${SOURCE_HOST} 127.0.0.1, MAP * ~NOTFOUND`,
-        syntheticOriginPort: origin.port,
+        hostResolverRules: "MAP * ~NOTFOUND",
         profile: "throwaway",
+        syntheticSession:
+          "chrome.storage.session refresh token, nonsense string, never presented",
       },
+      notObserved: [
+        "Chrome's host-permission prompt and the popup closing on it (needs the real action popup and a coach gesture)",
+        "permissions.onAdded delivery order versus runtime.onMessage on a cold worker",
+        "worker idle termination during a >30 s prompt",
+        "scripting.executeScript into a live https source tab and its documentId",
+        "a backend terminal-state race",
+      ],
       checks,
       consoleLines,
       exceptions,
@@ -671,13 +786,14 @@ async function main() {
     abortError = error instanceof Error ? error.stack : String(error);
   } finally {
     child.kill("SIGKILL");
-    origin.server.close();
     rmSync(scratch, { recursive: true, force: true });
   }
   if (!evidence) {
     evidence = {
       kind: "browser-load-proof:aborted",
+      runtime: { path: chrome, ...version },
       package: { sha256: zipSha256 },
+      mutation,
       checks,
       exceptions,
       abortError,
@@ -699,46 +815,32 @@ async function main() {
     `package sha256 ${zipSha256}; evidence ${outPath}; ${failed.length} failed\n`,
   );
   if (negativeControl) {
-    // The control must fail in the SPECIFIC way a classic script with module
-    // syntax fails in Chrome: the content script never registers its listener,
-    // so the worker's collect gets no receiver. Unrelated failures (worker,
-    // popup, storage, network) must still pass, or the control is not a control.
+    // The control must fail in the SPECIFIC way a broken packaged worker
+    // fails: Chrome does not evaluate the module graph, so the router is
+    // never registered and the popup cannot reach the worker. The static
+    // manifest check (bytes only) must still pass, or this is not a control.
     const byName = new Map(checks.map((entry) => [entry.name, entry]));
-    const collect = byName.get(
-      "worker collects the synthetic source token over the internal message boundary",
+    const readinessCheck = [...byName.values()].find((entry) =>
+      entry.name.startsWith("worker evaluated:"),
     );
-    const collectDetail =
-      /** @type {{ tabs?: number, thrown?: string, ok?: boolean }} */ (
-        collect?.detail ?? {}
-      );
-    const noReceiver =
-      collect?.pass === false &&
-      collectDetail.tabs === 1 &&
-      typeof collectDetail.thrown === "string" &&
-      /Receiving end does not exist|Could not establish connection/.test(
-        collectDetail.thrown,
-      );
-    const syntaxSeen = exceptions.some((entry) =>
-      /Unexpected token 'export'|Cannot use import statement|export/.test(
-        entry.text,
-      ),
+    const manifestCheck = [...byName.values()].find((entry) =>
+      entry.name.startsWith("shipped manifest:"),
     );
-    const unrelatedFailures = failed.filter(
-      (entry) =>
-        !/collects the synthetic source token|honest \{ ok: false \}|no runtime exceptions|content script isolated world/.test(
-          entry.name,
-        ),
-    );
-    const detected = noReceiver && unrelatedFailures.length === 0;
+    const workerNotReady = readinessCheck?.pass === false;
+    const manifestStillGood = manifestCheck?.pass === true;
+    const detected = workerNotReady && manifestStillGood;
     evidence.negativeControl = {
       detected,
-      noReceiver,
-      syntaxExceptionSeen: syntaxSeen,
-      unrelatedFailures: unrelatedFailures.map((entry) => entry.name),
+      workerNotReady,
+      manifestStillGood,
+      failedChecks: failed.map((entry) => entry.name),
+      stderrTail: stderrLines
+        .filter((line) => !line.includes("dbus"))
+        .slice(-10),
     };
     writeFileSync(outPath, `${JSON.stringify(evidence, null, 2)}\n`);
     process.stdout.write(
-      `negative control: ${detected ? "DETECTED" : "NOT DETECTED"} — noReceiver=${noReceiver} syntaxExceptionSeen=${syntaxSeen} unrelatedFailures=${unrelatedFailures.length}\n`,
+      `negative control: ${detected ? "DETECTED" : "NOT DETECTED"} — workerNotReady=${workerNotReady} manifestStillGood=${manifestStillGood}\n`,
     );
     process.exit(detected ? 0 : 1);
   }
