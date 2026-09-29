@@ -1,0 +1,21 @@
+{
+  "description": "Server-validated package HINTS for the L04 parity proof, in the LearnedProposalV1 `steps` grammar (L0 D-L0-4). Hand-authored as the stub provider's stand-in: template refs point into the digest built from legacy-parity-capture.json (t1 = the roster collection, t2 = the per-client notes collection). No URL, header, method, origin or budget appears here by construction.",
+  "steps": [
+    {
+      "templateRef": "t1",
+      "entityType": "clients",
+      "itemsPath": ["clients"],
+      "idField": "id",
+      "collectAs": "clientIds",
+      "pagination": { "style": "page", "param": "page", "start": 1 }
+    },
+    {
+      "templateRef": "t2",
+      "entityType": "notes",
+      "itemsPath": ["notes"],
+      "idField": "id",
+      "forEach": "clientIds",
+      "pagination": null
+    }
+  ]
+}
