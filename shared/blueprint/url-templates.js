@@ -250,3 +250,4 @@ export function inferUrlTemplates(observations, options) {
   };
 }
 export { candidateKind, SUPPORTED_QUERY_KEYS, HARD as URL_HARD_LIMITS };
+export { safeOrigin };
