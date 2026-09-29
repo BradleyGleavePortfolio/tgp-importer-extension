@@ -131,11 +131,13 @@ describe("start_import — single-flight guard", () => {
     const ack1 = await mock.dispatch({
       kind: "start_import",
       url: TAB_URL,
+      tabId: 42,
       sourceToken: "S",
     });
     const ack2 = await mock.dispatch({
       kind: "start_import",
       url: TAB_URL,
+      tabId: 42,
       sourceToken: "S",
     });
     expect(ack1).toEqual({ ok: true });
@@ -148,12 +150,14 @@ describe("start_import — single-flight guard", () => {
     const ack1 = await mock.dispatch({
       kind: "start_import",
       url: "https://example.com/x",
+      tabId: 42,
     });
     expect(ack1).toEqual({ ok: true });
     await flush();
     const ack2 = await mock.dispatch({
       kind: "start_import",
       url: "https://example.org/y",
+      tabId: 42,
     });
     // Guard was released, so this is accepted (not import_in_progress).
     expect(ack2).toEqual({ ok: true });
@@ -166,6 +170,7 @@ describe("start_import — pre-run guards", () => {
     const ack = await mock.dispatch({
       kind: "start_import",
       url: "https://example.com/x",
+      tabId: 42,
     });
     expect(ack).toEqual({ ok: true });
     await flush();
@@ -189,7 +194,11 @@ describe("start_import — pre-run guards", () => {
 
   it("broadcasts auth_required and starts no crawl with no TGP session", async () => {
     const { mock } = await load(); // no refresh token seeded
-    const ack = await mock.dispatch({ kind: "start_import", url: TAB_URL });
+    const ack = await mock.dispatch({
+      kind: "start_import",
+      url: TAB_URL,
+      tabId: 42,
+    });
     expect(ack).toEqual({ ok: true });
     await flush();
     expect(authRequired(mock)).toHaveLength(1);

@@ -3,6 +3,7 @@ import { join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { TGP_API_ORIGIN, isTgpOrigin } from "../shared/protocol.js";
+import { collectShipping } from "../scripts/lib/shipping.mjs";
 
 // Owner decision OD-API-ORIGIN (2026-09-29): the extension's TGP backend is
 // the Fly app the mobile client already uses. The previous vanity domain was
@@ -15,12 +16,17 @@ const root = fileURLToPath(new URL("..", import.meta.url));
 const FLY_ORIGIN = "https://backend-spring-lake-3890.fly.dev";
 // Spelled without a literal so this file is not itself a reference.
 const RETIRED_DOMAIN = ["tgp", "coach"].join(".");
+// Every top-level entry the packager ships (see scripts/lib/shipping.mjs);
+// R35-c7B-08: legacy/, extractors/ and _locales/ are in the zip too.
 const SHIPPED = [
   "manifest.json",
   "background.js",
   "shared",
   "popup",
   "content",
+  "legacy",
+  "extractors",
+  "_locales",
 ];
 
 function* walk(path) {
@@ -48,6 +54,13 @@ describe("OD-API-ORIGIN — the TGP backend origin is the Fly app", () => {
     expect(isTgpOrigin(`${FLY_ORIGIN}/api/scout/ingest`)).toBe(true);
     // Shared hosting domain: no sibling app is TGP.
     expect(isTgpOrigin("https://someone-else.fly.dev")).toBe(false);
+  });
+
+  it("the retired-domain scan covers every top-level entry the packager ships (R35-c7B-08)", () => {
+    const shippedRoots = new Set(
+      collectShipping(root).files.map((file) => file.path.split("/")[0]),
+    );
+    expect([...shippedRoots].sort()).toEqual([...SHIPPED].sort());
   });
 
   it("no shipped file references the retired domain", () => {

@@ -297,7 +297,11 @@ describe("single-flight guard is SHARED across start_import and start_ingest", (
     const { mock } = await load({ session: seeded() });
     // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch.mockImplementation(() => new Promise(() => {}));
-    const a = await mock.dispatch({ kind: "start_ingest", url: TAB_URL });
+    const a = await mock.dispatch({
+      kind: "start_ingest",
+      url: TAB_URL,
+      tabId: TAB_ID,
+    });
     const b = await mock.dispatch({
       kind: "start_import",
       url: TAB_URL,
@@ -311,8 +315,16 @@ describe("single-flight guard is SHARED across start_import and start_ingest", (
     const { mock } = await load({ session: seeded() });
     // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch.mockImplementation(() => new Promise(() => {}));
-    const a = await mock.dispatch({ kind: "start_ingest", url: TAB_URL });
-    const b = await mock.dispatch({ kind: "start_ingest", url: TAB_URL });
+    const a = await mock.dispatch({
+      kind: "start_ingest",
+      url: TAB_URL,
+      tabId: TAB_ID,
+    });
+    const b = await mock.dispatch({
+      kind: "start_ingest",
+      url: TAB_URL,
+      tabId: TAB_ID,
+    });
     expect(a).toEqual({ ok: true });
     expect(b).toEqual({ ok: false, error: "import_in_progress" });
   });

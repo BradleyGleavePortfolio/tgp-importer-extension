@@ -204,16 +204,18 @@ describe("requestStartImport — Authorization = Start", () => {
     expect(reply).toEqual({ ok: false, error: "origin_is_tgp" });
   });
 
-  it("sends a null tabId when the active tab has no numeric id", async () => {
+  it("R35-c7A-01: a tab with no numeric id is refused (source_tab_required) — nothing sent, Chrome never prompted", async () => {
+    // Before r4 the popup sent `tabId: null` and the worker ran a cookie-only
+    // replay with no verified live tab at all.
     const runtime = { sendMessage: vi.fn(async () => ({ ok: true })) };
     const tabs = {
       query: vi.fn(async () => [{ url: "https://app.truecoach.co/clients" }]),
     };
-    await requestStartImport(runtime, tabs, grantAll());
-    const sent = sentMessages(runtime)[0];
-    expect(sent.kind).toBe("start_import");
-    expect(sent.url).toBe("https://app.truecoach.co/clients");
-    expect(sent.tabId).toBe(null);
+    const permissions = grantAll();
+    const reply = await requestStartImport(runtime, tabs, permissions);
+    expect(reply).toEqual({ ok: false, error: "source_tab_required" });
+    expect(sentMessages(runtime)).toHaveLength(0);
+    expect(permissions.request).not.toHaveBeenCalled();
   });
 });
 

@@ -64,6 +64,7 @@ function storageArea(seed) {
 /**
  * @param {{ session?: any, tab?: any, granted?: boolean, fresh?: boolean,
  *   failRevoke?: boolean, failUnregister?: boolean, failGetAll?: boolean,
+ *   failContains?: boolean, ignoreRemove?: boolean,
  *   registered?: string[], held?: string[] }} [options]
  */
 export function makeBgMock({
@@ -74,10 +75,27 @@ export function makeBgMock({
   failRevoke = false,
   failUnregister = false,
   failGetAll = false,
+  failContains = false,
+  ignoreRemove = false,
   registered = [],
   held = [],
 } = {}) {
-  const knobs = { failRevoke, failUnregister, failGetAll };
+  // `ignoreRemove`: permissions.remove resolves normally but Chrome keeps the
+  // grant (a removal that did not take), so only a verification read sees it.
+  const knobs = {
+    failRevoke,
+    failUnregister,
+    failGetAll,
+    failContains,
+    ignoreRemove,
+  };
+  const platformInfoCalls = [];
+  const onTabRemoved = eventHub();
+  const onTabUpdated = eventHub();
+  // Each executeScript injection lands in a fresh document id (Chrome's
+  // InjectionResult.documentId); tabs.sendMessage records the options it was
+  // addressed with so a test can prove the reply was bound to that document.
+  let documentSerial = 0;
   const onMessage = eventHub();
   const sessionStore = storageArea(session);
   const localStore = storageArea();
@@ -123,6 +141,11 @@ export function makeBgMock({
         sent.push(msg);
         return Promise.resolve(undefined);
       },
+      // The MV3 keepalive beat background.js uses while a Start is pending.
+      getPlatformInfo: async () => {
+        platformInfoCalls.push(Date.now());
+        return { os: "linux", arch: "x86-64", nacl_arch: "x86-64" };
+      },
     },
     storage: {
       session: sessionStore.area,
@@ -141,16 +164,16 @@ export function makeBgMock({
       sendCommand: async () => ({}),
     },
     tabs: {
-      onRemoved: eventHub().api,
-      onUpdated: eventHub().api,
+      onRemoved: onTabRemoved.api,
+      onUpdated: onTabUpdated.api,
       get: async (id) => {
         if (tab && typeof tab.get === "function") return tab.get(id);
         return tab ? { id, url: tab.url } : { id };
       },
-      sendMessage: async (id, message) => {
-        tabMessages.push({ id, message });
+      sendMessage: async (id, message, options) => {
+        tabMessages.push({ id, message, options });
         if (tab && typeof tab.sendMessage === "function")
-          return tab.sendMessage(id, message);
+          return tab.sendMessage(id, message, options);
         if (tab && typeof tab.token === "string")
           return {
             ok: true,
@@ -177,8 +200,10 @@ export function makeBgMock({
           origins: ["https://backend-spring-lake-3890.fly.dev/*", ...grants],
         };
       },
-      contains: async ({ origins }) =>
-        Array.isArray(origins) && origins.every((o) => grants.has(o)),
+      contains: async ({ origins }) => {
+        if (knobs.failContains) throw new Error("permissions.contains failed");
+        return Array.isArray(origins) && origins.every((o) => grants.has(o));
+      },
       // The popup's Start-gesture prompt; records what was asked for. On
       // acceptance Chrome holds the grant and announces it.
       request: async (request) => {
@@ -191,6 +216,7 @@ export function makeBgMock({
       remove: async (request) => {
         permissionRemovals.push(request);
         if (knobs.failRevoke) throw new Error("permissions.remove failed");
+        if (knobs.ignoreRemove) return false;
         for (const o of request.origins ?? []) grants.delete(o);
         onPermissionRemoved.emit({ origins: [...(request.origins ?? [])] });
         return true;
@@ -205,9 +231,13 @@ export function makeBgMock({
         [...registeredIds]
           .filter((id) => !filter?.ids || filter.ids.includes(id))
           .map((id) => ({ id })),
+      /** @returns {Promise<Array<Record<string, unknown>>>} */
       executeScript: async (injection) => {
         scripting.executed.push(injection);
-        return [];
+        documentSerial += 1;
+        return [
+          { frameId: 0, documentId: `doc-${documentSerial}`, result: null },
+        ];
       },
       unregisterContentScripts: async (filter) => {
         scripting.unregistered.push(filter);
@@ -305,10 +335,22 @@ export function makeBgMock({
     onPermissionAdded.emit({ origins: [pattern] });
   }
 
+  // Chrome tab lifecycle events, as the worker sees them.
+  function closeTab(tabId) {
+    onTabRemoved.emit(tabId, { windowId: 1, isWindowClosing: false });
+  }
+  function navigateTab(tabId, url) {
+    if (tab && typeof tab.url === "string") tab.url = url;
+    onTabUpdated.emit(tabId, { url, status: "loading" }, { id: tabId, url });
+  }
+
   return {
     chrome,
     dispatch,
     grantArrives,
+    closeTab,
+    navigateTab,
+    platformInfoCalls,
     dispatchGrantFirst,
     dispatchRaw,
     // The popup's own Start gesture, driven alone: for a test that interleaves

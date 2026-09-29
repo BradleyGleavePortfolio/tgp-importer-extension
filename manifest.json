@@ -20,14 +20,7 @@
       "128": "popup/icon-128.png"
     }
   },
-  "permissions": [
-    "tabs",
-    "storage",
-    "activeTab",
-    "notifications",
-    "debugger",
-    "scripting"
-  ],
+  "permissions": ["tabs", "storage", "notifications", "debugger", "scripting"],
   "host_permissions": ["https://backend-spring-lake-3890.fly.dev/*"],
   "optional_host_permissions": ["https://*/*"]
 }

@@ -154,6 +154,7 @@ const START_ISSUE_CODES = new Set([
   "origin_is_tgp",
   "origin_not_authorized",
   "origin_request_failed",
+  "source_tab_required",
 ]);
 
 // On the Start gesture, in this order and for this reason:
@@ -180,6 +181,12 @@ export function requestStartImport(runtime, tabs, permissions) {
     }
     if (isTgpOrigin(origin)) {
       return { ok: false, error: "origin_is_tgp" };
+    }
+    // R35-c7A-01: a Start binds the grant and the run to ONE live tab. A tab
+    // Chrome will not identify cannot be that tab, so nothing is registered
+    // and Chrome is never prompted.
+    if (tabId === null) {
+      return { ok: false, error: "source_tab_required" };
     }
     const nonce = startNonce();
     return runtime

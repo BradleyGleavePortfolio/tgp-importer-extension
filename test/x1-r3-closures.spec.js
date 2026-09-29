@@ -27,6 +27,8 @@ const COMPLETE_URL =
   "https://backend-spring-lake-3890.fly.dev/api/scout/ingest/complete";
 const PROGRESS_URL =
   "https://backend-spring-lake-3890.fly.dev/api/scout/progress";
+const STATUS_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/scout/import/status";
 const SRC_BASE = "https://app.truecoach.co/proxy/api";
 const CLIENTS_PREFIX = `${SRC_BASE}/clients?`;
 const TAB_URL = "https://app.truecoach.co/clients?client=jane.doe";
@@ -93,11 +95,36 @@ function sourceFetches() {
 
 function routeSuccess(
   mock,
-  { onClients = async () => {}, onComplete = async () => {} } = {},
+  {
+    onClients = async () => {},
+    onComplete = async () => {},
+    serverStatus = undefined,
+  } = {},
 ) {
   const completes = [];
+  const statusReads = [];
   // @ts-expect-error -- vi.fn on global.fetch
   global.fetch.mockImplementation(async (url, init) => {
+    if (String(url).startsWith(STATUS_URL)) {
+      const intentId = new URL(url).searchParams.get("intent_id");
+      statusReads.push(intentId);
+      if (serverStatus === undefined) return { ok: false, status: 404 };
+      const answer = serverStatus(intentId);
+      if (answer === null) return { ok: false, status: 404 };
+      return Response.json({
+        intent_id: intentId,
+        status: answer.status,
+        mode: "server",
+        completed_at:
+          answer.status === "running" ? null : "2026-09-29T18:00:00Z",
+        entity_counts: (answer.counts ?? []).map(
+          ([entity_type, committed]) => ({
+            entity_type,
+            committed,
+          }),
+        ),
+      });
+    }
     if (url === REFRESH_URL) {
       return {
         ok: true,
@@ -128,7 +155,7 @@ function routeSuccess(
     }
     throw new Error(`unrouted fetch ${url}`);
   });
-  return { completes };
+  return { completes, statusReads };
 }
 
 describe("R35-A-02 / R35B-B3 — a Start is one nonce, one tab, one origin, either order", () => {
@@ -248,22 +275,32 @@ describe("R35-A-02 / R35B-B3 — a Start is one nonce, one tab, one origin, eith
   });
 });
 
-describe("R35-A-03 — revocation during terminal settlement never yields success", () => {
-  it("start_import: the grant goes while /complete is in flight → ingest_failed, origin_revoked", async () => {
+describe("R35-A-03 / R35-c7A-02 — revocation during terminal settlement follows the server's truth", () => {
+  // r3 asserted `ingest_failed: origin_revoked` here, contradicting a terminal
+  // the backend had already committed (R35-c7A-02). r4: once /complete has
+  // been attempted the extension reads GET /api/scout/import/status and shows
+  // the server's status. The r3 property that still holds: no local success
+  // is asserted before the server's answer, and no second terminal is sent.
+  it("start_import: the grant goes while /complete is in flight and the server committed success → the server's success is shown, no failed settlement is sent", async () => {
     const { mock, sessionModule } = await load({ tab: withSourceTab() });
-    routeSuccess(mock, {
+    const { completes, statusReads } = routeSuccess(mock, {
       onComplete: async () => {
         await mock.chrome.permissions.remove({ origins: [`${ORIGIN}/*`] });
         await flush(2);
       },
+      serverStatus: () => ({ status: "success", counts: [["clients", 1]] }),
     });
     await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
-    expect(await settle(mock)).toBe("ingest_failed");
-    expect(snapshots(mock).at(-1).lastError).toBe(`origin_revoked: ${ORIGIN}`);
-    expect(
-      snapshots(mock).some((s) => s.intent?.status === "ingest_succeeded"),
-    ).toBe(false);
+    expect(await settle(mock)).toBe("ingest_succeeded");
+    const last = snapshots(mock).at(-1);
+    expect(last.lastError).toBeNull();
+    expect(last.serverTerminal).toBe("success");
+    // Exactly one terminal (ours, success); the revocation sent no `failed`.
+    expect(completes.map((c) => c.terminal_status)).toEqual(["success"]);
+    expect(statusReads).toHaveLength(1);
     expect(sessionModule.getAuthorizedOrigin()).toBeNull();
+    await flush();
+    expect(mock.grants.has(`${ORIGIN}/*`)).toBe(false);
   });
 });
 

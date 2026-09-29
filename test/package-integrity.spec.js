@@ -24,8 +24,10 @@ afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 // Frozen permission surface. Widening any of these is a Tier 4 change that must
 // be made here deliberately, never by editing manifest.json alone.
+// `activeTab` was removed in PR #35 r4 (R35-c7B-01): it granted temporary host
+// access to whatever tab was active on every popup open, outside the Start
+// grant lifecycle, and nothing used it.
 const REQUIRED_PERMISSIONS = [
-  "activeTab",
   "debugger",
   "notifications",
   "scripting",

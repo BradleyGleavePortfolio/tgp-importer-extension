@@ -192,7 +192,7 @@ describe("start_import — the worker re-checks the grant it was told about", ()
       session: new Map([[REFRESH_KEY, "seed-refresh"]]),
       granted: false,
     });
-    await mock.dispatch({ kind: "start_ingest", url: TAB_URL });
+    await mock.dispatch({ kind: "start_ingest", url: TAB_URL, tabId: TAB_ID });
     await flush();
     expect(snapshots(mock).at(-1).lastError).toBe(
       `origin_not_granted: ${TAB_ORIGIN}`,
@@ -228,8 +228,15 @@ describe("start_import — the granted origin is the run's single authorized ori
       { target: { tabId: TAB_ID }, files: ["content/main.js"] },
     ]);
     // The token was collected from the tab (the real producer answered).
+    // R35-c7A-04: addressed to the ONE document the collector was injected
+    // into (Chrome's documentId from the injection result), never to
+    // "whatever document the tab holds now".
     expect(mock.tabMessages).toEqual([
-      { id: TAB_ID, message: { kind: "collect_source_token" } },
+      {
+        id: TAB_ID,
+        message: { kind: "collect_source_token" },
+        options: { documentId: "doc-1" },
+      },
     ]);
 
     // Settled: authorization ends with the run.

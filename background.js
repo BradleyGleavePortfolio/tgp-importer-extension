@@ -516,13 +516,28 @@ async function handleRequestServerStatus() {
   const generation = getSessionGeneration();
   try {
     if (!importInFlight) await rehydrateSnapshot();
-    const intentId = readString(
-      Reflect.get(currentSnapshot, "intent"),
-      "intentId",
-    );
-    if (!isSendableIntentId(intentId)) {
-      return { kind: "server_status", state: "no_run" };
-    }
+  } catch {
+    return { kind: "server_status", ...unavailableServerStatus() };
+  }
+  const intentId = readString(
+    Reflect.get(currentSnapshot, "intent"),
+    "intentId",
+  );
+  if (!isSendableIntentId(intentId)) {
+    return { kind: "server_status", state: "no_run" };
+  }
+  return {
+    kind: "server_status",
+    ...(await readServerRunStatus(intentId, generation)),
+  };
+}
+
+// The server's record for ONE run id, read with the bearer of the session
+// `generation`. Never throws: any fault (no session, replaced session,
+// timeout, transport, malformed body) is "unavailable" — nothing is guessed.
+async function readServerRunStatus(intentId, generation) {
+  try {
+    if (!isSendableIntentId(intentId)) return unavailableServerStatus();
     const url = `${TGP_API_ORIGIN}${IMPORT_STATUS_PATH}?intent_id=${encodeURIComponent(intentId)}`;
     const attempt = (token) =>
       fetchWithTimeout(
@@ -536,15 +551,13 @@ async function handleRequestServerStatus() {
     if (res.http === 401) {
       const refreshed = await refreshAccessToken(generation);
       if (refreshed === null || getSessionGeneration() !== generation) {
-        return { kind: "server_status", ...unavailableServerStatus() };
+        return unavailableServerStatus();
       }
       res = await attempt(refreshed);
     }
-    return { kind: "server_status", ...res.reply };
+    return res.reply;
   } catch {
-    // No session, replaced session, timeout or transport fault: nothing is
-    // known from the server, and no worker detail reaches the popup.
-    return { kind: "server_status", ...unavailableServerStatus() };
+    return unavailableServerStatus();
   }
 }
 
@@ -657,11 +670,53 @@ function takeFreshGrant(origin) {
  *   timer: ReturnType<typeof setTimeout> | null } | null} */
 let pendingStart = null;
 
+// R35-c7B-04: an MV3 worker is idle-terminated after ~30 s with no events,
+// which is shorter than START_TTL_MS — a coach who reads Chrome's prompt for
+// longer would lose the pending Start with the worker. While a Start is
+// pending (and only then), a bounded heartbeat of extension API calls keeps
+// the worker alive for the window; it stops the moment the Start is cleared.
+const START_KEEPALIVE_MS = 20_000;
+/** @type {ReturnType<typeof setInterval> | null} */
+let startKeepalive = null;
+
+function keepWorkerAlive() {
+  if (startKeepalive !== null) return;
+  const beat = () => {
+    if (pendingStart === null) {
+      stopKeepingWorkerAlive();
+      return;
+    }
+    const platform = chrome.runtime.getPlatformInfo;
+    if (typeof platform !== "function") return;
+    try {
+      const result = platform.call(chrome.runtime);
+      if (result && typeof result.catch === "function") {
+        result.catch(() => undefined);
+      }
+    } catch {
+      // Keepalive is best-effort; the window's own deadline still bounds it.
+    }
+  };
+  const timer = setInterval(beat, START_KEEPALIVE_MS);
+  if (typeof timer === "object" && timer !== null && "unref" in timer) {
+    timer.unref();
+  }
+  startKeepalive = timer;
+}
+
+function stopKeepingWorkerAlive() {
+  if (startKeepalive !== null) {
+    clearInterval(startKeepalive);
+    startKeepalive = null;
+  }
+}
+
 function clearPendingStart() {
   if (pendingStart !== null && pendingStart.timer !== null) {
     clearTimeout(pendingStart.timer);
   }
   pendingStart = null;
+  stopKeepingWorkerAlive();
 }
 
 // Register the popup's half of a Start exchange. Bound to the initiating tab,
@@ -699,6 +754,8 @@ function registerPendingStart(kind, message, origin) {
   }
   pending.timer = timer;
   pendingStart = pending;
+  lostStarts.delete(origin);
+  keepWorkerAlive();
   return pending;
 }
 
@@ -709,7 +766,7 @@ function registerPendingStart(kind, message, origin) {
 // prompts afresh. Re-checked after the await: a grant that arrived meanwhile
 // (the coach accepted) already began the run and is not touched.
 async function screenHeldGrant(pending) {
-  if (!(await holdsGrant(pending.origin))) return;
+  if ((await holdsGrant(pending.origin)) !== true) return;
   if (pendingStart !== pending || hasFreshGrant(pending.origin)) return;
   if (isActiveOrigin(pending.origin)) return;
   clearPendingStart();
@@ -743,10 +800,30 @@ async function dropUnusedGrant(origin, event) {
   freshGrants.delete(origin);
   if (isActiveOrigin(origin)) return;
   try {
-    if (await holdsGrant(origin)) await revokeGrant(origin);
+    // An unreadable state is not "not held": attempt the revoke anyway.
+    if ((await holdsGrant(origin)) !== false) await revokeGrant(origin);
   } catch {
     logNetworkEvent(event);
   }
+}
+
+// Origins whose pending Start lost its tab (closed or navigated away) while
+// Chrome's prompt was open, with the deadline of the window that Start had. A
+// grant that arrives for one of these has no Start to serve and is revoked on
+// arrival instead of being held for the window.
+/** @type {Map<string, number>} */
+const lostStarts = new Map();
+
+function markStartLost(pending) {
+  lostStarts.set(pending.origin, pending.expiresAt);
+}
+
+function lostStartOrigin(origin) {
+  const until = lostStarts.get(origin);
+  if (until === undefined) return false;
+  if (Date.now() <= until) return true;
+  lostStarts.delete(origin);
+  return false;
 }
 
 // Drop an expired or abandoned Start half and revoke whatever grant it may
@@ -798,6 +875,13 @@ chrome.permissions.onAdded.addListener((permissions) => {
             : "start_refused_busy",
         );
       }
+      continue;
+    }
+    if (pending === null && lostStartOrigin(origin)) {
+      // The Start that asked for this grant lost its tab while the prompt was
+      // open (R35-c7A-01): no registration can follow, so the grant is
+      // revoked at once, not held for the window.
+      void expireStart(origin, "source_tab_closed");
       continue;
     }
     if (pending === null) {
@@ -889,6 +973,13 @@ function admitStart(kind, message) {
     void handler(message).finally(settleRun);
     return { ok: true };
   }
+  // R35-c7A-01: a Start is bound to ONE verified tab. Without a tab id there
+  // is nothing to bind the grant, the collector or the run's lifetime to, so
+  // nothing is registered and the popup must not prompt.
+  if (readTabId(message) === null) {
+    void refuseStart(origin, "source_tab_required");
+    return { ok: false, error: "source_tab_required" };
+  }
   const pending = registerPendingStart(kind, message, origin);
   if (hasFreshGrant(origin)) {
     // The coach's accepted prompt reached the worker first (a cold worker
@@ -940,6 +1031,12 @@ function cancelPendingStart(message) {
   if (pending === null || pending.nonce !== nonce) {
     return { ok: false, error: "no_pending_start" };
   }
+  // R35-c7B-02: a claimed Start (its grant already matched; the run is about
+  // to begin) belongs to that run. A late popup message cannot cancel it or
+  // revoke its grant.
+  if (pending.claimed) {
+    return { ok: false, error: "no_pending_start" };
+  }
   clearPendingStart();
   void expireStart(pending.origin, "origin_not_granted");
   return { ok: true };
@@ -953,8 +1050,8 @@ function cancelPendingStart(message) {
 function confirmGrantedStart(message) {
   const pending = pendingStart;
   const nonce = readString(message, "nonce");
-  if (pending === null || pending.nonce !== nonce) {
-    return { ok: true }; // the run already began on the grant event
+  if (pending === null || pending.nonce !== nonce || pending.claimed) {
+    return { ok: true }; // the run already began (or is beginning) on the grant event
   }
   clearPendingStart();
   void expireStart(pending.origin, "start_not_authorized");
@@ -977,18 +1074,29 @@ async function refuseStart(origin, code) {
   logNetworkEvent(
     code === "import_in_progress"
       ? "start_refused_busy"
-      : "start_refused_cleanup",
+      : code === "source_tab_required"
+        ? "start_refused_no_tab"
+        : "start_refused_cleanup",
   );
 }
 
-// The run currently holding the authorization, so a revocation can reach it.
-// Opened as soon as an origin is authorized (before any tab or network work),
-// closed by settleRun.
-/** @type {{ origin: string, controller: AbortController, revoked: boolean } | null} */
+// The run currently holding the authorization, so a revocation or the loss of
+// its Start tab can reach it. Opened as soon as an origin is authorized
+// (before any tab or network work), closed by settleRun. `ended` carries the
+// honest stop reason once the run's capability ended from outside
+// (origin_revoked, source_tab_closed, source_tab_navigated); null while live.
+/** @type {{ origin: string, tabId: number | null, generation: number,
+ *   controller: AbortController, ended: string | null } | null} */
 let activeRun = null;
 
-function openRun(origin) {
-  const run = { origin, controller: new AbortController(), revoked: false };
+function openRun(origin, tabId, generation) {
+  const run = {
+    origin,
+    tabId,
+    generation,
+    controller: new AbortController(),
+    ended: null,
+  };
   activeRun = run;
   return run;
 }
@@ -996,25 +1104,51 @@ function openRun(origin) {
 function revokedDetail(origin) {
   return `origin_revoked: ${origin}`;
 }
-
-// A source run's authorization must still hold at EVERY settlement boundary,
-// not merely when the reader was started. The reader can resolve normally
-// while the coach's revocation is in flight, so this is re-checked
-// synchronously before the terminal POST and again before the terminal
-// broadcast: a run whose grant went away reports `origin_revoked`, never
-// `complete` or `empty`. Returns true once the run is revoked.
-function runRevoked(run) {
-  return run.revoked || getAuthorizedOrigin() !== run.origin;
+function tabClosedDetail(origin) {
+  return `source_tab_closed: ${origin}`;
+}
+function tabNavigatedDetail(origin) {
+  return `source_tab_navigated: ${origin}`;
 }
 
-// Settle a run whose authorization ended while it was completing: the TGP
-// session is intact, so the intent is settled FAILED with the honest reason
-// and the coach is never shown a success for work the grant no longer covers.
-async function settleRevoked(run, intent, tally, generation, reporter) {
-  const detail = revokedDetail(run.origin);
-  run.revoked = true;
+// A source run's capability must still hold at EVERY settlement boundary, not
+// merely when the reader was started. The reader can resolve normally while
+// the coach's revocation (or the Start tab's closure) is in flight, so this
+// is re-checked synchronously before the terminal POST and again before the
+// terminal broadcast. Returns the honest stop reason, or null while the run
+// still holds its capability. A TGP session clear or replacement mid-run also
+// drops the authorized origin, but that is a SESSION change, not a source
+// permission loss: it is reported as such (R35-c7B-05), never as
+// `origin_revoked`.
+function runEnded(run) {
+  if (run.ended !== null) return run.ended;
+  if (getSessionGeneration() !== run.generation) return SESSION_REPLACED_DETAIL;
+  if (getAuthorizedOrigin() !== run.origin) return revokedDetail(run.origin);
+  return null;
+}
+
+// End the active run from outside, NOW: the crawl is aborted, the
+// authorization is dropped so no capture session stays live, the grant is
+// revoked (settleRun revokes and VERIFIES again), and the run reports
+// `detail`. Idempotent: the first reason wins.
+function endRun(run, detail) {
+  if (run.ended !== null) return;
+  run.ended = detail;
+  freshGrants.delete(run.origin);
+  clearAuthorizedOrigin();
+  run.controller.abort();
+  void retireCaptureSessions();
+  void revokeGrant(run.origin);
+}
+
+// Settle a run whose capability ended while it was completing, BEFORE any
+// terminal was sent: the TGP session is intact, so the intent is settled
+// FAILED with the honest reason and the coach is never shown a success for
+// work the grant no longer covers.
+async function settleEnded(run, detail, intent, tally, generation, reporter) {
+  run.ended = detail;
   if (reporter !== undefined) {
-    // Best-effort: a progress flush failing must not hide the revocation.
+    // Best-effort: a progress flush failing must not hide the stop.
     await reporter.flush(null, detail).catch(logSettlementFailure);
   }
   await settleFailed(intent, detail, Object.fromEntries(tally), generation);
@@ -1025,26 +1159,124 @@ async function settleRevoked(run, intent, tally, generation, reporter) {
   });
 }
 
+// The server's status word -> the popup state that shows it. The backend owns
+// lifecycle truth: once a terminal POST has been ATTEMPTED, whatever the
+// extension observes locally (grant revoked, tab closed) can no longer decide
+// the outcome, because the backend may already have committed it.
+const SERVER_TERMINAL_STATE = {
+  success: "ingest_succeeded",
+  complete: "ingest_succeeded",
+  partial: "ingest_partial",
+  failed: "ingest_failed",
+  blocked: "ingest_failed",
+  cancelled: "ingest_failed",
+  timed_out: "ingest_failed",
+};
+
+// R35-c7A-02: the run's capability ended while its terminal POST was in
+// flight (or right after it). The extension never asserts a local terminal
+// that can contradict the backend: it reads the server's authoritative run
+// status and shows THAT. If the server has a settled terminal, that is the
+// result. If it does not (or cannot be read) but the backend ACKNOWLEDGED our
+// terminal, the acknowledged outcome is the server's own answer and is shown.
+// Otherwise nothing is known: the terminal is reported as unconfirmed, and no
+// second terminal (settleFailed) is ever sent over a possibly committed one.
+async function showAuthoritativeTerminal(run, intent, generation, acked) {
+  const detail = runEnded(run) ?? revokedDetail(run.origin);
+  const server = await readServerRunStatus(intent.intentId, generation);
+  if (server.state === "known" && server.settled === true) {
+    const status = String(server.status);
+    const state = SERVER_TERMINAL_STATE[status] ?? "ingest_failed";
+    broadcastStatus({
+      ...currentSnapshot,
+      intent: { ...intent, status: state },
+      lastError: state === "ingest_failed" ? detail : null,
+      serverTerminal: status,
+    });
+    return;
+  }
+  if (acked !== null) {
+    broadcastStatus({
+      ...currentSnapshot,
+      intent: { ...intent, status: acked.state },
+      lastError: acked.detail,
+      serverTerminal: acked.terminal,
+    });
+    return;
+  }
+  broadcastStatus({
+    ...currentSnapshot,
+    intent: { ...intent, status: "ingest_failed" },
+    lastError: `complete_unconfirmed: ${detail}`,
+  });
+}
+
 // The coach withdrew the run's host grant (chrome://extensions, or another
 // extension page) while the run was in flight: the run stops NOW, not at its
-// next admission check. The crawl is aborted, the authorization is dropped so
-// no capture session stays live, and the run reports `origin_revoked`. The
-// worker's own revocation at settlement finds no active run and is a no-op.
+// next admission check, and reports `origin_revoked`. The worker's own
+// revocation at settlement finds the grant gone and verifies that.
 chrome.permissions.onRemoved.addListener((permissions) => {
   const run = activeRun;
-  if (run === null || run.revoked) return;
+  if (run === null || run.ended !== null) return;
   if (!grantedOrigins(permissions).includes(run.origin)) return;
-  run.revoked = true;
-  freshGrants.delete(run.origin);
-  clearAuthorizedOrigin();
-  run.controller.abort();
-  void retireCaptureSessions();
+  endRun(run, revokedDetail(run.origin));
+});
+
+// R35-c7A-01: the one-tab Start capability never outlives its tab. Closing the
+// Start tab ends the pending Start (its grant is revoked, nothing starts) or
+// the run in flight (aborted, authorization dropped, grant revoked, settled
+// honestly as `source_tab_closed`). Cookie-authenticated replay from the
+// worker therefore cannot continue once the coach's live tab is gone.
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (typeof tabId !== "number") return;
+  const pending = pendingStart;
+  if (pending !== null && pending.tabId === tabId) {
+    clearPendingStart();
+    markStartLost(pending);
+    void expireStart(pending.origin, "source_tab_closed");
+  }
+  const run = activeRun;
+  if (run !== null && run.ended === null && run.tabId === tabId) {
+    endRun(run, tabClosedDetail(run.origin));
+  }
+});
+
+// The Start tab left its origin (main-frame navigation): the coach is no
+// longer looking at the site the Start authorized, so the pending Start or
+// the run ends as `source_tab_navigated`. Same-origin navigations keep it.
+chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
+  if (typeof tabId !== "number") return;
+  const url = readString(changeInfo, "url");
+  if (url === null) return;
+  const origin = tabOriginAllowlist(url)?.[0] ?? null;
+  const pending = pendingStart;
+  if (
+    pending !== null &&
+    pending.tabId === tabId &&
+    origin !== pending.origin
+  ) {
+    clearPendingStart();
+    markStartLost(pending);
+    void expireStart(pending.origin, "source_tab_navigated");
+  }
+  const run = activeRun;
+  if (
+    run !== null &&
+    run.ended === null &&
+    run.tabId === tabId &&
+    origin !== run.origin
+  ) {
+    endRun(run, tabNavigatedDetail(run.origin));
+  }
 });
 
 function grantPattern(origin) {
   return `${origin}/*`;
 }
 
+// Tri-state (R35-c7A-03): true = Chrome holds the grant, false = Chrome
+// verified it does not, null = Chrome could not answer. A failed read is
+// never mistaken for "not held".
 async function holdsGrant(origin) {
   try {
     return (
@@ -1053,18 +1285,20 @@ async function holdsGrant(origin) {
       })) === true
     );
   } catch {
-    return false;
+    return null;
   }
 }
 
-// Revoke an origin's host grant and confirm Chrome no longer holds it.
+// Revoke an origin's host grant and confirm Chrome no longer holds it. Only a
+// VERIFIED absence counts: a removal that throws, or a verification read that
+// fails, reports false so the caller keeps the cleanup pending.
 async function revokeGrant(origin) {
   try {
     await chrome.permissions.remove({ origins: [grantPattern(origin)] });
   } catch {
     return false;
   }
-  return !(await holdsGrant(origin));
+  return (await holdsGrant(origin)) === false;
 }
 
 // The tab's https origin becomes the run's single authorized origin ONLY if it
@@ -1079,7 +1313,8 @@ async function authorizeSourceOrigin(url) {
   if (isTgpOrigin(origin)) {
     return { error: `origin_is_tgp: ${origin}` };
   }
-  if (!(await holdsGrant(origin))) {
+  if ((await holdsGrant(origin)) !== true) {
+    // Not held, or Chrome could not say: neither authorizes anything.
     freshGrants.delete(origin);
     return { error: `origin_not_granted: ${origin}` };
   }
@@ -1121,7 +1356,7 @@ async function handleStartIngest(message) {
     broadcastStatus({ ...emptySnapshot(), lastError: authorized.error });
     return;
   }
-  const run = openRun(authorized.origin);
+  const run = openRun(authorized.origin, readTabId(message), generation);
   // Reader by registry lookup on the authorized origin, resolved before the
   // TGP session is consulted so an unlearned site is never a sign-in problem.
   const resolved = resolveExtractor(authorized.origin, {
@@ -1159,11 +1394,8 @@ async function handleStartIngest(message) {
     readTabId(message),
     authorized.origin,
   );
-  if (run.revoked) {
-    broadcastStatus({
-      ...emptySnapshot(),
-      lastError: revokedDetail(authorized.origin),
-    });
+  if (run.ended !== null) {
+    broadcastStatus({ ...emptySnapshot(), lastError: run.ended });
     return;
   }
   if (collected.error !== undefined) {
@@ -1207,18 +1439,19 @@ async function handleStartIngest(message) {
       status: tally.size === 0 ? "empty" : "complete",
       counts: Object.fromEntries(tally),
     };
-    // FENCE: the reader returned, but the grant may have gone while it was
-    // resolving (or while the ACKed batches were flushing). A revoked run is
-    // never ACKed as complete/empty.
-    if (runRevoked(run)) {
+    // FENCE: the reader returned, but the grant (or the Start tab) may have
+    // gone while it was resolving or while the ACKed batches were flushing. A
+    // run that ended is never ACKed as complete/empty.
+    const endedBefore = runEnded(run);
+    if (endedBefore !== null) {
       settlementSent = true;
-      await settleRevoked(run, intent, tally, generation);
+      await settleEnded(run, endedBefore, intent, tally, generation);
       return;
     }
     const outcome = OUTCOME[result.status];
     const detail = terminalDetail(result);
     settlementSent = true;
-    await completeIngest(
+    const acked = await completeIngest(
       intent,
       {
         terminalStatus: outcome.terminal,
@@ -1226,17 +1459,26 @@ async function handleStartIngest(message) {
         errorSummary: detail ?? undefined,
       },
       generation,
+    ).then(
+      () => true,
+      (err) => err,
     );
-    // FENCE: and again after the settlement POST's await, before anything is
-    // SHOWN as a success.
-    if (runRevoked(run)) {
-      broadcastStatus({
-        ...currentSnapshot,
-        intent: { ...intent, status: "ingest_failed" },
-        lastError: revokedDetail(run.origin),
-      });
+    if (isTgpAuthLost(acked) || isTgpSessionReplaced(acked)) throw acked;
+    // FENCE (R35-c7A-02): the terminal POST has been attempted, so the
+    // backend may own the outcome already. A capability that ended meanwhile
+    // never overrides that: the server's status is read and shown.
+    if (runEnded(run) !== null) {
+      await showAuthoritativeTerminal(
+        run,
+        intent,
+        generation,
+        acked === true
+          ? { state: outcome.state, detail, terminal: outcome.terminal }
+          : null,
+      );
       return;
     }
+    if (acked !== true) throw acked;
     broadcastStatus({
       ...currentSnapshot,
       intent: { ...intent, status: outcome.state },
@@ -1258,12 +1500,9 @@ async function handleStartIngest(message) {
       });
       return;
     }
-    // A grant withdrawn mid-run is the honest stop, not the abort it caused.
-    const detail = run.revoked
-      ? revokedDetail(authorized.origin)
-      : err instanceof Error
-        ? err.message
-        : "import failed";
+    // A grant or tab lost mid-run is the honest stop, not the abort it caused.
+    const detail =
+      run.ended ?? (err instanceof Error ? err.message : "import failed");
     // Same unsettled-intent defect as the replay path; no progress-channel
     // fallback here, so carry the already-ACKed tally into the settlement.
     if (!settlementSent) {
@@ -1500,11 +1739,19 @@ function makeSourceFetch(sourceToken) {
 const SOURCE_COLLECTOR_ID = "tgp-source-collector";
 const SOURCE_COLLECTOR_SCRIPT = "content/main.js";
 
+// Inject the collector into the tab's main-frame document and return that
+// document's id (Chrome 106+ InjectionResult.documentId), or null when Chrome
+// named none — the caller then has no document to bind the reply to.
 async function injectSourceCollector(tabId) {
-  await chrome.scripting.executeScript({
+  const results = await chrome.scripting.executeScript({
     target: { tabId },
     files: [SOURCE_COLLECTOR_SCRIPT],
   });
+  const main = Array.isArray(results)
+    ? results.find((r) => isRecord(r) && r.frameId === 0)
+    : undefined;
+  const documentId = readString(main, "documentId");
+  return documentId !== null && documentId.length > 0 ? documentId : null;
 }
 
 // Remove a collector registration an EARLIER build of this extension may have
@@ -1551,21 +1798,33 @@ async function liveTabOrigin(tabId) {
 // from. Returns { token } ("" when the page holds none) or { error }.
 async function collectSourceToken(tabId, origin) {
   if (typeof tabId !== "number") {
-    return { token: "" };
+    // R35-c7A-01: no verified live tab, no run — never an "empty token" that
+    // lets cookie-authenticated replay proceed without a tab at all.
+    return { error: `source_tab_required: ${origin}` };
   }
-  const navigated = `source_tab_navigated: ${origin}`;
+  const navigated = tabNavigatedDetail(origin);
   if ((await liveTabOrigin(tabId)) !== origin) {
     return { error: navigated };
   }
   let reply;
   try {
-    await injectSourceCollector(tabId);
+    // R35-c7A-04: the collector is injected into ONE document, and the
+    // request is addressed to THAT document (Chrome's documentId), so a reply
+    // from a same-origin replacement document — a navigation or account
+    // switch racing the collection — is never accepted for the Start
+    // document. An injection that names no document binds nothing and fails.
+    const documentId = await injectSourceCollector(tabId);
+    if (documentId === null) {
+      return { error: navigated };
+    }
     if ((await liveTabOrigin(tabId)) !== origin) {
       return { error: navigated };
     }
-    reply = await chrome.tabs.sendMessage(tabId, {
-      kind: "collect_source_token",
-    });
+    reply = await chrome.tabs.sendMessage(
+      tabId,
+      { kind: "collect_source_token" },
+      { documentId },
+    );
   } catch {
     return { token: "" }; // no collector / port closed — fails closed downstream
   }
@@ -1594,7 +1853,7 @@ async function handleStartImport(message) {
     broadcastStatus({ ...emptySnapshot(), lastError: authorized.error });
     return;
   }
-  const run = openRun(authorized.origin);
+  const run = openRun(authorized.origin, readTabId(message), generation);
   // Crawl confinement: the run's ONE authorized origin is the injected SSRF
   // allowlist the blueprint's apiBase must match (normalizeBlueprint).
   const allowedOrigins = [authorized.origin];
@@ -1622,12 +1881,12 @@ async function handleStartImport(message) {
 
   // Real source bearer from the coach's own tab; absent -> "" -> fails closed.
   // A tab that left the authorized origin starts nothing.
-  const collected = await collectSourceToken(message.tabId, authorized.origin);
-  if (run.revoked) {
-    broadcastStatus({
-      ...emptySnapshot(),
-      lastError: revokedDetail(authorized.origin),
-    });
+  const collected = await collectSourceToken(
+    readTabId(message),
+    authorized.origin,
+  );
+  if (run.ended !== null) {
+    broadcastStatus({ ...emptySnapshot(), lastError: run.ended });
     return;
   }
   if (collected.error !== undefined) {
@@ -1684,13 +1943,15 @@ async function handleStartImport(message) {
       allowedOrigins,
     });
     const outcome = OUTCOME[result.status];
-    // FENCE: the replay returned, but the coach's grant may have gone while it
-    // was resolving or while its last batches were being ACKed. Whatever the
-    // engine reported — cancelled, complete, empty or partial — a revoked run
-    // settles and is shown as `origin_revoked`, never as a success.
-    if (runRevoked(run)) {
+    // FENCE: the replay returned, but the coach's grant or Start tab may have
+    // gone while it was resolving or while its last batches were being ACKed.
+    // Whatever the engine reported — cancelled, complete, empty or partial —
+    // a run that ended settles and is shown with its honest stop reason,
+    // never as a success.
+    const endedBefore = runEnded(run);
+    if (endedBefore !== null) {
       settlementSent = true;
-      await settleRevoked(run, intent, tally, generation, reporter);
+      await settleEnded(run, endedBefore, intent, tally, generation, reporter);
       return;
     }
     if (outcome === undefined) {
@@ -1729,17 +1990,27 @@ async function handleStartImport(message) {
       return;
     }
     // Still requires a backend ack: a throw here is ingest_failed, not success.
-    await completeIngest(intent, settlement, generation);
-    // FENCE: and again after the settlement POST's await, before anything is
-    // SHOWN or notified as a success.
-    if (runRevoked(run)) {
-      broadcastStatus({
-        ...currentSnapshot,
-        intent: { ...intent, status: "ingest_failed" },
-        lastError: revokedDetail(run.origin),
-      });
+    const acked = await completeIngest(intent, settlement, generation).then(
+      () => true,
+      (err) => err,
+    );
+    if (isTgpAuthLost(acked) || isTgpSessionReplaced(acked)) throw acked;
+    // FENCE (R35-c7A-02): the terminal POST has been attempted, so the
+    // backend may own the outcome already. A capability that ended meanwhile
+    // (grant revoked, tab closed) never overrides that with a local
+    // "failed": the server's authoritative status is read and shown.
+    if (runEnded(run) !== null) {
+      await showAuthoritativeTerminal(
+        run,
+        intent,
+        generation,
+        acked === true
+          ? { state: outcome.state, detail, terminal: outcome.terminal }
+          : null,
+      );
       return;
     }
+    if (acked !== true) throw acked;
     broadcastStatus({
       ...currentSnapshot,
       intent: { ...intent, status: outcome.state },
@@ -1766,14 +2037,14 @@ async function handleStartImport(message) {
       return;
     }
     // Source auth loss is fail-closed but NOT a TGP logout: prompt a source re-login.
-    // A grant withdrawn mid-run is the honest stop, not the abort it caused.
-    const detail = run.revoked
-      ? revokedDetail(authorized.origin)
-      : isAuthLost(err)
+    // A grant or tab lost mid-run is the honest stop, not the abort it caused.
+    const detail =
+      run.ended ??
+      (isAuthLost(err)
         ? "source sign-in required — open your source platform and try again"
         : err instanceof Error
           ? err.message
-          : "import failed";
+          : "import failed");
     // TGP session is still good, so the intent must be settled first.
     if (!settlementSent) {
       await reporter.flush(null, detail);
@@ -1849,7 +2120,9 @@ registerCaptureLifecycle();
 // can be in flight when this module evaluates, so both are removed here and
 // VERIFIED gone. Until that is verified, every Start is refused
 // (cleanup_pending) and retries the sweep — exactly like a failed settlement.
-void runStartupSweep();
+// Registered as the in-flight sweep so a Start claimed while it runs waits on
+// it instead of starting a second one.
+void retryStartupSweep();
 
 // Begin Layer 1 passive capture on a tab. The ring buffer lives inside the
 // capture module; the popup only sees start/stop control here (C3 renders it).

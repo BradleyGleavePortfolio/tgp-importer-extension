@@ -77,7 +77,7 @@ describe("router: pre-run error text carries the tab origin only", () => {
   it("site not learned", async () => {
     const mock = await load();
     const url = "https://example.com/coach/jane.doe/clients?token=abc";
-    await mock.dispatch({ kind: "start_import", url });
+    await mock.dispatch({ kind: "start_import", url, tabId: 42 });
     await flush();
     const last = snapshots(mock).at(-1);
     expect(last.lastError).toBe("site_not_learned: https://example.com");
@@ -102,6 +102,7 @@ describe("router: pre-run error text carries the tab origin only", () => {
     await mock.dispatch({
       kind: "start_ingest",
       url: "https://example.com/coach/jane.doe",
+      tabId: 42,
     });
     await flush();
     expect(snapshots(mock).at(-1).lastError).toBe(

@@ -141,9 +141,14 @@ export function preStartIssue(lastError, message) {
             error.startsWith("origin_request_failed") ||
             error.startsWith("origin_not_granted") ||
             error.startsWith("start_not_authorized") ||
-            error.startsWith("origin_revoked")
+            error.startsWith("origin_revoked") ||
+            error.startsWith("start_expired") ||
+            error.startsWith("start_superseded") ||
+            error.startsWith("start_grant_mismatch")
           ? "prestart_origin_not_authorized"
           : error.startsWith("source_tab_navigated") ||
+              error.startsWith("source_tab_closed") ||
+              error.startsWith("source_tab_required") ||
               error.startsWith("source_token_not_accepted")
             ? "prestart_source_tab_changed"
             : error.startsWith("site_not_learned")

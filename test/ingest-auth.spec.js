@@ -39,6 +39,7 @@ describe("start_ingest — site not learned", () => {
     const ack = await mock.dispatch({
       kind: "start_ingest",
       url: "https://example.com/x",
+      tabId: 42,
     });
     expect(ack).toEqual({ ok: true });
     await flush();
@@ -55,6 +56,7 @@ describe("start_ingest — no session fails closed", () => {
     const ack = await mock.dispatch({
       kind: "start_ingest",
       url: "https://app.truecoach.co/clients",
+      tabId: 42,
     });
     expect(ack).toEqual({ ok: true });
     await flush();
@@ -76,6 +78,7 @@ describe("start_ingest — refresh failure fails closed", () => {
     const ack = await mock.dispatch({
       kind: "start_ingest",
       url: "https://app.truecoach.co/clients",
+      tabId: 42,
     });
     expect(ack).toEqual({ ok: true });
     await flush();
@@ -94,6 +97,7 @@ describe("start_ingest — refresh failure fails closed", () => {
     const ack = await mock.dispatch({
       kind: "start_ingest",
       url: "https://brand.truecoach.co/clients",
+      tabId: 42,
     });
     expect(ack).toEqual({ ok: true });
     await flush();
