@@ -216,6 +216,15 @@ async function waitForAsync(predicate, timeoutMs) {
   }
 }
 
+// Chrome derives an unpacked extension's id from its directory path: the first
+// 32 hex digits of sha256(path), each mapped onto a..p. Computing it lets the
+// proof address the extension's pages even when its worker never came up.
+function unpackedExtensionId(directory) {
+  return [...sha256(Buffer.from(directory, "utf8")).slice(0, 32)]
+    .map((digit) => String.fromCharCode(97 + Number.parseInt(digit, 16)))
+    .join("");
+}
+
 function sameSet(actual, expected) {
   return (
     Array.isArray(actual) &&
@@ -392,32 +401,48 @@ async function main() {
 
     // ---- 2. worker target appears and evaluates ---------------------------
     const workerPath = `/${shippedManifest.background.service_worker}`;
-    const worker = await waitFor(
-      () =>
-        [...targets.values()].find(
-          (target) =>
-            target.type === "service_worker" &&
-            target.url.startsWith("chrome-extension://") &&
-            new URL(target.url).pathname === workerPath,
-        ),
-      20_000,
-      `extension service worker target for ${workerPath}`,
-    );
-    const extensionId = new URL(worker.url).host;
-    const workerSession = (
-      await cdp.send("Target.attachToTarget", {
-        targetId: worker.targetId,
-        flatten: true,
-      })
-    ).sessionId;
-    await cdp.send("Runtime.enable", {}, workerSession);
-    await cdp.send("Network.enable", {}, workerSession);
-    progress.worker = { url: worker.url, targetId: worker.targetId };
-    const readiness = await waitForAsync(async () => {
-      const state = await evaluate(
-        cdp,
-        workerSession,
-        `JSON.stringify((() => {
+    const extensionId = unpackedExtensionId(extensionDir);
+    const workerUrl = `chrome-extension://${extensionId}${workerPath}`;
+    // A worker Chrome refuses to evaluate may surface as a target for a moment
+    // and vanish before it can be attached, or never surface at all; either
+    // way it is "not ready", recorded as such rather than aborting the proof.
+    let workerSession = "";
+    /** @type {{ targetId: string, url: string } | null} */
+    let worker = null;
+    try {
+      worker = await waitFor(
+        () =>
+          [...targets.values()].find(
+            (target) =>
+              target.type === "service_worker" && target.url === workerUrl,
+          ),
+        20_000,
+        `extension service worker target ${workerUrl}`,
+      );
+      workerSession = (
+        await cdp.send("Target.attachToTarget", {
+          targetId: worker.targetId,
+          flatten: true,
+        })
+      ).sessionId;
+      await cdp.send("Runtime.enable", {}, workerSession);
+      await cdp.send("Network.enable", {}, workerSession);
+    } catch (error) {
+      progress.workerAttach =
+        error instanceof Error ? error.message : String(error);
+      workerSession = "";
+    }
+    progress.worker = worker
+      ? { url: worker.url, targetId: worker.targetId }
+      : null;
+    const readiness =
+      workerSession === ""
+        ? null
+        : await waitForAsync(async () => {
+            const state = await evaluate(
+              cdp,
+              workerSession,
+              `JSON.stringify((() => {
           const has = (ev) => typeof ev === "object" && ev !== null && ev.hasListeners();
           const rt = typeof chrome !== "undefined" && typeof chrome.runtime === "object";
           return {
@@ -430,14 +455,19 @@ async function main() {
             tabsOnUpdated: rt && typeof chrome.tabs === "object" && has(chrome.tabs.onUpdated),
           };
         })())`,
-      ).then((value) => JSON.parse(value));
-      progress.workerReadiness = state;
-      return state.hasRuntime && state.onMessage ? state : null;
-    }, 15_000);
+            ).then((value) => JSON.parse(value));
+            progress.workerReadiness = state;
+            return state.hasRuntime && state.onMessage ? state : null;
+          }, 15_000);
     check(
       "worker evaluated: runtime bindings present and the message router registered within 15 s",
       readiness !== null,
-      progress.workerReadiness,
+      {
+        worker: progress.worker,
+        attach: progress.workerAttach ?? null,
+        readiness: progress.workerReadiness ?? null,
+        lastPollError,
+      },
     );
     check(
       "worker registered the Start-grant lifecycle listeners (permissions.onAdded/onRemoved, tabs.onRemoved/onUpdated)",
@@ -479,14 +509,15 @@ async function main() {
         ),
       );
       check(
-        "attached worker is the packaged extension (id, URL path and manifest identity agree)",
+        "attached worker is the packaged extension (id derived from the unpacked path, URL path and manifest identity agree)",
         workerState.id === extensionId &&
-          new URL(worker.url).pathname === workerPath &&
+          worker !== null &&
+          worker.url === workerUrl &&
           workerState.worker === shippedManifest.background.service_worker &&
           workerState.name === shippedManifest.name &&
           workerState.version === shippedManifest.version &&
           workerState.versionName === shippedManifest.version_name,
-        { workerUrl: worker.url, extensionId, workerState },
+        { workerUrl, extensionId, workerState },
       );
       check(
         "Chrome installed exactly the frozen permission set: no activeTab, required host is the TGP backend only",
