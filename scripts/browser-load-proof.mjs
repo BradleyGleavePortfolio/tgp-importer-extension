@@ -232,17 +232,19 @@ function sameSet(actual, expected) {
   );
 }
 
-// A REAL click (trusted input event through CDP) on the centre of an element,
-// so Chrome sees a user gesture, exactly as the coach's click would.
-async function clickElement(cdp, sessionId, selector) {
+// A REAL click (trusted input event through CDP) on the centre of the Start
+// button, so Chrome sees a user gesture, exactly as the coach's click would.
+// The selector is a literal inside the evaluated source: nothing is spliced
+// into code.
+async function clickStart(cdp, sessionId) {
   const box = JSON.parse(
     await evaluate(
       cdp,
       sessionId,
-      `(() => { const el = document.querySelector(${JSON.stringify(selector)}); if (!el) return JSON.stringify(null); el.scrollIntoView(); const r = el.getBoundingClientRect(); return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2, disabled: el.disabled === true }); })()`,
+      "(() => { const el = document.querySelector('#start-import'); if (!el) return JSON.stringify(null); el.scrollIntoView(); const r = el.getBoundingClientRect(); return JSON.stringify({ x: r.x + r.width / 2, y: r.y + r.height / 2, disabled: el.disabled === true }); })()",
     ),
   );
-  if (box === null) throw new Error(`no element ${selector}`);
+  if (box === null) throw new Error("no element #start-import");
   for (const type of ["mouseMoved", "mousePressed", "mouseReleased"]) {
     await cdp.send(
       "Input.dispatchMouseEvent",
@@ -599,7 +601,7 @@ async function main() {
       await evaluate(
         cdp,
         probe.sessionId,
-        `import(${JSON.stringify(`chrome-extension://${extensionId}/shared/protocol.js`)}).then((m) => JSON.stringify({ origin: m.TGP_API_ORIGIN, isTgp: m.isTgpOrigin(m.TGP_API_ORIGIN), siblingIsTgp: m.isTgpOrigin("https://someone-else.fly.dev") }))`,
+        "import(chrome.runtime.getURL('shared/protocol.js')).then((m) => JSON.stringify({ origin: m.TGP_API_ORIGIN, isTgp: m.isTgpOrigin(m.TGP_API_ORIGIN), siblingIsTgp: m.isTgpOrigin('https://someone-else.fly.dev') }))",
         true,
       ),
     );
@@ -621,7 +623,7 @@ async function main() {
       await evaluate(
         cdp,
         workerSession,
-        `chrome.storage.session.set({ tgp_refresh_token: ${JSON.stringify(SYNTHETIC_REFRESH)} }).then(() => "ok")`,
+        "chrome.storage.session.set({ tgp_refresh_token: 'proof-synthetic-refresh-token-not-a-credential' }).then(() => 'ok')",
         true,
       );
     }
@@ -690,7 +692,7 @@ async function main() {
     if (rendered !== null) {
       const exceptionsBefore = exceptions.length;
       const requestsBefore = attemptedUrls.length;
-      await clickElement(cdp, popup2.sessionId, "#start-import");
+      await clickStart(cdp, popup2.sessionId);
       clicked = await waitForAsync(async () => {
         const state = JSON.parse(
           await evaluate(

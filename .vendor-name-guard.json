@@ -30,11 +30,6 @@
     "retire": "Historical record retained"
   },
   {
-    "glob": "docs/PACKAGE_PROOF.md",
-    "reason": "Historical package-proof record.",
-    "retire": "Historical record retained"
-  },
-  {
     "glob": "docs/REAL_GOAL_EXECUTION_PLAN.md",
     "reason": "Historical execution record.",
     "retire": "Historical record retained"

@@ -17,7 +17,7 @@ regexes = ['''^\x58\x2d\x56\x65\x6e\x64\x6f\x72\x2d\x41\x70\x69\x2d\x4b\x65\x79\
 description = "Exact HS256-shaped test constant with invalid 12-byte signature"
 targetRules = ["jwt"]
 condition = "AND"
-paths = ['''^test/(ingest-settlement|ingest-complete-contract|origin-authorization|replay-truecoach-e2e|start-authorization-lifecycle|start-import|x1-r3-closures)\.spec\.js$''']
+paths = ['''^test/(ingest-settlement|ingest-complete-contract|origin-authorization|replay-truecoach-e2e|start-authorization-lifecycle|start-import|x1-r3-closures|x1-r4-closures)\.spec\.js$''']
 regexTarget = "secret"
 regexes = ['''^\x65\x79\x4a\x68\x62\x47\x63\x69\x4f\x69\x4a\x49\x55\x7a\x49\x31\x4e\x69\x4a\x39\x2e\x65\x79\x4a\x7a\x64\x57\x49\x69\x4f\x69\x4a\x6a\x62\x32\x46\x6a\x61\x43\x4a\x39\x2e\x73\x31\x67\x2d\x6e\x61\x74\x75\x72\x65\x5f\x54\x4f\x4b\x45\x4e$''']
 
