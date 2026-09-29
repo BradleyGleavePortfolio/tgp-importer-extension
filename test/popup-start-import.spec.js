@@ -34,8 +34,15 @@ function denyAll() {
   return { request: vi.fn(async () => false) };
 }
 
+// The messages a (partial-shape) runtime mock received, in order.
+function sentMessages(runtime) {
+  return /** @type {any[]} */ (
+    /** @type {any} */ (runtime.sendMessage).mock.calls.map((c) => c[0])
+  );
+}
+
 describe("requestStartImport — Authorization = Start", () => {
-  it("asks Chrome for the active tab's origin, then sends its url and id", async () => {
+  it("registers the Start with the worker, then asks Chrome for that one origin", async () => {
     const runtime = { sendMessage: vi.fn(async () => ({ ok: true })) };
     const tabs = {
       query: vi.fn(async () => [
@@ -53,20 +60,26 @@ describe("requestStartImport — Authorization = Start", () => {
       origins: ["https://app.truecoach.co/*"],
     });
     // The tab id rides along so the worker can ask THIS tab's collector for
-    // the source bearer; the url is the crawl origin.
-    expect(runtime.sendMessage).toHaveBeenCalledWith({
-      kind: "start_import",
-      url: "https://app.truecoach.co/clients?client=jane",
-      tabId: 1,
-    });
+    // the source bearer; the url is the crawl origin; the nonce binds this
+    // registration to the grant the prompt is about to produce.
+    const sent = sentMessages(runtime)[0];
+    expect(sent.kind).toBe("start_import");
+    expect(sent.url).toBe("https://app.truecoach.co/clients?client=jane");
+    expect(sent.tabId).toBe(1);
+    expect(typeof sent.nonce).toBe("string");
+    expect(sent.nonce.length).toBeGreaterThan(8);
     expect(result).toEqual({ ok: true });
   });
 
-  it("requests the origin only after the tab query resolves (gesture order)", async () => {
+  it("registers BEFORE it prompts, so the run survives the prompt closing the popup", async () => {
+    // R35B-B3 / R35-A-02: the old order (prompt, then send) meant a popup the
+    // prompt closed never sent Start, leaving the coach's grant held with no
+    // run, and a cold worker that processed the message before onAdded revoked
+    // the grant it had just been given. The registration now goes first.
     const order = [];
     const runtime = {
-      sendMessage: vi.fn(async () => {
-        order.push("send");
+      sendMessage: vi.fn(async (message) => {
+        order.push(`send:${message.kind}`);
         return { ok: true };
       }),
     };
@@ -83,10 +96,33 @@ describe("requestStartImport — Authorization = Start", () => {
       }),
     };
     await requestStartImport(runtime, tabs, permissions);
-    expect(order).toEqual(["query", "request", "send"]);
+    // The trailing start_granted only lets the worker refuse a grant Chrome
+    // held BEFORE this Start; the run itself is started by the grant event.
+    expect(order).toEqual([
+      "query",
+      "send:start_import",
+      "request",
+      "send:start_granted",
+    ]);
   });
 
-  it("denial starts nothing: no message is sent and the code is stable", async () => {
+  it("a refused registration never prompts the coach", async () => {
+    const runtime = {
+      sendMessage: vi.fn(async () => ({
+        ok: false,
+        error: "import_in_progress",
+      })),
+    };
+    const tabs = {
+      query: vi.fn(async () => [{ id: 1, url: "https://source.example/x" }]),
+    };
+    const permissions = grantAll();
+    const result = await requestStartImport(runtime, tabs, permissions);
+    expect(permissions.request).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: false, error: "import_in_progress" });
+  });
+
+  it("denial starts nothing and tells the worker to drop its pending Start", async () => {
     const runtime = { sendMessage: vi.fn(async () => ({ ok: true })) };
     const tabs = {
       query: vi.fn(async () => [{ id: 1, url: "https://source.example/x" }]),
@@ -94,7 +130,12 @@ describe("requestStartImport — Authorization = Start", () => {
     const permissions = denyAll();
     const result = await requestStartImport(runtime, tabs, permissions);
     expect(permissions.request).toHaveBeenCalledOnce();
-    expect(runtime.sendMessage).not.toHaveBeenCalled();
+    const kinds = sentMessages(runtime).map((m) => m.kind);
+    expect(kinds).toEqual(["start_import", "start_unavailable"]);
+    // The cancellation carries the SAME nonce, so only this gesture's Start
+    // can be cancelled by it.
+    const [registered, cancelled] = sentMessages(runtime);
+    expect(cancelled.nonce).toBe(registered.nonce);
     expect(result).toEqual({ ok: false, error: "origin_not_authorized" });
   });
 
@@ -105,7 +146,27 @@ describe("requestStartImport — Authorization = Start", () => {
     };
     const permissions = { request: vi.fn(async () => "yes") };
     const result = await requestStartImport(runtime, tabs, permissions);
-    expect(runtime.sendMessage).not.toHaveBeenCalled();
+    expect(sentMessages(runtime).map((m) => m.kind)).toEqual([
+      "start_import",
+      "start_unavailable",
+    ]);
+    expect(result).toEqual({ ok: false, error: "origin_not_authorized" });
+  });
+
+  it("a lost cancellation is not fatal: the honest code still reaches the coach", async () => {
+    // The worker expires its own pending Start (and revokes any grant) on its
+    // deadline, so a dropped start_unavailable never strands the coach.
+    const runtime = {
+      sendMessage: vi.fn(async (message) => {
+        if (message.kind === "start_unavailable")
+          throw new Error("port closed");
+        return { ok: true };
+      }),
+    };
+    const tabs = {
+      query: vi.fn(async () => [{ id: 1, url: "https://source.example/x" }]),
+    };
+    const result = await requestStartImport(runtime, tabs, denyAll());
     expect(result).toEqual({ ok: false, error: "origin_not_authorized" });
   });
 
@@ -149,11 +210,10 @@ describe("requestStartImport — Authorization = Start", () => {
       query: vi.fn(async () => [{ url: "https://app.truecoach.co/clients" }]),
     };
     await requestStartImport(runtime, tabs, grantAll());
-    expect(runtime.sendMessage).toHaveBeenCalledWith({
-      kind: "start_import",
-      url: "https://app.truecoach.co/clients",
-      tabId: null,
-    });
+    const sent = sentMessages(runtime)[0];
+    expect(sent.kind).toBe("start_import");
+    expect(sent.url).toBe("https://app.truecoach.co/clients");
+    expect(sent.tabId).toBe(null);
   });
 });
 
@@ -224,7 +284,12 @@ describe("wireStartImport — binds the CTA click to a real gesture", () => {
       btn.fire("click");
       await flush();
       await flush();
-      expect(runtime.sendMessage).not.toHaveBeenCalled();
+      // No RUN is ever asked for. A declined grant does send the worker its
+      // own cancellation (so the pending Start and any grant end at once);
+      // an unsafe origin never reaches the worker at all.
+      expect(
+        sentMessages(runtime).filter((m) => m.kind === "start_import"),
+      ).toHaveLength(_label === "declined grant" ? 1 : 0);
       expect(btn.disabled).toBe(false);
       expect(errorBox.hidden).toBe(false);
       expect(errorBox.textContent).toBe(messages[key].message);
@@ -259,11 +324,13 @@ describe("wireStartImport — binds the CTA click to a real gesture", () => {
     const doc = fakeDoc(btn);
     let resolveSend;
     const runtime = {
-      sendMessage: vi.fn(
-        () =>
-          new Promise((r) => {
-            resolveSend = r;
-          }),
+      // The registration is held open; the follow-up (start_granted) is not.
+      sendMessage: vi.fn((message) =>
+        message.kind === "start_import"
+          ? new Promise((r) => {
+              resolveSend = r;
+            })
+          : Promise.resolve({ ok: true }),
       ),
     };
     const tabs = { query: vi.fn(async () => sourceTab) };
@@ -279,16 +346,12 @@ describe("wireStartImport — binds the CTA click to a real gesture", () => {
       active: true,
       currentWindow: true,
     });
-    expect(permissions.request).toHaveBeenCalledWith({
-      origins: ["https://app.truecoach.co/*"],
-    });
-    expect(runtime.sendMessage).toHaveBeenCalledWith({
-      kind: "start_import",
-      url: "https://app.truecoach.co/clients",
-      tabId: 1,
-    });
+    const sent = sentMessages(runtime)[0];
+    expect(sent.kind).toBe("start_import");
+    expect(sent.url).toBe("https://app.truecoach.co/clients");
+    expect(sent.tabId).toBe(1);
 
-    // Still disabled until the send settles.
+    // Still disabled until the registration settles.
     expect(btn.disabled).toBe(true);
     // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     resolveSend({ ok: true });
@@ -330,7 +393,11 @@ describe("wireStartImport — binds the CTA click to a real gesture", () => {
     btn.fire("click");
     await flush();
     await flush();
-    expect(runtime.sendMessage).not.toHaveBeenCalled();
+    // The registration went out and was then cancelled; no run was confirmed.
+    expect(sentMessages(runtime).map((m) => m.kind)).toEqual([
+      "start_import",
+      "start_unavailable",
+    ]);
     expect(btn.disabled).toBe(false);
   });
 

@@ -212,40 +212,18 @@ describe("A:B1 — a grant that merely exists is not a Start", () => {
 });
 
 describe("A:B2 — cleanup is verified, never assumed", () => {
-  it("a collector unregister failure keeps the Start gate closed (cleanup_pending) until a retry verifies removal", async () => {
-    const { mock } = await load({ tab: withSourceTab(), failUnregister: true });
+  it("R35B-C2: a run REGISTERS no collector, so there is nothing for a worker death to leave behind", async () => {
+    const { mock } = await load({ tab: withSourceTab() });
     routeSuccess(mock);
     await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
     expect(await settle(mock)).toBe("ingest_succeeded");
     await flush();
-    // The registration is still there: Chrome refused to remove it.
-    expect(mock.registeredIds.has(COLLECTOR_ID)).toBe(true);
-    // No run is admitted while the previous run's cleanup is owed.
-    const refused = await mock.dispatch({
-      kind: "start_import",
-      url: TAB_URL,
-      tabId: TAB_ID,
-    });
-    expect(refused).toEqual({ ok: false, error: "cleanup_pending" });
-    await flush();
-    expect(mock.registeredIds.has(COLLECTOR_ID)).toBe(true);
-    // Chrome recovers; the refused Start retried the cleanup and verified it.
-    mock.knobs.failUnregister = false;
-    const retrying = await mock.dispatch({
-      kind: "start_import",
-      url: TAB_URL,
-      tabId: TAB_ID,
-    });
-    expect(retrying).toEqual({ ok: false, error: "cleanup_pending" });
-    await flush();
+    // The collector was injected into the Start tab once and never registered.
+    expect(mock.scripting.registered).toEqual([]);
     expect(mock.registeredIds.has(COLLECTOR_ID)).toBe(false);
-    expect(
-      await runToEnd(mock, {
-        kind: "start_import",
-        url: TAB_URL,
-        tabId: TAB_ID,
-      }),
-    ).toBe("ingest_succeeded");
+    expect(mock.scripting.executed).toEqual([
+      { target: { tabId: TAB_ID }, files: ["content/main.js"] },
+    ]);
   });
 
   it("a grant revoke failure keeps the Start gate closed until the grant is verified gone", async () => {

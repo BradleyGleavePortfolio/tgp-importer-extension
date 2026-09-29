@@ -35,6 +35,30 @@ const MAX_PENDING = 1000;
 // inflight-request table, and the debugger event listener used to tear down.
 const sessions = new Map();
 
+// Why a tab's session ended, kept after the session object is gone so a later
+// stop_capture reports the TRUTH ("the page navigated", "the run ended")
+// instead of an empty, reasonless snapshot. Unknown is never zero: a capture
+// that was thrown away says so. Cleared when a new session attaches to the tab
+// and when a stop consumes it.
+/** @type {Map<number, string>} */
+const tombstones = new Map();
+
+function tombstone(tabId, reason) {
+  tombstones.set(tabId, reason);
+}
+
+// The snapshot a stop gets for a tab whose session already ended: no entries,
+// and the recorded teardown reason so the loss is never reported as zero.
+function tombstonedSnapshot(tabId) {
+  const reason = tombstones.get(tabId);
+  tombstones.delete(tabId);
+  return captureSnapshot(
+    [],
+    null,
+    new Map([[reason ?? "capture_never_started", 1]]),
+  );
+}
+
 // Capture is a capability of the CURRENT run only. Every session is stamped
 // with the generation it was attached under; retireCaptureSessions (called on
 // every run settlement / session clear) bumps the generation and drains every
@@ -201,16 +225,28 @@ async function attachDebugger(tabId, options) {
     }
     if (!isLiveSession(session)) {
       exclude("run_retired");
-      void teardownSession(tabId, { detach: true });
+      void teardownSession(tabId, { detach: true, reason: "run_retired" });
       return;
     }
-    // In-band navigation signal: a request issued by a document on another
-    // origin means the tab left the authorized origin. Detach immediately;
-    // the debugger is never exercised for that document.
+    // In-band navigation signal, MAIN FRAME ONLY: a top-level document request
+    // for another origin means the tab itself is leaving the authorized
+    // origin, so the handle must not follow it. Subframe traffic (an
+    // about:blank widget, an analytics iframe, a same-site iframe) is ordinary
+    // page behaviour: it is never recorded (recordRequest rejects any foreign
+    // request URL) but it must NOT end the capture. tabs.onUpdated remains the
+    // primary, authoritative navigation signal.
     const documentUrl = readString(params, "documentURL");
     if (documentUrl !== null && originOf(documentUrl) !== expectedOrigin) {
-      exclude("document_navigated");
-      void teardownSession(tabId, { detach: true });
+      if (isMainFrameNavigation(session, params)) {
+        exclude("main_frame_navigated");
+        void teardownSession(tabId, {
+          detach: true,
+          reason: "main_frame_navigated",
+        });
+        return;
+      }
+      // Foreign document, same tab: counted, never recorded, never fatal.
+      exclude("foreign_document");
       return;
     }
     if (
@@ -241,16 +277,23 @@ async function attachDebugger(tabId, options) {
     expectedOrigin,
     excluded,
     generation,
+    // The tab's top-level frame, learned after attach. null when Chrome would
+    // not tell us: in-band navigation teardown then defers entirely to
+    // tabs.onUpdated rather than guessing from subframe traffic.
+    /** @type {string | null} */
+    rootFrameId: null,
   };
   sessions.set(tabId, session);
+  tombstones.delete(tabId);
   chrome.debugger.onEvent.addListener(onEvent);
 
   try {
     await chrome.debugger.attach(target, DEBUGGER_PROTOCOL_VERSION);
-    await chrome.debugger.sendCommand(target, "Network.enable", {});
-    // The tab may have navigated (or the run settled) while attach awaited:
-    // re-check the live document, the grant and the generation before the
-    // handle is allowed to exist.
+    // FAIL CLOSED BEFORE THE DOMAIN IS ENABLED. attach is awaited, so the tab
+    // may have navigated (or the run settled, or the grant been withdrawn)
+    // meanwhile. Network.enable is network-capture authority over whatever
+    // document the tab now holds, so every check happens BEFORE it is sent:
+    // an unauthorized destination never has the domain exercised on it.
     const live = await assertCaptureTabAllowed(tabId);
     if (originOf(live.url) !== expectedOrigin) {
       throw new Error("capture_tab_navigated");
@@ -258,6 +301,17 @@ async function attachDebugger(tabId, options) {
     if (!isLiveSession(session)) {
       throw new Error("capture_run_retired");
     }
+    await chrome.debugger.sendCommand(target, "Network.enable", {});
+    // And again after enabling: a navigation that landed during the enable
+    // round trip tears the handle down before any event is honoured.
+    const stillLive = await assertCaptureTabAllowed(tabId);
+    if (originOf(stillLive.url) !== expectedOrigin) {
+      throw new Error("capture_tab_navigated");
+    }
+    if (!isLiveSession(session)) {
+      throw new Error("capture_run_retired");
+    }
+    session.rootFrameId = await readRootFrameId(target);
   } catch (err) {
     // A partial attach (coach denied the prompt, DevTools already open,
     // Network.enable rejected) must not leak a debugger handle, listener, or
@@ -274,6 +328,44 @@ async function attachDebugger(tabId, options) {
     throw err;
   }
   return buffer;
+}
+
+// The tab's top-level frame id, or null when Chrome does not answer. Page is
+// never ENABLED (no page-lifecycle events are subscribed); this is a single
+// read of the frame tree so main-frame navigation can be told apart from
+// subframe traffic.
+async function readRootFrameId(target) {
+  try {
+    const tree = await chrome.debugger.sendCommand(
+      target,
+      "Page.getFrameTree",
+      {},
+    );
+    const frameTree = isRecord(tree)
+      ? /** @type {Record<string, unknown>} */ (tree).frameTree
+      : null;
+    const frame = isRecord(frameTree)
+      ? /** @type {Record<string, unknown>} */ (frameTree).frame
+      : null;
+    return readString(frame, "id");
+  } catch {
+    return null;
+  }
+}
+
+// Is this event a top-level document navigation of the captured tab? Only a
+// main-frame document request counts; anything else (subframe documents,
+// XHR/fetch/script/image issued by any document) is not a navigation of the
+// tab. When the root frame is unknown, nothing in band is treated as a
+// navigation: tabs.onUpdated is the authoritative signal.
+function isMainFrameNavigation(session, params) {
+  if (readString(params, "type") !== "Document") return false;
+  const frameId = readString(params, "frameId");
+  return (
+    session.rootFrameId !== null &&
+    frameId !== null &&
+    frameId === session.rootFrameId
+  );
 }
 
 // Route a single CDP event for a captured tab. Only Network.* events are handled
@@ -445,12 +537,15 @@ async function finalizeEntry(target, params, inflight, buffer, exclude) {
 // snapshot, free the buffer, and (optionally) detach the debugger. Safe for an
 // unknown tab (returns an empty array). `detach` is false only when Chrome has
 // already detached (chrome.debugger.onDetach), where a detach call is redundant.
-async function teardownSession(tabId, { detach }) {
+async function teardownSession(tabId, { detach, reason }) {
   const session = sessions.get(tabId);
   if (session === undefined) {
-    return captureSnapshot([], null, new Map());
+    return tombstonedSnapshot(tabId);
   }
   sessions.delete(tabId);
+  if (typeof reason === "string") {
+    tombstone(tabId, reason);
+  }
   chrome.debugger.onEvent.removeListener(session.onEvent);
   // Wait for any finalizer already in flight so its body write lands in the
   // buffer before we snapshot, and no orphan write occurs after we resolve.
@@ -511,10 +606,16 @@ function normalizeCapturedSnapshot(snapshot) {
 async function stopCapture(tabId) {
   const session = sessions.get(tabId);
   if (session !== undefined && !isLiveSession(session)) {
-    await teardownSession(tabId, { detach: true });
+    await teardownSession(tabId, { detach: true, reason: "run_retired" });
+    tombstones.delete(tabId);
     return captureSnapshot([], null, new Map([["run_retired", 1]]));
   }
-  return teardownSession(tabId, { detach: true });
+  const snapshot = await teardownSession(tabId, {
+    detach: true,
+    reason: null,
+  });
+  tombstones.delete(tabId);
+  return snapshot;
 }
 
 // End every capture session of the current run: bump the generation (so any
@@ -524,7 +625,7 @@ async function retireCaptureSessions() {
   captureGeneration += 1;
   await Promise.allSettled(
     [...sessions.keys()].map((tabId) =>
-      teardownSession(tabId, { detach: true }),
+      teardownSession(tabId, { detach: true, reason: "run_retired" }),
     ),
   );
 }
@@ -537,7 +638,7 @@ async function retireCaptureSessions() {
 // Called once from the background service worker at startup.
 function registerCaptureLifecycle() {
   chrome.tabs.onRemoved.addListener((tabId) => {
-    void teardownSession(tabId, { detach: true });
+    void teardownSession(tabId, { detach: true, reason: "tab_closed" });
   });
   // The captured tab navigated: the handle must not follow it to another
   // origin (even one Chrome holds a grant for). Same-origin navigations keep
@@ -550,10 +651,13 @@ function registerCaptureLifecycle() {
     }
     if (originOf(url) !== session.expectedOrigin) {
       session.excluded.set(
-        "document_navigated",
-        (session.excluded.get("document_navigated") ?? 0) + 1,
+        "main_frame_navigated",
+        (session.excluded.get("main_frame_navigated") ?? 0) + 1,
       );
-      void teardownSession(tabId, { detach: true });
+      void teardownSession(tabId, {
+        detach: true,
+        reason: "main_frame_navigated",
+      });
     }
   });
   // Chrome revoked a host grant: any session on that origin ends now, not at
@@ -565,18 +669,27 @@ function registerCaptureLifecycle() {
         : [];
     for (const [tabId, session] of [...sessions]) {
       if (origins.includes(`${session.expectedOrigin}/*`)) {
-        void teardownSession(tabId, { detach: true });
+        void teardownSession(tabId, {
+          detach: true,
+          reason: "origin_revoked",
+        });
       }
     }
   });
   chrome.debugger.onDetach.addListener((source) => {
     if (isRecord(source) && typeof source.tabId === "number") {
-      void teardownSession(source.tabId, { detach: false });
+      void teardownSession(source.tabId, {
+        detach: false,
+        reason: "debugger_detached",
+      });
     }
   });
   chrome.runtime.onSuspend.addListener(() => {
     for (const tabId of [...sessions.keys()]) {
-      void teardownSession(tabId, { detach: true });
+      void teardownSession(tabId, {
+        detach: true,
+        reason: "worker_suspended",
+      });
     }
   });
 }

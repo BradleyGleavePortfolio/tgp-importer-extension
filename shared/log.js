@@ -19,6 +19,16 @@ const KNOWN_EVENTS = new Set([
   "ingest_ack_cancel_failed",
   "auth_body_cancel_failed",
   "status_popup_unavailable",
+  "run_cleanup_pending",
+  "source_collector_unregister_failed",
+  // Start-authorization lifecycle (X1): every path that drops or fails to drop
+  // a host grant is observable by code only — no origin, url or token.
+  "startup_sweep_pending",
+  "startup_grant_revoke_failed",
+  "start_expiry_revoke_failed",
+  "start_refusal_revoke_failed",
+  "start_refused_busy",
+  "start_refused_cleanup",
 ]);
 
 // Emit a structured, secret-free warning. `event` MUST be one of KNOWN_EVENTS so

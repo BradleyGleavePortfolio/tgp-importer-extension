@@ -157,6 +157,11 @@ describe("A2 — the debugger never follows a navigation", () => {
     await expect(attachDebugger(TAB)).rejects.toThrow();
     expect(mock.calls.detach).toContainEqual({ target: { tabId: TAB } });
     expect(mock.listenerCount()).toBe(0);
+    // R35-A-01: the check happens BEFORE Network.enable, so the debugger
+    // never observed a single byte of the unauthorized origin's traffic.
+    expect(
+      mock.calls.sendCommand.filter((c) => c.method === "Network.enable"),
+    ).toEqual([]);
   });
 
   it("tabs.onUpdated to another origin tears the session down, even a granted one", async () => {
@@ -180,15 +185,49 @@ describe("A2 — the debugger never follows a navigation", () => {
     await stopCapture(TAB);
   });
 
-  it("a request issued by a foreign document (documentURL) detaches before any body read", async () => {
+  it("a request issued by a foreign document (documentURL) is never body-read, and is counted as loss", async () => {
     await attachDebugger(TAB);
     emitJson(mock, TAB, "r1", `${A}/proxy/api/clients`, {
       documentURL: `${B}/page`,
     });
     await flush();
     expect(bodyReads(mock)).toHaveLength(0);
-    expect(mock.calls.detach).toContainEqual({ target: { tabId: TAB } });
+    // R35B-B2: a subframe (or its fetch) is NOT a navigation of the tab, so
+    // the session stays up — but the entry is excluded and the loss reported.
+    expect(mock.listenerCount()).toBe(1);
     const snap = await stopCapture(TAB);
     expect(snap.entries).toEqual([]);
+    expect(snap.excluded.map((e) => e.reason)).toContain("foreign_document");
+  });
+
+  it("R35B-B2: a main-frame Document request to another origin tears the session down; a subframe one does not", async () => {
+    mock.onCommand("Page.getFrameTree", () => ({
+      frameTree: { frame: { id: "ROOT" } },
+    }));
+    await attachDebugger(TAB);
+    // about:blank iframe (P1 probe): a Document request from a child frame.
+    emitJson(mock, TAB, "r1", "about:blank", {
+      type: "Document",
+      frameId: "CHILD",
+      documentURL: "about:blank",
+    });
+    await flush();
+    expect(mock.listenerCount()).toBe(1);
+    expect(mock.calls.detach).toEqual([]);
+    // The tab itself navigating away: the only in-band teardown.
+    emitJson(mock, TAB, "r2", `${B}/landing`, {
+      type: "Document",
+      frameId: "ROOT",
+      documentURL: `${B}/landing`,
+    });
+    await flush();
+    expect(mock.calls.detach).toContainEqual({ target: { tabId: TAB } });
+    expect(mock.listenerCount()).toBe(0);
+    // The teardown REASON reaches stop_capture: loss is never reported as zero.
+    const snap = await stopCapture(TAB);
+    expect(snap.entries).toEqual([]);
+    expect(snap.excluded.map((e) => e.reason)).toContain(
+      "main_frame_navigated",
+    );
   });
 });

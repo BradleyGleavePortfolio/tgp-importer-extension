@@ -156,10 +156,19 @@ const START_ISSUE_CODES = new Set([
   "origin_request_failed",
 ]);
 
-// On the Start gesture: ask Chrome for the active tab's origin (denial starts
-// nothing), then ask the worker to import that tab. Its URL + id are the only
-// inputs: the worker re-checks the grant, holds the origin for the run and
-// collects the source bearer itself — the popup never handles the token.
+// On the Start gesture, in this order and for this reason:
+//   1. REGISTER the Start with the worker (tab id, tab origin, a nonce). This
+//      happens BEFORE Chrome is prompted, so there is no ordering dependency
+//      left: the worker begins the run as soon as both the pending Start and a
+//      fresh grant for that exact origin exist, in EITHER order.
+//   2. Ask Chrome for that one origin. Chrome's prompt takes focus and may
+//      close this popup; the run still proceeds, because the worker already
+//      holds the registration and will see the grant event.
+// Denial (or an unavailable prompt) is reported back so the worker can end its
+// pending Start at once instead of waiting out the window. The worker never
+// trusts the popup's claim: it re-checks the grant with Chrome, holds the
+// origin for the run, and collects the source bearer itself — the popup never
+// handles the token.
 export function requestStartImport(runtime, tabs, permissions) {
   return tabs.query({ active: true, currentWindow: true }).then((result) => {
     const tab = Array.isArray(result) && result.length > 0 ? result[0] : null;
@@ -172,16 +181,58 @@ export function requestStartImport(runtime, tabs, permissions) {
     if (isTgpOrigin(origin)) {
       return { ok: false, error: "origin_is_tgp" };
     }
-    // Chrome's prompt answers true (granted), false (declined) or rejects
-    // (no gesture, prompt unavailable). Each is its own honest no-run fact.
-    return permissions.request({ origins: [`${origin}/*`] }).then(
-      (granted) =>
-        granted === true
-          ? runtime.sendMessage({ kind: "start_import", url, tabId })
-          : { ok: false, error: "origin_not_authorized" },
-      () => ({ ok: false, error: "origin_request_failed" }),
-    );
+    const nonce = startNonce();
+    return runtime
+      .sendMessage({ kind: "start_import", url, tabId, nonce })
+      .then((ack) => {
+        // A refused registration (busy, cleanup owed) starts nothing and must
+        // not lead to a prompt the coach cannot use.
+        if (!isOk(ack)) return ack;
+        // Chrome's prompt answers true (granted), false (declined) or rejects
+        // (no gesture, prompt unavailable). Each is its own honest no-run fact,
+        // and each tells the worker to drop the Start it registered.
+        return permissions.request({ origins: [`${origin}/*`] }).then(
+          (granted) =>
+            granted === true
+              ? confirmStart(runtime, nonce, ack)
+              : abandonStart(runtime, nonce, "origin_not_authorized"),
+          () => abandonStart(runtime, nonce, "origin_request_failed"),
+        );
+      });
   });
+}
+
+// Tell the worker its pending Start will never be granted, then report the
+// honest code. A lost cancellation is not fatal: the worker expires the
+// pending Start (and revokes any grant) on its own deadline.
+function abandonStart(runtime, nonce, error) {
+  const refused = { ok: false, error };
+  return Promise.resolve(
+    runtime.sendMessage({ kind: "start_unavailable", nonce }),
+  ).then(
+    () => refused,
+    // The worker was not reachable; its own deadline ends the Start.
+    () => refused,
+  );
+}
+
+// Chrome answered `true`. If the coach accepted a PROMPT, the worker's grant
+// event has already started the run and this is a no-op. If Chrome answered
+// true because it ALREADY held the origin, no prompt and no grant event
+// happened: the worker refuses that (possession is not a Start) and revokes
+// it, and the reply carries that fact so the popup shows the honest line.
+function confirmStart(runtime, nonce, ack) {
+  return Promise.resolve(runtime.sendMessage({ kind: "start_granted", nonce }))
+    .then((reply) => (isOk(reply) ? ack : reply))
+    .catch(() => ack);
+}
+
+// Opaque one-time id binding this gesture's registration to this gesture's
+// grant. Not a secret and never leaves the extension.
+function startNonce() {
+  return globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `start-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 // Wire the Start Import CTA. Disables the button while the send is in flight so a

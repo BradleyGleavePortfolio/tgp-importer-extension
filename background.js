@@ -131,6 +131,15 @@ function isRequestServerStatus(m) {
 function isStartCapture(m) {
   return isRecord(m) && m.kind === "start_capture";
 }
+// The popup reporting that the grant its pending Start needed never arrived
+// (the coach declined Chrome's prompt, or no prompt could be shown).
+function isStartUnavailable(m) {
+  return isRecord(m) && m.kind === "start_unavailable";
+}
+// The popup reporting that Chrome answered its permission request `true`.
+function isStartGranted(m) {
+  return isRecord(m) && m.kind === "start_granted";
+}
 function isStopCapture(m) {
   return isRecord(m) && m.kind === "stop_capture";
 }
@@ -610,10 +619,142 @@ function notifyOutcome(platform, engineStatus) {
 // A Start authorization is a FRESH grant: Chrome only fires permissions.onAdded
 // when the coach accepts its prompt, which chrome.permissions.request may show
 // only from a user gesture. The worker records each freshly granted origin in
-// memory and a run CONSUMES it (single use). A grant that merely exists — left
-// over from a run whose revoke failed, or from a Start whose message was lost
-// — is not a Start: it is revoked so the next Start prompts again.
-const freshGrants = new Set();
+// memory WITH the time it arrived, and a run CONSUMES it (single use) within
+// START_TTL_MS. A grant that merely exists — left over from a run whose revoke
+// failed, from a Start whose message was lost, or older than the window — is
+// not a Start: it is revoked so the next Start prompts again.
+/** @type {Map<string, number>} */
+const freshGrants = new Map();
+
+// One Start exchange lives at most this long: a pending registration with no
+// grant, or a fresh grant with no registration, is revoked and reported after
+// this window. Chrome's permission prompt has no deadline, so the popup
+// registers BEFORE prompting and the worker starts when both halves exist.
+const START_TTL_MS = 60_000;
+
+function hasFreshGrant(origin) {
+  const at = freshGrants.get(origin);
+  if (at === undefined) return false;
+  if (Date.now() - at <= START_TTL_MS) return true;
+  freshGrants.delete(origin);
+  return false;
+}
+
+function takeFreshGrant(origin) {
+  const at = freshGrants.get(origin);
+  if (at === undefined) return false;
+  freshGrants.delete(origin);
+  return Date.now() - at <= START_TTL_MS;
+}
+
+// The popup's registered half of a Start exchange: recorded BEFORE the popup
+// asks Chrome to prompt, so the run can begin whichever half arrives last and
+// even if the prompt steals focus and closes the popup. Exactly one may be
+// pending; a newer registration replaces an older one (the older Start failed).
+/** @type {{ nonce: string | null, tabId: number | null, origin: string,
+ *   url: string, kind: string, message: object, expiresAt: number,
+ *   claimed: boolean,
+ *   timer: ReturnType<typeof setTimeout> | null } | null} */
+let pendingStart = null;
+
+function clearPendingStart() {
+  if (pendingStart !== null && pendingStart.timer !== null) {
+    clearTimeout(pendingStart.timer);
+  }
+  pendingStart = null;
+}
+
+// Register the popup's half of a Start exchange. Bound to the initiating tab,
+// its origin and the caller's nonce, and valid for START_TTL_MS: the run that
+// later begins uses THESE values, never a tab id or url some other extension
+// page supplies afterwards. A second registration supersedes the first.
+function registerPendingStart(kind, message, origin) {
+  if (pendingStart !== null) {
+    const superseded = pendingStart.origin;
+    clearPendingStart();
+    void expireStart(superseded, "start_superseded");
+  }
+  const pending = {
+    nonce: readString(message, "nonce"),
+    tabId: readTabId(message),
+    origin,
+    url: typeof message.url === "string" ? message.url : "",
+    kind,
+    // The registering message itself, so the run is driven by what the
+    // INITIATING page sent (including a caller-supplied token the legacy
+    // entrypoint must refuse), never by a later message for the same origin.
+    message,
+    expiresAt: Date.now() + START_TTL_MS,
+    claimed: false,
+    timer: null,
+  };
+  const timer = setTimeout(() => {
+    if (pendingStart === pending) {
+      clearPendingStart();
+      void expireStart(origin, "start_expired");
+    }
+  }, START_TTL_MS);
+  if (typeof timer === "object" && timer !== null && "unref" in timer) {
+    timer.unref();
+  }
+  pending.timer = timer;
+  pendingStart = pending;
+  return pending;
+}
+
+// A grant Chrome ALREADY holds when a Start registers is not this Start's: the
+// popup registers BEFORE it prompts, so a permission that exists at this
+// moment is a leftover — a run whose revoke failed, a lost Start, or a grant
+// made through Chrome's own UI. It is revoked and refused, so the next Start
+// prompts afresh. Re-checked after the await: a grant that arrived meanwhile
+// (the coach accepted) already began the run and is not touched.
+async function screenHeldGrant(pending) {
+  if (!(await holdsGrant(pending.origin))) return;
+  if (pendingStart !== pending || hasFreshGrant(pending.origin)) return;
+  if (isActiveOrigin(pending.origin)) return;
+  clearPendingStart();
+  await revokeGrant(pending.origin);
+  broadcastStatus({
+    ...emptySnapshot(),
+    lastError: `start_not_authorized: ${pending.origin}`,
+  });
+}
+
+// The origin the run in flight is using. Its grant belongs to that run and is
+// revoked by ITS settlement (settleRun), never by another Start's refusal —
+// pulling it mid-run would abort the coach's live import.
+function isActiveOrigin(origin) {
+  return (
+    startingOrigin === origin ||
+    (activeRun !== null && activeRun.origin === origin)
+  );
+}
+
+// The origin of the run being started, set SYNCHRONOUSLY when both halves of a
+// Start exchange meet and cleared by settleRun. activeRun only exists a few
+// awaits later (after the grant is re-checked), and an earlier refusal's
+// asynchronous revoke must not land inside that window and kill the new run.
+/** @type {string | null} */
+let startingOrigin = null;
+
+// Drop a grant no run owns: forget the fresh mark and remove the host
+// permission if Chrome still holds it. Never throws.
+async function dropUnusedGrant(origin, event) {
+  freshGrants.delete(origin);
+  if (isActiveOrigin(origin)) return;
+  try {
+    if (await holdsGrant(origin)) await revokeGrant(origin);
+  } catch {
+    logNetworkEvent(event);
+  }
+}
+
+// Drop an expired or abandoned Start half and revoke whatever grant it may
+// have left in Chrome, reporting a stable code. Never throws.
+async function expireStart(origin, code) {
+  await dropUnusedGrant(origin, "start_expiry_revoke_failed");
+  broadcastStatus({ ...emptySnapshot(), lastError: `${code}: ${origin}` });
+}
 
 // The https origins a chrome.permissions event names (patterns `origin/*`).
 function grantedOrigins(permissions) {
@@ -630,9 +771,215 @@ function grantedOrigins(permissions) {
   return origins;
 }
 
+// The other half of the Start exchange. Either order is fine: the coach's
+// accepted prompt may reach the worker before or after the popup's pending
+// Start (a cold worker queues both), and the run begins as soon as BOTH exist
+// for the SAME origin, bound to the same nonce, tab and origin. So the run
+// proceeds even when Chrome's prompt closes the popup before it could send.
 chrome.permissions.onAdded.addListener((permissions) => {
-  for (const origin of grantedOrigins(permissions)) freshGrants.add(origin);
+  for (const origin of grantedOrigins(permissions)) {
+    if (isTgpOrigin(origin)) {
+      // TGP's own origin authorizes nothing (the handler already said so):
+      // drop the grant quietly, without overwriting that refusal.
+      void dropUnusedGrant(origin, "start_expiry_revoke_failed");
+      continue;
+    }
+    freshGrants.set(origin, Date.now());
+    const pending = pendingStart;
+    if (pending === null && (importInFlight || pendingCleanup !== null)) {
+      // No Start could be admitted right now, so no Start can claim this
+      // grant: it is revoked at once rather than held for the window. The
+      // running import's own origin is never touched.
+      if (!isActiveOrigin(origin)) {
+        void expireStart(
+          origin,
+          pendingCleanup !== null
+            ? "start_refused_cleanup"
+            : "start_refused_busy",
+        );
+      }
+      continue;
+    }
+    if (pending === null) {
+      // No Start registered (yet): hold the grant for the window only, then
+      // revoke it. A grant never outlives the exchange that asked for it.
+      const timer = setTimeout(() => {
+        if (hasFreshGrant(origin)) void expireStart(origin, "start_expired");
+      }, START_TTL_MS);
+      if (typeof timer === "object" && timer !== null && "unref" in timer) {
+        timer.unref();
+      }
+      continue;
+    }
+    if (Date.now() > pending.expiresAt) {
+      clearPendingStart();
+      void expireStart(origin, "start_expired");
+      continue;
+    }
+    if (pending.origin !== origin) {
+      // The grant names an origin this Start did not ask for: it is revoked
+      // and nothing starts. The registration stays pending for its own origin.
+      void expireStart(origin, "start_grant_mismatch");
+      continue;
+    }
+    claimStart(pending);
+  }
 });
+
+// Both halves of the Start exchange exist for one origin: consume the
+// registration and begin the run. All checks and the single-flight set are
+// SYNCHRONOUS, so no second claim can interleave. The fresh grant itself is
+// consumed by authorizeSourceOrigin inside the handler.
+function beginAuthorizedRun(pending) {
+  clearPendingStart();
+  if (pendingCleanup !== null || importInFlight) {
+    // A run slipped in between registration and grant: this Start is refused,
+    // and its grant must not outlive the refusal.
+    void expireStart(
+      pending.origin,
+      pendingCleanup !== null ? "start_refused_cleanup" : "start_refused_busy",
+    );
+    return;
+  }
+  importInFlight = true;
+  startingOrigin = pending.origin;
+  // The run is driven by the REGISTERED Start, not by whatever a later message
+  // claims: its tab id and url are the ones the initiating popup bound.
+  const message = {
+    ...pending.message,
+    kind: pending.kind,
+    url: pending.url,
+    tabId: pending.tabId,
+  };
+  const handler =
+    pending.kind === "start_ingest" ? handleStartIngest : handleStartImport;
+  void handler(message).finally(settleRun);
+}
+
+// Admit (or refuse) a Start. Everything that decides admission is
+// SYNCHRONOUS — the single pending slot and the single-flight flag are both
+// taken before any await, so two Starts can never both proceed. Every refusal
+// revokes whatever grant the origin may hold, so a refused Start leaves the
+// extension holding nothing.
+function admitStart(kind, message) {
+  const url = typeof message.url === "string" ? message.url : "";
+  const origin = tabOriginAllowlist(url)?.[0] ?? null;
+  if (startupSweepFailed) {
+    void retryStartupSweep();
+    if (origin !== null) void refuseStart(origin, "cleanup_pending");
+    return { ok: false, error: "cleanup_pending" };
+  }
+  if (pendingCleanup !== null) {
+    void retryPendingCleanup();
+    if (origin !== null) void refuseStart(origin, "cleanup_pending");
+    return { ok: false, error: "cleanup_pending" };
+  }
+  // Shared single-flight (see importInFlight): reject a second concurrent run.
+  // A claimed Start (grant matched, run about to begin) counts as running.
+  if (importInFlight || (pendingStart !== null && pendingStart.claimed)) {
+    if (origin !== null) void refuseStart(origin, "import_in_progress");
+    return { ok: false, error: "import_in_progress" };
+  }
+  // A non-https or TGP origin authorizes nothing: the handler reports the
+  // honest refusal itself (no origin is ever held, prompted for or granted).
+  if (origin === null || isTgpOrigin(origin)) {
+    importInFlight = true;
+    const handler =
+      kind === "start_ingest" ? handleStartIngest : handleStartImport;
+    void handler(message).finally(settleRun);
+    return { ok: true };
+  }
+  const pending = registerPendingStart(kind, message, origin);
+  if (hasFreshGrant(origin)) {
+    // The coach's accepted prompt reached the worker first (a cold worker
+    // queues the event ahead of the message): both halves exist now.
+    claimStart(pending);
+    return { ok: true };
+  }
+  // Otherwise the worker waits: the coach's prompt is open. Either the grant
+  // arrives (onAdded -> claimStart) or the popup reports that it will not
+  // (start_granted / start_unavailable), and the window bounds both. A grant
+  // Chrome ALREADY holds is screened off the admission path so it cannot race
+  // it — possession of a durable permission is never a Start.
+  void screenHeldGrant(pending);
+  return { ok: true };
+}
+
+// Both halves of one Start exchange exist. Begin the run, but never before the
+// worker's startup sweep has verified that nothing a previous worker left
+// behind survives (review A C02's admission race). The wait is bounded by the
+// sweep itself; a sweep that cannot verify refuses the Start and revokes its
+// grant rather than running with an unproven capability surface.
+function claimStart(pending) {
+  // Both halves met: from here on this Start owns its grant. A later message
+  // for the same origin is refused as busy and must not revoke or replace it.
+  pending.claimed = true;
+  if (startupSwept) {
+    beginAuthorizedRun(pending);
+    return;
+  }
+  void retryStartupSweep().then((swept) => {
+    if (pendingStart !== pending) return; // superseded, expired or cancelled
+    if (!swept) {
+      clearPendingStart();
+      pendingCleanup = pendingCleanup ?? { origin: null };
+      void expireStart(pending.origin, "cleanup_pending");
+      return;
+    }
+    beginAuthorizedRun(pending);
+  });
+}
+
+// The popup could not obtain the grant (the coach declined Chrome's prompt, or
+// the prompt was unavailable): the registered Start ends now with an honest
+// code rather than waiting out its window. Only the registrant's own nonce may
+// cancel it.
+function cancelPendingStart(message) {
+  const pending = pendingStart;
+  const nonce = readString(message, "nonce");
+  if (pending === null || pending.nonce !== nonce) {
+    return { ok: false, error: "no_pending_start" };
+  }
+  clearPendingStart();
+  void expireStart(pending.origin, "origin_not_granted");
+  return { ok: true };
+}
+
+// The popup reports that Chrome answered its request with `true`. When the
+// coach actually accepted a prompt, permissions.onAdded already began the run
+// and there is nothing pending. `true` with NOTHING announced means Chrome
+// held the origin BEFORE this Start: possession of a durable permission is not
+// a Start, so it is revoked and refused and the next Start prompts afresh.
+function confirmGrantedStart(message) {
+  const pending = pendingStart;
+  const nonce = readString(message, "nonce");
+  if (pending === null || pending.nonce !== nonce) {
+    return { ok: true }; // the run already began on the grant event
+  }
+  clearPendingStart();
+  void expireStart(pending.origin, "start_not_authorized");
+  return { ok: false, error: "start_not_authorized" };
+}
+
+// A refused Start must leave nothing behind: drop any fresh grant for the
+// origin and revoke the host permission if Chrome holds it. The refusal code
+// itself already travelled back to the caller as the message reply.
+async function refuseStart(origin, code) {
+  const pending = pendingStart;
+  if (pending !== null && pending.origin === origin) {
+    // A claimed Start's grant belongs to the run that is beginning.
+    if (pending.claimed) return;
+    clearPendingStart();
+  }
+  if (!isActiveOrigin(origin)) {
+    await dropUnusedGrant(origin, "start_refusal_revoke_failed");
+  }
+  logNetworkEvent(
+    code === "import_in_progress"
+      ? "start_refused_busy"
+      : "start_refused_cleanup",
+  );
+}
 
 // The run currently holding the authorization, so a revocation can reach it.
 // Opened as soon as an origin is authorized (before any tab or network work),
@@ -648,6 +995,34 @@ function openRun(origin) {
 
 function revokedDetail(origin) {
   return `origin_revoked: ${origin}`;
+}
+
+// A source run's authorization must still hold at EVERY settlement boundary,
+// not merely when the reader was started. The reader can resolve normally
+// while the coach's revocation is in flight, so this is re-checked
+// synchronously before the terminal POST and again before the terminal
+// broadcast: a run whose grant went away reports `origin_revoked`, never
+// `complete` or `empty`. Returns true once the run is revoked.
+function runRevoked(run) {
+  return run.revoked || getAuthorizedOrigin() !== run.origin;
+}
+
+// Settle a run whose authorization ended while it was completing: the TGP
+// session is intact, so the intent is settled FAILED with the honest reason
+// and the coach is never shown a success for work the grant no longer covers.
+async function settleRevoked(run, intent, tally, generation, reporter) {
+  const detail = revokedDetail(run.origin);
+  run.revoked = true;
+  if (reporter !== undefined) {
+    // Best-effort: a progress flush failing must not hide the revocation.
+    await reporter.flush(null, detail).catch(logSettlementFailure);
+  }
+  await settleFailed(intent, detail, Object.fromEntries(tally), generation);
+  broadcastStatus({
+    ...currentSnapshot,
+    intent: { ...intent, status: "ingest_failed" },
+    lastError: detail,
+  });
 }
 
 // The coach withdrew the run's host grant (chrome://extensions, or another
@@ -708,13 +1083,12 @@ async function authorizeSourceOrigin(url) {
     freshGrants.delete(origin);
     return { error: `origin_not_granted: ${origin}` };
   }
-  if (!freshGrants.has(origin)) {
+  if (!takeFreshGrant(origin)) {
     // Possession of a durable permission is not a Start. Drop it so the coach
     // is prompted afresh next time.
     await revokeGrant(origin);
     return { error: `start_not_authorized: ${origin}` };
   }
-  freshGrants.delete(origin);
   setAuthorizedOrigin(origin);
   return { origin };
 }
@@ -833,6 +1207,14 @@ async function handleStartIngest(message) {
       status: tally.size === 0 ? "empty" : "complete",
       counts: Object.fromEntries(tally),
     };
+    // FENCE: the reader returned, but the grant may have gone while it was
+    // resolving (or while the ACKed batches were flushing). A revoked run is
+    // never ACKed as complete/empty.
+    if (runRevoked(run)) {
+      settlementSent = true;
+      await settleRevoked(run, intent, tally, generation);
+      return;
+    }
     const outcome = OUTCOME[result.status];
     const detail = terminalDetail(result);
     settlementSent = true;
@@ -845,6 +1227,16 @@ async function handleStartIngest(message) {
       },
       generation,
     );
+    // FENCE: and again after the settlement POST's await, before anything is
+    // SHOWN as a success.
+    if (runRevoked(run)) {
+      broadcastStatus({
+        ...currentSnapshot,
+        intent: { ...intent, status: "ingest_failed" },
+        lastError: revokedDetail(run.origin),
+      });
+      return;
+    }
     broadcastStatus({
       ...currentSnapshot,
       intent: { ...intent, status: outcome.state },
@@ -896,6 +1288,102 @@ let importInFlight = false;
 /** @type {{ origin: string | null } | null} */
 let pendingCleanup = null;
 
+// Whether this worker has finished removing what a previous worker (or a
+// previous browser session) left behind. Chrome keeps optional host grants
+// across browser restarts, so a worker that died mid-run leaves the extension
+// holding a cookie-bearing host capability outside any run. NO run begins
+// until the sweep has verified every unclaimed optional grant gone: a grant
+// must never exist outside the Start that asked for it, and the coach must
+// never be refused Start because a previous worker left one behind.
+let startupSwept = false;
+// A sweep that ran and could NOT verify: the Start gate is closed (refused
+// `cleanup_pending`) and every refused Start retries it, exactly like a failed
+// settlement. Distinct from "not finished yet", which merely waits.
+let startupSweepFailed = false;
+
+function originOfPattern(pattern) {
+  return typeof pattern === "string" ? pattern.replace(/\/\*$/, "") : "";
+}
+
+// An origin the CURRENT Start exchange or the run in flight owns. The startup
+// sweep must not pull the grant out from under a live exchange: on a cold
+// worker the coach's accepted prompt and the worker's first sweep race, and
+// revoking there would be destructive rather than fail-closed.
+function claimedOrigin(origin) {
+  return (
+    hasFreshGrant(origin) ||
+    (pendingStart !== null && pendingStart.origin === origin) ||
+    isActiveOrigin(origin)
+  );
+}
+
+// Optional host origins Chrome holds that no live Start exchange claims. The
+// required TGP API host is declared in the manifest, is not optional, and is
+// deliberately kept.
+async function unclaimedHeldOrigins() {
+  const all = await chrome.permissions.getAll();
+  const patterns =
+    isRecord(all) && Array.isArray(all.origins) ? all.origins : [];
+  return patterns.filter((pattern) => {
+    if (typeof pattern !== "string") return false;
+    const origin = originOfPattern(pattern);
+    return !isTgpOrigin(origin) && !claimedOrigin(origin);
+  });
+}
+
+// Remove every unclaimed optional host grant and VERIFY it is gone. A failure
+// (or a permissions API fault) is reported as false so the caller fails closed.
+async function sweepStartupGrants() {
+  let held;
+  try {
+    held = await unclaimedHeldOrigins();
+  } catch {
+    return false;
+  }
+  for (const pattern of held) {
+    // Re-checked per origin: a Start exchange can begin while the sweep is
+    // awaiting Chrome, and the coach's just-granted origin must survive.
+    if (claimedOrigin(originOfPattern(pattern))) continue;
+    try {
+      await chrome.permissions.remove({ origins: [pattern] });
+    } catch {
+      logNetworkEvent("startup_grant_revoke_failed");
+    }
+  }
+  try {
+    return (await unclaimedHeldOrigins()).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+// The whole startup sweep: leftover host grants AND any collector registration
+// an earlier build left, both verified gone before any run begins.
+async function runStartupSweep() {
+  const grantsGone = await sweepStartupGrants();
+  const collectorGone = await unregisterSourceCollector();
+  startupSwept = grantsGone && collectorGone;
+  startupSweepFailed = !startupSwept;
+  if (startupSweepFailed) {
+    logNetworkEvent("startup_sweep_pending");
+  }
+  return startupSwept;
+}
+
+// A refused Start retries the sweep, so a transient Chrome fault does not
+// strand the coach. Single-flight so concurrent Starts do not pile up.
+/** @type {Promise<boolean> | null} */
+let startupSweepInFlight = null;
+function retryStartupSweep() {
+  if (startupSwept) return Promise.resolve(true);
+  if (startupSweepInFlight === null) {
+    startupSweepInFlight = runStartupSweep().finally(() => {
+      startupSweepInFlight = null;
+    });
+  }
+  return startupSweepInFlight;
+}
+
 // A run's authorization ends with the run, in this order: every capture
 // debugger is retired (no event or stop can outlive the run), the authorized
 // origin is dropped, the collector registration is removed and VERIFIED gone,
@@ -904,10 +1392,12 @@ let pendingCleanup = null;
 // (pendingCleanup) — cleanup is never assumed. Never throws.
 async function settleRun() {
   // A revoked run already dropped its origin; its grant is still cleaned up.
-  const origin = activeRun?.origin ?? getAuthorizedOrigin();
+  const origin = activeRun?.origin ?? getAuthorizedOrigin() ?? startingOrigin;
   activeRun = null;
+  startingOrigin = null;
   await retireCaptureSessions();
   clearAuthorizedOrigin();
+  if (origin !== null) freshGrants.delete(origin);
   const clean = await cleanUp(origin);
   pendingCleanup = clean ? null : { origin };
   if (!clean) {
@@ -1000,35 +1490,29 @@ function makeSourceFetch(sourceToken) {
   };
 }
 
-// The classic collector (content/main.js) is not declared in the manifest: it
-// is registered for the ONE granted origin for the run only, and injected into
-// the already-loaded tab (a registration applies to future loads). Both calls
-// need the host permission the coach granted on Start.
+// The classic collector (content/main.js) is not declared in the manifest and
+// is never REGISTERED: it is injected once, into the one tab the coach started
+// from, with the host permission granted on Start, and the token is read
+// straight afterwards. A dynamic registration would buy nothing (nothing
+// consumes a page announcement) while injecting into every same-origin load
+// for the life of the run and outliving a worker that died mid-run — so there
+// is no registration to leak.
 const SOURCE_COLLECTOR_ID = "tgp-source-collector";
 const SOURCE_COLLECTOR_SCRIPT = "content/main.js";
 
-async function registerSourceCollector(origin, tabId) {
-  if (!(await unregisterSourceCollector())) {
-    throw new Error("source_collector_stale");
-  }
-  await chrome.scripting.registerContentScripts([
-    {
-      id: SOURCE_COLLECTOR_ID,
-      matches: [`${origin}/*`],
-      js: [SOURCE_COLLECTOR_SCRIPT],
-      runAt: "document_idle",
-      persistAcrossSessions: false,
-    },
-  ]);
+async function injectSourceCollector(tabId) {
   await chrome.scripting.executeScript({
     target: { tabId },
     files: [SOURCE_COLLECTOR_SCRIPT],
   });
 }
 
-// Remove the collector registration and VERIFY it is gone. A missing
+// Remove a collector registration an EARLIER build of this extension may have
+// left behind (Chrome keeps a persistAcrossSessions:false registration until
+// the browser restarts) and VERIFY it is gone. Nothing registers one any more;
+// this is the startup ratchet that proves none survives. A missing
 // registration is not a fault; a Chrome API failure is reported as `false` so
-// the caller fails closed (settleRun keeps the guard; register refuses).
+// the caller fails closed (the Start gate stays closed).
 async function unregisterSourceCollector() {
   try {
     const before = await chrome.scripting.getRegisteredContentScripts({
@@ -1075,7 +1559,7 @@ async function collectSourceToken(tabId, origin) {
   }
   let reply;
   try {
-    await registerSourceCollector(origin, tabId);
+    await injectSourceCollector(tabId);
     if ((await liveTabOrigin(tabId)) !== origin) {
       return { error: navigated };
     }
@@ -1200,18 +1684,13 @@ async function handleStartImport(message) {
       allowedOrigins,
     });
     const outcome = OUTCOME[result.status];
-    if (outcome === undefined && run.revoked) {
-      // cancelled because the coach withdrew the grant: the TGP session is
-      // intact, so the intent is settled failed with the honest reason.
-      const detail = revokedDetail(authorized.origin);
-      await reporter.flush(null, detail);
+    // FENCE: the replay returned, but the coach's grant may have gone while it
+    // was resolving or while its last batches were being ACKed. Whatever the
+    // engine reported — cancelled, complete, empty or partial — a revoked run
+    // settles and is shown as `origin_revoked`, never as a success.
+    if (runRevoked(run)) {
       settlementSent = true;
-      await settleFailed(intent, detail, Object.fromEntries(tally), generation);
-      broadcastStatus({
-        ...currentSnapshot,
-        intent: { ...intent, status: "ingest_failed" },
-        lastError: detail,
-      });
+      await settleRevoked(run, intent, tally, generation, reporter);
       return;
     }
     if (outcome === undefined) {
@@ -1251,6 +1730,16 @@ async function handleStartImport(message) {
     }
     // Still requires a backend ack: a throw here is ingest_failed, not success.
     await completeIngest(intent, settlement, generation);
+    // FENCE: and again after the settlement POST's await, before anything is
+    // SHOWN or notified as a success.
+    if (runRevoked(run)) {
+      broadcastStatus({
+        ...currentSnapshot,
+        intent: { ...intent, status: "ingest_failed" },
+        lastError: revokedDetail(run.origin),
+      });
+      return;
+    }
     broadcastStatus({
       ...currentSnapshot,
       intent: { ...intent, status: outcome.state },
@@ -1352,18 +1841,15 @@ function failDetail(result) {
 // buffer when it ends outside an explicit stop_capture.
 registerCaptureLifecycle();
 
-// A collector registration is run-scoped, but Chrome keeps a
-// persistAcrossSessions:false registration until the BROWSER restarts, so a
-// worker that died mid-run (or was recycled by Chrome) would leave the previous
-// worker's collector injecting into every page load on that origin. No run can
-// be in flight when this module evaluates, so the registration is removed here
-// and verified gone; a failure keeps the Start gate closed until a retry
-// succeeds (cleanup_pending), exactly like a failed settlement.
-void unregisterSourceCollector().then((gone) => {
-  if (!gone && pendingCleanup === null) {
-    pendingCleanup = { origin: null };
-  }
-});
+// Nothing a previous worker (or a previous browser session) left behind may
+// survive into this one: Chrome keeps optional host grants across browser
+// restarts and keeps a persistAcrossSessions:false registration until the
+// browser restarts, so a worker that died mid-run would otherwise leave the
+// extension holding a cookie-bearing host capability outside any run. No run
+// can be in flight when this module evaluates, so both are removed here and
+// VERIFIED gone. Until that is verified, every Start is refused
+// (cleanup_pending) and retries the sweep — exactly like a failed settlement.
+void runStartupSweep();
 
 // Begin Layer 1 passive capture on a tab. The ring buffer lives inside the
 // capture module; the popup only sees start/stop control here (C3 renders it).
@@ -1449,49 +1935,40 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     });
     return true; // async response
   }
-  if (isStartIngest(message)) {
-    // Legacy entrypoint accepts a caller-supplied token/url: same trusted-page
-    // gate as start_import, so a content-script principal cannot drive it.
-    if (!isTrustedExtensionPage(sender)) {
-      sendResponse({ ok: false, error: "untrusted_sender" });
-      return false;
-    }
-    if (pendingCleanup !== null) {
-      void retryPendingCleanup();
-      sendResponse({ ok: false, error: "cleanup_pending" });
-      return false;
-    }
-    // Shared single-flight (see importInFlight): reject a second concurrent run.
-    if (importInFlight) {
-      sendResponse({ ok: false, error: "import_in_progress" });
-      return false;
-    }
-    importInFlight = true;
-    void handleStartIngest(message).finally(settleRun);
-    sendResponse({ ok: true });
-    return false;
-  }
-  if (isStartImport(message)) {
+  if (isStartIngest(message) || isStartImport(message)) {
     // A crawl reuses the coach's SOURCE session, so it may only be triggered by
     // one of THIS extension's own pages — an id match alone is not enough (a
-    // compromised content script shares the id). Gate on the trusted-page shape.
+    // compromised content script shares the id). Gate on the trusted-page
+    // shape. The legacy start_ingest entrypoint is held to the same rule.
     if (!isTrustedExtensionPage(sender)) {
       sendResponse({ ok: false, error: "untrusted_sender" });
       return false;
     }
-    if (pendingCleanup !== null) {
-      void retryPendingCleanup();
-      sendResponse({ ok: false, error: "cleanup_pending" });
+    sendResponse(
+      admitStart(
+        isStartIngest(message) ? "start_ingest" : "start_import",
+        message,
+      ),
+    );
+    return false;
+  }
+  if (isStartUnavailable(message)) {
+    // The popup's Start could not obtain the grant: end its pending Start now.
+    if (!isTrustedExtensionPage(sender)) {
+      sendResponse({ ok: false, error: "untrusted_sender" });
       return false;
     }
-    // Shared single-flight (see importInFlight): reject a second concurrent run.
-    if (importInFlight) {
-      sendResponse({ ok: false, error: "import_in_progress" });
+    sendResponse(cancelPendingStart(message));
+    return false;
+  }
+  if (isStartGranted(message)) {
+    // Chrome answered the popup's request with `true`. Only the grant EVENT
+    // authorizes a run; this message can only ever refuse a pre-held grant.
+    if (!isTrustedExtensionPage(sender)) {
+      sendResponse({ ok: false, error: "untrusted_sender" });
       return false;
     }
-    importInFlight = true;
-    void handleStartImport(message).finally(settleRun);
-    sendResponse({ ok: true });
+    sendResponse(confirmGrantedStart(message));
     return false;
   }
   if (isStartCapture(message) || isStopCapture(message)) {

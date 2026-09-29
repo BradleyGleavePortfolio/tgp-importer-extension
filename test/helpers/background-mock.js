@@ -63,7 +63,8 @@ function storageArea(seed) {
 // (a registration a previous worker left behind).
 /**
  * @param {{ session?: any, tab?: any, granted?: boolean, fresh?: boolean,
- *   failRevoke?: boolean, failUnregister?: boolean, registered?: string[] }} [options]
+ *   failRevoke?: boolean, failUnregister?: boolean, failGetAll?: boolean,
+ *   registered?: string[], held?: string[] }} [options]
  */
 export function makeBgMock({
   session,
@@ -72,9 +73,11 @@ export function makeBgMock({
   fresh = true,
   failRevoke = false,
   failUnregister = false,
+  failGetAll = false,
   registered = [],
+  held = [],
 } = {}) {
-  const knobs = { failRevoke, failUnregister };
+  const knobs = { failRevoke, failUnregister, failGetAll };
   const onMessage = eventHub();
   const sessionStore = storageArea(session);
   const localStore = storageArea();
@@ -85,7 +88,9 @@ export function makeBgMock({
   const scripting = { registered: [], executed: [], unregistered: [] };
   const permissionRequests = [];
   const permissionRemovals = [];
-  const grants = new Set();
+  // `held` models optional host grants Chrome kept from a previous worker or
+  // browser session (Chrome persists them): present before this worker starts.
+  const grants = new Set(held);
   const registeredIds = new Set(registered);
   const onPermissionAdded = eventHub();
   const onPermissionRemoved = eventHub();
@@ -163,6 +168,15 @@ export function makeBgMock({
     permissions: {
       onAdded: onPermissionAdded.api,
       onRemoved: onPermissionRemoved.api,
+      // Chrome answers with everything it holds, required and optional alike.
+      // The startup sweep reads this to find grants a previous worker left.
+      getAll: async () => {
+        if (knobs.failGetAll) throw new Error("permissions.getAll failed");
+        return {
+          permissions: ["tabs", "storage", "scripting"],
+          origins: ["https://api.tgp.coach/*", ...grants],
+        };
+      },
       contains: async ({ origins }) =>
         Array.isArray(origins) && origins.every((o) => grants.has(o)),
       // The popup's Start-gesture prompt; records what was asked for. On
@@ -205,22 +219,40 @@ export function makeBgMock({
   };
 
   // Model the popup's Start gesture for a start message: the coach accepts
-  // Chrome's prompt for the tab origin just before the worker is asked.
-  function startGesture(message) {
+  // Chrome's prompt for the tab origin. The production popup REGISTERS its
+  // Start with the worker first and only then prompts (there is no ordering
+  // dependency left), so the default `dispatch` sends the message and then
+  // fires the grant — the reverse of r2's mock, which emitted onAdded before
+  // dispatch and so assumed the old ordering in by construction.
+  // `fresh: false` models a grant Chrome holds with no prompt behind it.
+  function startGesture(message, sender = extensionPageSender) {
     if (message?.kind !== "start_import" && message?.kind !== "start_ingest") {
       return;
     }
     // A message without a parseable url models a malformed Start: no prompt.
     if (typeof message.url !== "string" || !URL.canParse(message.url)) return;
     const origin = new URL(message.url).origin;
-    if (granted !== true) return;
-    const pattern = `${origin}/*`;
-    if (fresh) {
-      grants.add(pattern);
-      onPermissionAdded.emit({ origins: [pattern] });
-    } else {
-      grants.add(pattern); // held by Chrome, but no Start announced it
+    if (granted !== true) {
+      // The coach declined Chrome's prompt (or no prompt could be shown): the
+      // popup tells the worker its pending Start will never be granted, so
+      // nothing waits out the window. Exactly what popup.js does.
+      void dispatchRaw(
+        { kind: "start_unavailable", nonce: message.nonce ?? null },
+        sender,
+      );
+      return;
     }
+    const pattern = `${origin}/*`;
+    grants.add(pattern);
+    // A real prompt acceptance ALWAYS announces itself (permissions.onAdded);
+    // `fresh: false` models a grant Chrome already held, where request()
+    // answers true with NO prompt and NO announcement. Either way the popup
+    // reports Chrome's `true` back, exactly as popup.js does.
+    if (fresh) onPermissionAdded.emit({ origins: [pattern] });
+    void dispatchRaw(
+      { kind: "start_granted", nonce: message.nonce ?? null },
+      sender,
+    );
   }
 
   // Invoke the registered onMessage listener and resolve to the value the
@@ -233,8 +265,19 @@ export function makeBgMock({
     id: chrome.runtime.id,
     url: `chrome-extension://${chrome.runtime.id}/popup/pair.html`,
   };
+  // The real Start order: register with the worker, THEN accept the prompt —
+  // and only when the registration was accepted. popup.js never prompts for a
+  // Start the worker refused (busy, cleanup owed), so neither does this.
   function dispatch(message, sender = extensionPageSender) {
-    startGesture(message);
+    return dispatchRaw(message, sender).then((ack) => {
+      if (ack === undefined || ack.ok === true) startGesture(message, sender);
+      return ack;
+    });
+  }
+  // The other order (Chrome delivers the accepted grant before the popup's
+  // message lands — a cold worker queues both): the run must still start.
+  function dispatchGrantFirst(message, sender = extensionPageSender) {
+    startGesture(message, sender);
     return dispatchRaw(message, sender);
   }
   // The same message with NO Start gesture: what an extension page sends when
@@ -254,10 +297,23 @@ export function makeBgMock({
     });
   }
 
+  // Chrome delivers an accepted grant for `origin` with no popup involved
+  // (the prompt closed the popup, or the grant came from Chrome's own UI).
+  function grantArrives(origin) {
+    const pattern = `${origin}/*`;
+    grants.add(pattern);
+    onPermissionAdded.emit({ origins: [pattern] });
+  }
+
   return {
     chrome,
     dispatch,
+    grantArrives,
+    dispatchGrantFirst,
     dispatchRaw,
+    // The popup's own Start gesture, driven alone: for a test that interleaves
+    // work between the registration and the coach's accepted prompt.
+    startGesture,
     sent,
     notifications,
     syncSet,

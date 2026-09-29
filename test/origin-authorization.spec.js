@@ -217,17 +217,11 @@ describe("start_import — the granted origin is the run's single authorized ori
     const terminal = await settle(mock);
     expect(terminal).toBe("ingest_succeeded");
 
-    // Dynamic registration: the collector was registered for `${origin}/*`
-    // only, injected into the coach's tab, and never persisted across sessions.
-    expect(mock.scripting.registered).toEqual([
-      {
-        id: "tgp-source-collector",
-        js: ["content/main.js"],
-        matches: [`${TAB_ORIGIN}/*`],
-        runAt: "document_idle",
-        persistAcrossSessions: false,
-      },
-    ]);
+    // R35B-C2: the collector is INJECTED into the one tab the coach started
+    // from, once, and never REGISTERED. A registration would inject into every
+    // same-origin load for the life of the run and outlive a worker that died
+    // mid-run; nothing consumed it, so it is gone.
+    expect(mock.scripting.registered).toEqual([]);
     expect(mock.scripting.executed).toEqual([
       { target: { tabId: TAB_ID }, files: ["content/main.js"] },
     ]);
@@ -239,11 +233,6 @@ describe("start_import — the granted origin is the run's single authorized ori
     // Settled: authorization ends with the run.
     await flush();
     expect(sessionModule.getAuthorizedOrigin()).toBeNull();
-    expect(
-      mock.scripting.unregistered.some((f) =>
-        f.ids.includes("tgp-source-collector"),
-      ),
-    ).toBe(true);
     // Nothing about the origin reached persistent storage.
     for (const value of mock.sessionMap.values()) {
       expect(String(value)).not.toContain(TAB_ORIGIN);
