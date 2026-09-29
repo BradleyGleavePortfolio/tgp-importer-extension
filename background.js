@@ -688,13 +688,14 @@ function keepWorkerAlive() {
     }
     const platform = chrome.runtime.getPlatformInfo;
     if (typeof platform !== "function") return;
+    // Keepalive is best-effort; the window's own deadline still bounds it.
     try {
       const result = platform.call(chrome.runtime);
       if (result && typeof result.catch === "function") {
-        result.catch(() => undefined);
+        result.catch(() => logNetworkEvent("start_keepalive_failed"));
       }
     } catch {
-      // Keepalive is best-effort; the window's own deadline still bounds it.
+      logNetworkEvent("start_keepalive_failed");
     }
   };
   const timer = setInterval(beat, START_KEEPALIVE_MS);

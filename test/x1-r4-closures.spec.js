@@ -80,6 +80,23 @@ function snapshots(mock) {
   return mock.sent.filter((m) => m && m.kind === "status_snapshot");
 }
 
+// Poll a condition on real time rather than counting macrotasks: the worker's
+// async depth is not the test's business, and load must not turn a fixed
+// count into a flake.
+async function waitUntil(predicate, ms = 5000) {
+  const started = Date.now();
+  for (;;) {
+    if (predicate()) return;
+    if (Date.now() - started > ms) return;
+    await flush(1);
+  }
+}
+
+function lastErrorIs(mock, prefix) {
+  return () =>
+    String(snapshots(mock).at(-1)?.lastError ?? "").startsWith(prefix);
+}
+
 async function settle(mock, ms = 10000) {
   const start = Date.now();
   for (;;) {
@@ -225,13 +242,13 @@ describe("R35-c7A-01 — the Start capability never outlives its tab", () => {
     });
     expect(ack).toEqual({ ok: true });
     mock.closeTab(TAB_ID);
-    await flush();
+    await waitUntil(lastErrorIs(mock, "source_tab_closed"));
     expect(snapshots(mock).at(-1).lastError).toBe(
       `source_tab_closed: ${ORIGIN}`,
     );
     // The coach accepted the prompt after the tab was already gone.
     mock.grantArrives(ORIGIN);
-    await flush(10);
+    await waitUntil(() => !mock.grants.has(`${ORIGIN}/*`));
     expect(mock.grants.has(`${ORIGIN}/*`)).toBe(false);
     expect(sourceFetches()).toHaveLength(0);
     expect(mock.scripting.executed).toEqual([]);
@@ -261,7 +278,7 @@ describe("R35-c7A-01 — the Start capability never outlives its tab", () => {
       return inject(injection);
     };
     await start(mock);
-    await flush(10);
+    await waitUntil(lastErrorIs(mock, "source_tab_closed"));
     expect(snapshots(mock).at(-1).lastError).toBe(
       `source_tab_closed: ${ORIGIN}`,
     );
@@ -445,7 +462,8 @@ describe("R35-c7A-03 — a permissions fault is never mistaken for a verified re
     });
     await start(mock);
     expect(await settle(mock)).toBe("ingest_succeeded");
-    await flush(10);
+    await waitUntil(() => mock.permissionRemovals.length > 0);
+    await flush(20);
     // The removal itself worked in Chrome, but the worker could not VERIFY
     // it: the gate stays closed rather than assumed clean.
     const refused = await mock.dispatchRaw({
@@ -456,7 +474,7 @@ describe("R35-c7A-03 — a permissions fault is never mistaken for a verified re
     });
     expect(refused).toEqual({ ok: false, error: "cleanup_pending" });
     mock.knobs.failContains = false;
-    await flush(10);
+    await flush(20);
     const admitted = await start(mock);
     expect(admitted).toEqual({ ok: true });
     expect(await settle(mock)).toBe("ingest_succeeded");
@@ -471,7 +489,8 @@ describe("R35-c7A-03 — a permissions fault is never mistaken for a verified re
     });
     await start(mock);
     expect(await settle(mock)).toBe("ingest_succeeded");
-    await flush(10);
+    await waitUntil(() => mock.permissionRemovals.length > 0);
+    await flush(20);
     expect(mock.grants.has(`${ORIGIN}/*`)).toBe(true); // Chrome kept it
     const refused = await mock.dispatchRaw({
       kind: "start_import",
@@ -481,7 +500,7 @@ describe("R35-c7A-03 — a permissions fault is never mistaken for a verified re
     });
     expect(refused).toEqual({ ok: false, error: "cleanup_pending" });
     mock.knobs.ignoreRemove = false;
-    await flush(10);
+    await waitUntil(() => !mock.grants.has(`${ORIGIN}/*`));
     expect(mock.grants.has(`${ORIGIN}/*`)).toBe(false);
   });
 
@@ -489,7 +508,7 @@ describe("R35-c7A-03 — a permissions fault is never mistaken for a verified re
     const { mock } = await load({ tab: withSourceTab(), failContains: true });
     route(mock);
     await start(mock);
-    await flush(10);
+    await waitUntil(lastErrorIs(mock, "origin_not_granted"));
     expect(snapshots(mock).at(-1).lastError).toBe(
       `origin_not_granted: ${ORIGIN}`,
     );
@@ -506,7 +525,7 @@ describe("R35-c7A-04 — the collector's reply is bound to the injected document
       return [{ frameId: 0, result: null }];
     };
     await start(mock);
-    await flush(10);
+    await waitUntil(lastErrorIs(mock, "source_tab_navigated"));
     expect(snapshots(mock).at(-1).lastError).toBe(
       `source_tab_navigated: ${ORIGIN}`,
     );
