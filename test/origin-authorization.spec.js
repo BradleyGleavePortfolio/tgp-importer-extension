@@ -20,9 +20,11 @@ import { fakePageStore, realSourceTab } from "./helpers/source-tab.js";
 vi.setConfig({ testTimeout: 30000 });
 
 const REFRESH_KEY = "tgp_refresh_token";
-const REFRESH_URL = "https://api.tgp.coach/api/auth/extension/refresh";
-const INGEST_URL = "https://api.tgp.coach/api/scout/ingest";
-const COMPLETE_URL = "https://api.tgp.coach/api/scout/ingest/complete";
+const REFRESH_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/auth/extension/refresh";
+const INGEST_URL = "https://backend-spring-lake-3890.fly.dev/api/scout/ingest";
+const COMPLETE_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/scout/ingest/complete";
 const CLIENTS_PREFIX = "https://app.truecoach.co/proxy/api/clients?";
 const TAB_URL = "https://app.truecoach.co/clients?client=jane.doe";
 const TAB_ORIGIN = "https://app.truecoach.co";
@@ -145,9 +147,9 @@ describe("start_import — the worker re-checks the grant it was told about", ()
   });
 
   it.each([
-    "https://api.tgp.coach/x",
-    "https://tgp.coach/",
-    "https://x.tgp.coach/y",
+    "https://backend-spring-lake-3890.fly.dev/x",
+    "https://backend-spring-lake-3890.fly.dev/",
+    "https://BACKEND-SPRING-LAKE-3890.FLY.DEV/y",
   ])(
     "refuses TGP's own origin %s even when granted (never self-import)",
     async (url) => {

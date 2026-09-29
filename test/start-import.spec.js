@@ -19,9 +19,11 @@ import { fakePageStore, realSourceTab } from "./helpers/source-tab.js";
 //   - the pre-run guards (site not learned, unsafe origin, no TGP session).
 
 const REFRESH_KEY = "tgp_refresh_token";
-const REFRESH_URL = "https://api.tgp.coach/api/auth/extension/refresh";
-const INGEST_URL = "https://api.tgp.coach/api/scout/ingest";
-const COMPLETE_URL = "https://api.tgp.coach/api/scout/ingest/complete";
+const REFRESH_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/auth/extension/refresh";
+const INGEST_URL = "https://backend-spring-lake-3890.fly.dev/api/scout/ingest";
+const COMPLETE_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/scout/ingest/complete";
 const CLIENTS_PREFIX = "https://app.truecoach.co/proxy/api/clients?";
 const NOTES_URL = "https://app.truecoach.co/proxy/api/clients/c1/notes";
 const TAB_URL = "https://app.truecoach.co/clients";
@@ -302,8 +304,8 @@ describe("start_import — end-to-end crawl carries the source bearer", () => {
     await settle(mock);
     // Only the source origin + the TGP api origin were ever contacted.
     expect([...hosts].sort()).toEqual([
-      "https://api.tgp.coach",
       "https://app.truecoach.co",
+      "https://backend-spring-lake-3890.fly.dev",
     ]);
   }, 15000);
 });

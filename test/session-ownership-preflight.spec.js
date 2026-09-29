@@ -29,10 +29,13 @@ import {
 // re-establish, and rotation persist failure (unchanged fail-closed).
 
 const REFRESH_KEY = "tgp_refresh_token";
-const REFRESH_URL = "https://api.tgp.coach/api/auth/extension/refresh";
-const INGEST_URL = "https://api.tgp.coach/api/scout/ingest";
-const COMPLETE_URL = "https://api.tgp.coach/api/scout/ingest/complete";
-const PROGRESS_URL = "https://api.tgp.coach/api/scout/progress";
+const REFRESH_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/auth/extension/refresh";
+const INGEST_URL = "https://backend-spring-lake-3890.fly.dev/api/scout/ingest";
+const COMPLETE_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/scout/ingest/complete";
+const PROGRESS_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/scout/progress";
 const CLIENTS_PREFIX = "https://app.truecoach.co/proxy/api/clients?";
 const NOTES_URL = "https://app.truecoach.co/proxy/api/clients/c1/notes";
 const TAB_URL = "https://app.truecoach.co/clients";
@@ -399,7 +402,8 @@ describe("accepted Start binds its owner before the cold preflight refresh (S4-R
     expect(authRequired(mock)).toHaveLength(0);
     const tgp = routes.calls.filter(
       (c) =>
-        c.url !== REFRESH_URL && c.url.startsWith("https://api.tgp.coach/"),
+        c.url !== REFRESH_URL &&
+        c.url.startsWith("https://backend-spring-lake-3890.fly.dev/"),
     );
     expect(tgp.length).toBeGreaterThan(0);
     expect(new Set(tgp.map((c) => c.authorization))).toEqual(

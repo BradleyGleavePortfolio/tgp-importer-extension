@@ -73,22 +73,30 @@ describe("makeScoutIngestBody", () => {
 
 describe("config constants", () => {
   it("point at the expected TGP origin and name no source vendor", () => {
-    expect(TGP_API_ORIGIN).toBe("https://api.tgp.coach");
+    expect(TGP_API_ORIGIN).toBe("https://backend-spring-lake-3890.fly.dev");
     expect(PAIR_REDEEM_PATH).toBe("/api/extension/pair/redeem");
   });
 });
 
 describe("isTgpOrigin", () => {
   it("recognises TGP's own origins", () => {
-    expect(isTgpOrigin("https://api.tgp.coach")).toBe(true);
-    expect(isTgpOrigin("https://tgp.coach")).toBe(true);
-    expect(isTgpOrigin("https://APP.TGP.COACH/x")).toBe(true);
+    expect(isTgpOrigin("https://backend-spring-lake-3890.fly.dev")).toBe(true);
+    expect(isTgpOrigin("https://backend-spring-lake-3890.fly.dev/x")).toBe(
+      true,
+    );
+    expect(isTgpOrigin("https://BACKEND-SPRING-LAKE-3890.FLY.DEV/x")).toBe(
+      true,
+    );
   });
 
   it("rejects every other origin and never throws", () => {
     expect(isTgpOrigin("https://app.truecoach.co")).toBe(false);
-    expect(isTgpOrigin("https://tgp.coach.evil.example")).toBe(false);
-    expect(isTgpOrigin("https://nottgp.coach")).toBe(false);
+    // A shared hosting domain: siblings and lookalikes are NOT TGP.
+    expect(isTgpOrigin("https://other-app.fly.dev")).toBe(false);
+    expect(
+      isTgpOrigin("https://backend-spring-lake-3890.fly.dev.evil.example"),
+    ).toBe(false);
+    expect(isTgpOrigin("https://api.tgp.coach")).toBe(false);
     for (const bad of [null, undefined, 42, "", "not a url", {}]) {
       expect(isTgpOrigin(bad)).toBe(false);
     }

@@ -15,8 +15,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 // forced re-pair, which is the very failure the prefix fix exists to remove.
 
 const REFRESH_KEY = "tgp_refresh_token";
-const CORRECT_ENDPOINT = "https://api.tgp.coach/api/auth/extension/refresh";
-const OLD_BROKEN_ENDPOINT = "https://api.tgp.coach/auth/extension/refresh";
+const CORRECT_ENDPOINT =
+  "https://backend-spring-lake-3890.fly.dev/api/auth/extension/refresh";
+const OLD_BROKEN_ENDPOINT =
+  "https://backend-spring-lake-3890.fly.dev/auth/extension/refresh";
 
 // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
 function installChromeStub({ session } = {}) {

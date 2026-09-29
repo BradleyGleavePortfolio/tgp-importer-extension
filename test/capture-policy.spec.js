@@ -91,11 +91,17 @@ describe("assertCaptureTabAllowed — debugger origin confinement", () => {
   });
 
   it("rejects a TGP origin even if a run named it — the importer never self-captures", async () => {
-    setAuthorizedOrigin("https://api.tgp.coach");
-    mock.grant("https://api.tgp.coach/*");
+    setAuthorizedOrigin("https://backend-spring-lake-3890.fly.dev");
+    mock.grant("https://backend-spring-lake-3890.fly.dev/*");
     try {
-      await expectRejected("https://api.tgp.coach/", "capture_tgp_origin");
-      await expectRejected("https://tgp.coach/", "capture_tgp_origin");
+      await expectRejected(
+        "https://backend-spring-lake-3890.fly.dev/",
+        "capture_tgp_origin",
+      );
+      await expectRejected(
+        "https://BACKEND-SPRING-LAKE-3890.FLY.DEV/",
+        "capture_tgp_origin",
+      );
     } finally {
       setAuthorizedOrigin(mock.defaultOrigin);
     }

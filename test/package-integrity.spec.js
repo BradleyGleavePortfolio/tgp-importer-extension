@@ -35,7 +35,7 @@ const REQUIRED_PERMISSIONS = [
 // Install-time host access is TGP's own API only. Source origins are never
 // granted at install: the coach grants exactly one, on the Start gesture, from
 // the optional https-only pattern.
-const REQUIRED_HOSTS = ["https://api.tgp.coach/*"];
+const REQUIRED_HOSTS = ["https://backend-spring-lake-3890.fly.dev/*"];
 const OPTIONAL_HOSTS = ["https://*/*"];
 const BROAD = /^(?:<all_urls>|\*:\/\/\*\/\*|https?:\/\/\*\/\*)$/;
 

@@ -1,6 +1,6 @@
 // Shared message protocol and config for the TGP Importer extension.
 // Strongly typed so background, content, popup, and extractor never need casts.
-export const TGP_API_ORIGIN = "https://api.tgp.coach";
+export const TGP_API_ORIGIN = "https://backend-spring-lake-3890.fly.dev";
 // The extension's ONLY no-session -> session path (docs/DESIGN.md §§3,4): the
 // unauthenticated pairing-code redeem.
 //
@@ -16,9 +16,12 @@ export const TGP_API_ORIGIN = "https://api.tgp.coach";
 // flip this to `false` in the SAME change that removes/guards the redeem call.
 export const PAIR_REDEEM_PATH = "/api/extension/pair/redeem";
 export const PAIRING_ENABLED = true;
-// TGP's own origins (the product, not a source). The importer never captures
-// from, crawls, or authorizes one of these as a source: an https origin whose
-// hostname is tgp.coach or one of its subdomains.
+// TGP's own origin (the product's backend, not a source). The importer never
+// captures from, crawls, or authorizes it as a source. Exactly the API host:
+// it lives under a shared hosting domain, so no sibling host is TGP's.
+// Owner decision OD-API-ORIGIN (2026-09-29): the backend is the Fly app the
+// mobile client already uses; the previous vanity domain was never registered.
+const TGP_API_HOSTNAME = new URL(TGP_API_ORIGIN).hostname;
 export function isTgpOrigin(origin) {
   if (typeof origin !== "string") return false;
   let hostname;
@@ -27,7 +30,7 @@ export function isTgpOrigin(origin) {
   } catch {
     return false;
   }
-  return hostname === "tgp.coach" || hostname.endsWith(".tgp.coach");
+  return hostname === TGP_API_HOSTNAME;
 }
 // Narrowing helpers — avoid `as` casts on untyped chrome.runtime payloads.
 export function isStartIngest(m) {

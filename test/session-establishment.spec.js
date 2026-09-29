@@ -209,7 +209,9 @@ describe("service-worker restart — refresh survives, access is re-minted", () 
     expect(global.fetch).toHaveBeenCalledTimes(1);
     // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     const [url, init] = global.fetch.mock.calls[0];
-    expect(url).toBe("https://api.tgp.coach/api/auth/extension/refresh");
+    expect(url).toBe(
+      "https://backend-spring-lake-3890.fly.dev/api/auth/extension/refresh",
+    );
     expect(JSON.parse(init.body)).toEqual({ refresh_token: "refresh-live" });
   });
 });

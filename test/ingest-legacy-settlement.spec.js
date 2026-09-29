@@ -23,10 +23,13 @@ import {
 vi.setConfig({ testTimeout: 60000 });
 
 const REFRESH_KEY = "tgp_refresh_token";
-const REFRESH_URL = "https://api.tgp.coach/api/auth/extension/refresh";
-const INGEST_URL = "https://api.tgp.coach/api/scout/ingest";
-const COMPLETE_URL = "https://api.tgp.coach/api/scout/ingest/complete";
-const PROGRESS_URL = "https://api.tgp.coach/api/scout/progress";
+const REFRESH_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/auth/extension/refresh";
+const INGEST_URL = "https://backend-spring-lake-3890.fly.dev/api/scout/ingest";
+const COMPLETE_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/scout/ingest/complete";
+const PROGRESS_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/scout/progress";
 const SRC_BASE = "https://app.truecoach.co/proxy/api";
 const TAB_URL = "https://app.truecoach.co/clients";
 const SRC_TOKEN = "src.legacy.TOKEN";

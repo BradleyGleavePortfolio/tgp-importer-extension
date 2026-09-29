@@ -6,7 +6,7 @@ import {
 } from "./helpers/background-mock.js";
 import { outcomeView } from "../popup/outcome.js";
 
-const api = "https://api.tgp.coach/api";
+const api = "https://backend-spring-lake-3890.fly.dev/api";
 const source = "https://app.truecoach.co";
 const snapshotKey = "tgp_status_snapshot";
 afterEach(() => {

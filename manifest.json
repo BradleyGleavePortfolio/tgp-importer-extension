@@ -28,6 +28,6 @@
     "debugger",
     "scripting"
   ],
-  "host_permissions": ["https://api.tgp.coach/*"],
+  "host_permissions": ["https://backend-spring-lake-3890.fly.dev/*"],
   "optional_host_permissions": ["https://*/*"]
 }

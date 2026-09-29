@@ -191,9 +191,9 @@ describe("requestStartImport — Authorization = Start", () => {
   );
 
   it.each([
-    "https://api.tgp.coach/x",
-    "https://tgp.coach/",
-    "https://a.tgp.coach/",
+    "https://backend-spring-lake-3890.fly.dev/x",
+    "https://backend-spring-lake-3890.fly.dev/",
+    "https://BACKEND-SPRING-LAKE-3890.FLY.DEV/api",
   ])("never asks for a grant on TGP's own origin (%s)", async (url) => {
     const runtime = { sendMessage: vi.fn(async () => ({ ok: true })) };
     const tabs = { query: vi.fn(async () => [{ id: 7, url }]) };
@@ -266,7 +266,7 @@ describe("wireStartImport — binds the CTA click to a real gesture", () => {
     ],
     [
       "TGP tab",
-      [{ id: 1, url: "https://api.tgp.coach/" }],
+      [{ id: 1, url: "https://backend-spring-lake-3890.fly.dev/" }],
       grantAll(),
       "prestart_unsafe_origin",
     ],

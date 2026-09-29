@@ -125,7 +125,10 @@ describe("truncated replay preserves reason-specific bounded diagnostics", () =>
       const sourceCalls = [];
       const fetchMock = vi.fn(async (url, init) => {
         const value = String(url);
-        if (value === "https://api.tgp.coach/api/auth/extension/refresh") {
+        if (
+          value ===
+          "https://backend-spring-lake-3890.fly.dev/api/auth/extension/refresh"
+        ) {
           return Response.json({ access_token: "test-access" });
         }
         if (value.startsWith(`${origin}/clients`)) {
@@ -134,14 +137,22 @@ describe("truncated replay preserves reason-specific bounded diagnostics", () =>
             scenario.responses?.[sourceCalls.length - 1] ?? body,
           );
         }
-        if (value === "https://api.tgp.coach/api/scout/ingest/complete") {
+        if (
+          value ===
+          "https://backend-spring-lake-3890.fly.dev/api/scout/ingest/complete"
+        ) {
           completeBodies.push(JSON.parse(init.body));
           return Response.json({});
         }
-        if (value === "https://api.tgp.coach/api/scout/ingest") {
+        if (
+          value === "https://backend-spring-lake-3890.fly.dev/api/scout/ingest"
+        ) {
           return acceptedIngest(init);
         }
-        if (value === "https://api.tgp.coach/api/scout/progress") {
+        if (
+          value ===
+          "https://backend-spring-lake-3890.fly.dev/api/scout/progress"
+        ) {
           return Response.json({});
         }
         throw new Error("unexpected test request");

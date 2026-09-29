@@ -18,9 +18,10 @@ const fixture = JSON.parse(
 );
 const REFRESH_KEY = "tgp_refresh_token";
 const SNAPSHOT_KEY = "tgp_status_snapshot";
-const REFRESH_URL = "https://api.tgp.coach/api/auth/extension/refresh";
+const REFRESH_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/auth/extension/refresh";
 const INTENT = "imp-1790000000000";
-const STATUS_URL = `https://api.tgp.coach/api/scout/import/status?intent_id=${INTENT}`;
+const STATUS_URL = `https://backend-spring-lake-3890.fly.dev/api/scout/import/status?intent_id=${INTENT}`;
 
 const recorded = {
   kind: "status_snapshot",

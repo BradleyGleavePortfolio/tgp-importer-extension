@@ -174,7 +174,7 @@ export function makeBgMock({
         if (knobs.failGetAll) throw new Error("permissions.getAll failed");
         return {
           permissions: ["tabs", "storage", "scripting"],
-          origins: ["https://api.tgp.coach/*", ...grants],
+          origins: ["https://backend-spring-lake-3890.fly.dev/*", ...grants],
         };
       },
       contains: async ({ origins }) =>

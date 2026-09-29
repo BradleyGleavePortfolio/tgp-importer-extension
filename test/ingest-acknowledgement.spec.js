@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeBgMock, installChrome } from "./helpers/background-mock.js";
 import { fakePageStore, realSourceTab } from "./helpers/source-tab.js";
 
-const base = "https://api.tgp.coach/api/scout";
+const base = "https://backend-spring-lake-3890.fly.dev/api/scout";
 const source = "https://app.truecoach.co";
 afterEach(() => {
   vi.useRealTimers();
@@ -36,7 +36,10 @@ async function run(acknowledge, notes = []) {
       return Response.json({});
     }
     if (url === `${base}/progress`) return new Response(null, { status: 204 });
-    if (url === "https://api.tgp.coach/api/auth/extension/refresh")
+    if (
+      url ===
+      "https://backend-spring-lake-3890.fly.dev/api/auth/extension/refresh"
+    )
       return Response.json({ access_token: "new-access" });
     if (String(url).includes("/notes")) return Response.json({ notes });
     if (String(url).startsWith(`${source}/proxy/api/clients?`))

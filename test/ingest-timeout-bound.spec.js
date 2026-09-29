@@ -28,7 +28,9 @@ describe("background ingest transport is bounded", () => {
     expect(m.permissions).not.toContain("cookies");
     // Only TGP's own API is granted at install; every source origin is an
     // optional https grant the coach gives on the Start gesture.
-    expect(m.host_permissions).toEqual(["https://api.tgp.coach/*"]);
+    expect(m.host_permissions).toEqual([
+      "https://backend-spring-lake-3890.fly.dev/*",
+    ]);
     expect(m.optional_host_permissions).toEqual(["https://*/*"]);
     expect(m.content_scripts).toBeUndefined();
     // The collector is registered dynamically for the granted origin only.

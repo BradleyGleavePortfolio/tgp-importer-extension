@@ -41,7 +41,10 @@ describe("preStartIssue — no-run error family mapping", () => {
     ["unsafe import origin: https://example.com", "prestart_unsafe_origin"],
     ["origin_not_https", "prestart_unsafe_origin"],
     ["origin_is_tgp", "prestart_unsafe_origin"],
-    ["origin_is_tgp: https://api.tgp.coach", "prestart_unsafe_origin"],
+    [
+      "origin_is_tgp: https://backend-spring-lake-3890.fly.dev",
+      "prestart_unsafe_origin",
+    ],
     ["origin_not_authorized", "prestart_origin_not_authorized"],
     [
       "origin_not_granted: https://example.com",
