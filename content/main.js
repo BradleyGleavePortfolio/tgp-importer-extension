@@ -40,7 +40,13 @@
       message.kind === "collect_source_token"
     ) {
       const token = readSourceBearer();
-      sendResponse(token.length > 0 ? { ok: true, token } : { ok: false });
+      // The reply names the document origin it was read from, so the worker
+      // can refuse a token that belongs to any other document.
+      sendResponse(
+        token.length > 0
+          ? { ok: true, token, origin: location.origin }
+          : { ok: false },
+      );
     }
     return false;
   });

@@ -11,11 +11,13 @@ import { makeBgMock, installChrome } from "./helpers/background-mock.js";
 const REFRESH_KEY = "tgp_refresh_token";
 const TAB_URL = "https://app.truecoach.co/clients/4711/notes?client=jane.doe";
 
-async function load() {
+// r5 (S1-A1): the Start tab must be live on the message's origin at
+// authorization, so a test naming another URL gives the tab that URL.
+async function load(tabUrl = TAB_URL) {
   vi.resetModules();
   const mock = makeBgMock({
     session: new Map([[REFRESH_KEY, "seed"]]),
-    tab: { url: TAB_URL },
+    tab: { url: tabUrl },
   });
   installChrome(mock);
   global.fetch = vi.fn();
@@ -74,13 +76,13 @@ describe("router: content-script principal is refused on every privileged kind",
 });
 
 describe("router: pre-run error text carries the tab origin only", () => {
-  it("unsupported site", async () => {
-    const mock = await load();
+  it("site not learned", async () => {
     const url = "https://example.com/coach/jane.doe/clients?token=abc";
-    await mock.dispatch({ kind: "start_import", url });
+    const mock = await load(url);
+    await mock.dispatch({ kind: "start_import", url, tabId: 42 });
     await flush();
     const last = snapshots(mock).at(-1);
-    expect(last.lastError).toBe("unsupported site: https://example.com");
+    expect(last.lastError).toBe("site_not_learned: https://example.com");
     expect(last.lastError).not.toContain("jane.doe");
     expect(last.lastError).not.toContain("token=");
   });
@@ -98,14 +100,15 @@ describe("router: pre-run error text carries the tab origin only", () => {
   });
 
   it("legacy start_ingest from a trusted page", async () => {
-    const mock = await load();
+    const mock = await load("https://example.com/coach/jane.doe");
     await mock.dispatch({
       kind: "start_ingest",
       url: "https://example.com/coach/jane.doe",
+      tabId: 42,
     });
     await flush();
     expect(snapshots(mock).at(-1).lastError).toBe(
-      "unsupported site: https://example.com",
+      "site_not_learned: https://example.com",
     );
   });
 
@@ -114,7 +117,7 @@ describe("router: pre-run error text carries the tab origin only", () => {
     await mock.dispatch({ kind: "start_import", url: "not a url jane.doe" });
     await flush();
     expect(snapshots(mock).at(-1).lastError).toBe(
-      "unsupported site: (invalid url)",
+      "unsafe import origin: (invalid url)",
     );
   });
 });

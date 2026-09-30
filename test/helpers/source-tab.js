@@ -7,7 +7,11 @@ import { readFileSync } from "node:fs";
 import { Script } from "node:vm";
 
 // No bundler or module import: exercise the production classic-script boundary.
-export function wireCollector(runtime, stores) {
+export function wireCollector(
+  runtime,
+  stores,
+  href = "https://app.truecoach.co/clients",
+) {
   const source = readFileSync(
     new URL("../../content/main.js", import.meta.url),
     "utf8",
@@ -15,7 +19,8 @@ export function wireCollector(runtime, stores) {
   new Script(source, { filename: "content/main.js" }).runInNewContext(
     {
       chrome: { runtime: { sendMessage: async () => undefined, ...runtime } },
-      location: { href: "https://app.truecoach.co/clients" },
+      // The document the collector runs in: its origin travels with the reply.
+      location: { href, origin: new URL(href).origin },
       sessionStorage: stores[0] ?? fakePageStore(),
       localStorage: stores[1] ?? fakePageStore(),
     },
@@ -67,8 +72,14 @@ export function fakePageStore(entries = []) {
 // Return a chrome.tabs.sendMessage-compatible responder backed by the REAL
 // content-script listener. The extension worker addresses its own content
 // script, so the sender id equals the extension id (the trust the content
-// script requires). `senderId` overrides that to model an untrusted caller.
-export function realSourceTab(extensionId, stores, senderId = extensionId) {
+// script requires). `senderId` overrides that to model an untrusted caller;
+// `href` is the document the collector runs in (default: the source tab).
+export function realSourceTab(
+  extensionId,
+  stores,
+  senderId = extensionId,
+  href = undefined,
+) {
   let listener = null;
   const runtime = {
     id: extensionId,
@@ -78,7 +89,7 @@ export function realSourceTab(extensionId, stores, senderId = extensionId) {
       },
     },
   };
-  wireCollector(runtime, stores);
+  wireCollector(runtime, stores, href);
   return (_tabId, message) =>
     new Promise((resolve, reject) => {
       if (listener === null) {

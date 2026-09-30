@@ -83,7 +83,13 @@ describe("wireCollector — answers only this extension's own worker", () => {
       { kind: "collect_source_token" },
       { id: runtime.id },
     );
-    expect(sendResponse).toHaveBeenCalledWith({ ok: true, token: JWT });
+    // The reply names the document origin the token was read from, so the
+    // worker can refuse a token from any other document.
+    expect(sendResponse).toHaveBeenCalledWith({
+      ok: true,
+      token: JWT,
+      origin: "https://app.truecoach.co",
+    });
     expect(kept).toBe(false); // synchronous response, channel not held open
   });
 

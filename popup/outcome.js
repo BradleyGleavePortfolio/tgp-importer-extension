@@ -7,15 +7,22 @@ function count(value) {
 export function outcomeView(snapshot, message) {
   const state = snapshot.intent?.status;
   const active = state === "ingest_started" && snapshot.workerActive === true;
+  // `ingest_unconfirmed`: a final status was sent but TGP never confirmed it
+  // and TGP's own record shows no final state (or could not be read). It is
+  // neither a failure nor a success here (S1-A2): the coach is told to check
+  // TGP's record, and nothing local is presented as the result.
+  const unconfirmed = state === "ingest_unconfirmed";
   const titleKey = active
     ? "outcome_running"
     : state === "ingest_started"
       ? "outcome_interrupted"
-      : state === "ingest_succeeded"
-        ? "replay_status_staged"
-        : state === "ingest_empty"
-          ? "outcome_empty"
-          : "outcome_attention";
+      : unconfirmed
+        ? "outcome_unconfirmed_title"
+        : state === "ingest_succeeded"
+          ? "replay_status_staged"
+          : state === "ingest_empty"
+            ? "outcome_empty"
+            : "outcome_attention";
   const rows = new Map();
   const staging = snapshot.staging;
   if (staging && typeof staging === "object") {
@@ -73,7 +80,11 @@ export function outcomeView(snapshot, message) {
     };
   });
   const guidance = message(
-    active ? "outcome_running_guidance" : "outcome_guidance",
+    active
+      ? "outcome_running_guidance"
+      : unconfirmed
+        ? "outcome_unconfirmed_guidance"
+        : "outcome_guidance",
   );
   const error =
     typeof snapshot.lastError === "string" ? snapshot.lastError : "";
@@ -82,7 +93,13 @@ export function outcomeView(snapshot, message) {
     : error.includes("ingest_ack_invalid")
       ? "outcome_receipt_invalid"
       : error.startsWith("complete")
-        ? "outcome_settlement_failed"
+        ? typeof snapshot.serverTerminal === "string"
+          ? // TGP's own record settled this run; our unconfirmed /complete
+            // reply is not an issue with the result shown (reviewer B C1).
+            "outcome_server_settled"
+          : unconfirmed && snapshot.serverStatus === "running"
+            ? "outcome_unconfirmed_server_running"
+            : "outcome_settlement_failed"
         : error.includes("skipped")
           ? "outcome_source_incomplete"
           : error
@@ -133,16 +150,33 @@ export function preStartIssue(lastError, message) {
         error.includes("login required to import") ||
         error.includes("session expired")
       ? "prestart_pairing_needed"
-      : error.startsWith("unsafe import origin")
+      : error.startsWith("unsafe import origin") ||
+          error.startsWith("origin_not_https") ||
+          error.startsWith("origin_is_tgp")
         ? "prestart_unsafe_origin"
-        : error.startsWith("unsupported site")
-          ? "prestart_page_unsupported"
-          : error.startsWith("no extractor for")
-            ? "prestart_no_reader"
-            : error.startsWith("no blueprint for") ||
-                error === "blueprint resolve failed"
-              ? "prestart_site_setup_unavailable"
-              : "prestart_unknown";
+        : error.startsWith("origin_not_authorized") ||
+            error.startsWith("origin_request_failed") ||
+            error.startsWith("origin_not_granted") ||
+            error.startsWith("start_not_authorized") ||
+            error.startsWith("origin_revoked") ||
+            error.startsWith("start_expired") ||
+            error.startsWith("start_superseded") ||
+            error.startsWith("start_not_registered") ||
+            error.startsWith("start_grant_mismatch") ||
+            error.startsWith("start_grant_ambiguous")
+          ? "prestart_origin_not_authorized"
+          : error.startsWith("start_prompt_outstanding")
+            ? "prestart_prompt_outstanding"
+            : error.startsWith("source_tab_navigated") ||
+                error.startsWith("source_tab_closed") ||
+                error.startsWith("source_tab_required") ||
+                error.startsWith("source_token_not_accepted")
+              ? "prestart_source_tab_changed"
+              : error.startsWith("site_not_learned")
+                ? "prestart_site_not_learned"
+                : error === "blueprint resolve failed"
+                  ? "prestart_site_setup_unavailable"
+                  : "prestart_unknown";
   return message(key);
 }
 

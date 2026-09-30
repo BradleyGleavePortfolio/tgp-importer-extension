@@ -12,6 +12,19 @@
   "outcome_settlement_failed": {
     "message": "The final status could not be confirmed. Earlier transfer receipts are retained below."
   },
+  "outcome_unconfirmed_title": {
+    "message": "Final status not confirmed by TGP yet"
+  },
+  "outcome_unconfirmed_guidance": {
+    "message": "TGP has not confirmed how this transfer ended, so this is neither a failure nor a success. Use Check status to read TGP's own record before doing anything else. A new transfer is blocked here to protect this result."
+  },
+  "outcome_server_settled": {
+    "message": "This is the final status TGP itself recorded for the transfer.",
+    "description": "Shown when the extension's own final report was not acknowledged but TGP's record settled the run; the server's state is the result, so no 'could not be confirmed' line is shown beside it."
+  },
+  "outcome_unconfirmed_server_running": {
+    "message": "TGP still records this transfer as running; its final state is not decided yet. Check status again shortly."
+  },
   "outcome_source_incomplete": {
     "message": "Some source pages could not be read. Their record counts are unknown."
   },
@@ -99,7 +112,7 @@
     "message": "Records from $PLATFORM$ were staged in TGP. Migration is not verified. Review the importer status.",
     "description": "Successful receipt is not proof of native records or complete business migration.",
     "placeholders": {
-      "platform": { "content": "$1", "example": "truecoach" }
+      "platform": { "content": "$1", "example": "your-source-platform" }
     }
   },
   "replay_status_staged": {
@@ -142,17 +155,25 @@
     "message": "TGP needs you to sign in again before this import can start. Sign in, then start the import.",
     "description": "No-run error: pairing or sign-in is required before Start can proceed. Fact then remedy."
   },
-  "prestart_page_unsupported": {
-    "message": "This page can't be imported from. Open a supported page on your source platform, then start the import.",
-    "description": "No-run error: the active tab's site is not one the importer supports. No vendor or platform name is shown."
-  },
   "prestart_unsafe_origin": {
     "message": "This page isn't a safe place to start an import from. Open the source platform directly, then start the import.",
     "description": "No-run error: the active tab's origin failed the import-safety allowlist check."
   },
-  "prestart_no_reader": {
-    "message": "TGP doesn't yet have a reader for this site. No records were read or sent.",
-    "description": "No-run error: no extractor exists for the detected platform. The platform/vendor slug is never shown (X6)."
+  "prestart_origin_not_authorized": {
+    "message": "TGP wasn't given permission to read this site, so nothing started. Press Start again and allow access to this site when Chrome asks.",
+    "description": "No-run error: the coach declined Chrome's site-access prompt on Start, or the grant was revoked before the worker checked it. Fact then remedy; the origin is never shown."
+  },
+  "prestart_prompt_outstanding": {
+    "message": "Chrome is still waiting for your answer to an earlier request to allow access to this site, so nothing started. Answer that request, then press Start again. If you already answered it, wait a moment and press Start again.",
+    "description": "No-run error: a previous Start on this site asked Chrome for access and the answer has not reached the importer, so a second request could not be told apart from it. Fact then remedy; the origin is never shown."
+  },
+  "prestart_source_tab_changed": {
+    "message": "The source page changed while the import was starting, so nothing started. Return to your source platform page and start again.",
+    "description": "No-run error: the source tab navigated away from the authorized origin (or a token from another document was offered) between Start and collection. Fact then remedy; no origin is shown."
+  },
+  "prestart_site_not_learned": {
+    "message": "TGP hasn't learned this site yet, so nothing was read or sent.",
+    "description": "No-run error: the authorized origin has no registered reader (registry lookup failed closed). No vendor or platform name is shown."
   },
   "prestart_site_setup_unavailable": {
     "message": "Setup for this site isn't available right now. No records were read or sent. Try again shortly.",
@@ -184,7 +205,12 @@
   "server_status_final": {
     "message": "Final state (TGP server): $STATE$",
     "description": "The server's settled terminal is the final state of this run.",
-    "placeholders": { "state": { "content": "$1", "example": "partial; some records may be missing" } }
+    "placeholders": {
+      "state": {
+        "content": "$1",
+        "example": "partial; some records may be missing"
+      }
+    }
   },
   "server_state_success": {
     "message": "transfer settled; records staged, migration not verified",

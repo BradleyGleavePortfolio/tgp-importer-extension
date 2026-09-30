@@ -250,11 +250,11 @@ describe("sourcePlatformFor additional cases", () => {
   });
 
   it("handles subdomains distinctly", () => {
-    expect(sourcePlatformFor("https://api.tgp.coach/x")).toBe(
-      "auto:api.tgp.coach",
-    );
-    expect(sourcePlatformFor("https://app.tgp.coach/x")).toBe(
-      "auto:app.tgp.coach",
+    expect(
+      sourcePlatformFor("https://backend-spring-lake-3890.fly.dev/x"),
+    ).toBe("auto:backend-spring-lake-3890.fly.dev");
+    expect(sourcePlatformFor("https://app.other.example/x")).toBe(
+      "auto:app.other.example",
     );
   });
 

@@ -13,14 +13,14 @@
 > framing lives in `first-principles.md`.
 
 > **Two version axes — do not conflate.** "Design v0.3" is the revision number
-> of *this specification document* (v0.2 → v0.3 was the inline-login → pairing
+> of _this specification document_ (v0.2 → v0.3 was the inline-login → pairing
 > rewrite). It is independent of the **product release milestones** v0.1…v1.0 in
-> `ROADMAP.md`, which describe *shipped extension capability* (v0.1 = TrueCoach
+> `ROADMAP.md`, which describe _shipped extension capability_ (v0.1 = TrueCoach
 > flagship + pairing auth, … v1.0 = BYO-extractor SDK). One design revision can
 > describe several release milestones. Both are also distinct from
 > `manifest.version` (the packaged artifact version, e.g. `0.3.0-design`). When
-> this doc says "v0.1 builds X" it means the *release milestone*; "Design v0.3"
-> means *this document's revision*.
+> this doc says "v0.1 builds X" it means the _release milestone_; "Design v0.3"
+> means _this document's revision_.
 
 ---
 
@@ -88,7 +88,7 @@ extension popup.
    (`popup/pair.html` / `popup/pair.js`): a single 6-digit input with
    auto-focus and paste support. No email, no password, no signup link.
 7. **Redeem the pairing code.** Submitting the code issues
-   `POST https://api.tgp.coach/api/extension/pair/redeem` with `{ code }`. The
+   `POST https://backend-spring-lake-3890.fly.dev/api/extension/pair/redeem` with `{ code }`. The
    backend, if the code is unexpired and unused, returns
    `{ access_token, refresh_token, chosen_platform }` bound to the coach's
    TGP account. Both tokens are stored per §4 (refresh in
@@ -117,7 +117,7 @@ extension popup.
     hard requirement of the mobile-first UX.
 11. **Completion.** On finish, the worker fires a
     `chrome.notifications.create` toast on desktop and posts a terminal
-    `POST https://api.tgp.coach/api/scout/ingest/complete` so the backend can
+    `POST https://backend-spring-lake-3890.fly.dev/api/scout/ingest/complete` so the backend can
     flip the import to a settled state and push a completion notification to
     the mobile app.
 
@@ -164,6 +164,7 @@ desktop popup cannot host TGP account creation without duplicating mobile-side
 onboarding.
 
 The v0.3 flow is **mobile-initiated, extension-executed, backend-brokered**:
+
 - The mobile app declares intent and platform choice.
 - The backend mints a pairing code bound to both.
 - The extension redeems the code for a token bound to the same coach.
@@ -191,7 +192,7 @@ by the v0.1 implementation PR (this design PR is docs-only). The v0.2
   account plus the chosen source platform at mint time.
 - **Token pair** (unchanged from v0.2).
   - `POST /api/extension/pair/redeem` → `{ access_token, refresh_token,
-    chosen_platform }` on the initial pair.
+chosen_platform }` on the initial pair.
   - `POST /auth/extension/refresh` → new access token (and optionally a
     rotated refresh token) given a valid refresh token. Used for **token
     rotation** and to recover from a 401 mid-crawl.
@@ -251,7 +252,7 @@ The platform hosts everything; the coach only gets a **brand subdomain**
 DOM, and auth are identical to the flagship host — only the hostname prefix
 changes.
 
-- **Coverage:** *free.* A **wildcard host-permission**
+- **Coverage:** _free._ A **wildcard host-permission**
   (`https://*.truecoach.co/*`) plus `detectPlatform(url)` matching on the hostname
   **suffix** picks the right extractor regardless of the brand prefix.
 - **Per-brand effort:** **zero.** No new manifest entry, no new code per brand.
@@ -278,7 +279,7 @@ backend). There is **no shared API or DOM** to target, so no extension coverage
 is possible.
 
 - **Coverage:** none at the extension level. Fallback is the **user-assisted
-  export** path (§6). A **direct-DB migration** is offered as a *services*
+  export** path (§6). A **direct-DB migration** is offered as a _services_
   engagement (runbook only — **out of product scope**, not shipped in the
   extension).
 
@@ -373,7 +374,7 @@ contract. Each carries an R131 re-verification trigger (see
   couples this build to those endpoints being live in the target environment; a
   release tag is deliberately **not** cut in this PR.
 - **The inline email/password assumption from v0.2 is retired.** DESIGN.md
-  v0.2 §8 listed *"coaches accept inline email/password"* as a challengeable
+  v0.2 §8 listed _"coaches accept inline email/password"_ as a challengeable
   assumption. v0.3 removes the inline login surface entirely, so the
   assumption no longer applies and its R131 trigger is closed.
 - **The extension recognises source platforms by these exact origin patterns.**
@@ -384,7 +385,7 @@ contract. Each carries an R131 re-verification trigger (see
   `detectPlatform(url)` matching on the `.truecoach.co` hostname **suffix**).
   Tier-2 vanity domains are **not** in this set at install time; each is added
   at runtime one origin at a time via `optional_host_permissions` +
-  `chrome.permissions.request()` (§5 Tier 2). *R131 trigger:* re-verify this
+  `chrome.permissions.request()` (§5 Tier 2). _R131 trigger:_ re-verify this
   pattern set whenever a new platform is onboarded (each adds its own flagship +
   wildcard pair), whenever TrueCoach changes its host scheme, or at the next
   quarterly capture (2026-09-30) — whichever is sooner. A pattern that no longer
@@ -585,7 +586,7 @@ explicitly:
   (operator or security response). Revocation invalidates the refresh token
   server-side immediately; the next refresh fails and the extension clears
   local state and returns to the pairing view. **v0.3 RC caveat:** the extension
-  does not yet *initiate* `/auth/extension/logout`; local logout is a local-only
+  does not yet _initiate_ `/auth/extension/logout`; local logout is a local-only
   `clearTokens()` (§4). Server-side revocation therefore currently flows from
   reuse-detection on the next refresh and admin-forced revocation, not from an
   extension-initiated logout call.
@@ -735,4 +736,4 @@ and expiry decisions MUST NOT be made against the local device clock:
 
 ---
 
-*Sources for the platform landscape and host patterns cited in `ROADMAP.md`.*
+_Sources for the platform landscape and host patterns cited in `ROADMAP.md`._

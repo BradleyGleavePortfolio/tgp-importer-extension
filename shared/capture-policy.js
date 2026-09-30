@@ -3,11 +3,14 @@
 //
 // Two policies live here, both enforced BEFORE anything sensitive happens:
 //
-//   1. Debugger origin allowlist — the `debugger` permission is ambient
-//      authority over any tab, so attach is gated on an explicit HTTPS host
-//      allowlist. chrome://, devtools://, file://, extension pages, plain
-//      HTTP, and every non-allowlisted host (including TGP's own auth
-//      surface) are rejected before chrome.debugger.attach is ever called.
+//   1. Debugger origin confinement — the `debugger` permission is ambient
+//      authority over any tab, so attach is gated on the ONE origin the coach
+//      authorized on the Start gesture (shared/session.js). There is no host
+//      list: a tab is allowed only if it is https, its origin equals the run's
+//      authorized origin, Chrome still holds the host permission for it, and
+//      it is not a TGP origin. chrome://, devtools://, file://, extension
+//      pages, plain HTTP, and every other origin are rejected before
+//      chrome.debugger.attach is ever called.
 //
 //   2. Response-body secret redaction — captured JSON bodies are walked and
 //      any auth/secret-bearing field (tokens, api keys, cookies, passwords)
@@ -18,9 +21,20 @@
 // R75: zero banned type-assertions — every narrowing is a real guard.
 // R76: this file stays comfortably under 400 LOC.
 
-// Hosts the coach may capture from. Grows with docs/ROADMAP.md platforms
-// (e.g. "my.trainerize.com", "mypthub.net") — additions only via PR review.
-const ALLOWED_CAPTURE_HOSTS = new Set(["app.truecoach.co"]);
+import { getAuthorizedOrigin } from "./session.js";
+import { isTgpOrigin } from "./protocol.js";
+
+// Whether Chrome currently holds the host permission for `origin`. A revoked
+// or never-granted origin (or a permissions API fault) reads as not granted.
+async function originGranted(origin) {
+  try {
+    return (
+      (await chrome.permissions.contains({ origins: [`${origin}/*`] })) === true
+    );
+  } catch {
+    return false;
+  }
+}
 
 // Resolve a tab and assert its URL is eligible for capture. Throws a stable
 // machine-readable error code on every rejection path; returns the tab on
@@ -39,8 +53,15 @@ async function assertCaptureTabAllowed(tabId) {
   if (url.protocol !== "https:") {
     throw new Error("capture_non_https");
   }
-  if (!ALLOWED_CAPTURE_HOSTS.has(url.hostname)) {
-    throw new Error("capture_host_not_allowed");
+  if (isTgpOrigin(url.origin)) {
+    throw new Error("capture_tgp_origin");
+  }
+  const authorized = getAuthorizedOrigin();
+  if (authorized === null || url.origin !== authorized) {
+    throw new Error("capture_origin_not_authorized");
+  }
+  if (!(await originGranted(url.origin))) {
+    throw new Error("capture_origin_not_granted");
   }
   return tab;
 }
@@ -129,9 +150,4 @@ function redactResponseBody(body) {
       : body;
 }
 
-export {
-  ALLOWED_CAPTURE_HOSTS,
-  BODY_REDACTED,
-  assertCaptureTabAllowed,
-  redactResponseBody,
-};
+export { BODY_REDACTED, assertCaptureTabAllowed, redactResponseBody };

@@ -19,9 +19,11 @@ import { fakePageStore, realSourceTab } from "./helpers/source-tab.js";
 //     start_ingest (both directions + same-entrypoint).
 
 const REFRESH_KEY = "tgp_refresh_token";
-const REFRESH_URL = "https://api.tgp.coach/api/auth/extension/refresh";
-const INGEST_URL = "https://api.tgp.coach/api/scout/ingest";
-const COMPLETE_URL = "https://api.tgp.coach/api/scout/ingest/complete";
+const REFRESH_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/auth/extension/refresh";
+const INGEST_URL = "https://backend-spring-lake-3890.fly.dev/api/scout/ingest";
+const COMPLETE_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/scout/ingest/complete";
 const CLIENTS_PREFIX = "https://app.truecoach.co/proxy/api/clients?";
 const NOTES_URL = "https://app.truecoach.co/proxy/api/clients/c1/notes";
 const TAB_URL = "https://app.truecoach.co/clients";
@@ -64,7 +66,8 @@ async function settle(mock, ms = 12000) {
     const terminal =
       status === "ingest_succeeded" ||
       status === "ingest_failed" ||
-      status === "ingest_partial";
+      status === "ingest_partial" ||
+      status === "ingest_unconfirmed";
     if (terminal || authRequired(mock).length > 0 || Date.now() - start > ms) {
       return status;
     }
@@ -166,9 +169,13 @@ describe("start_import — completeIngest must be acknowledged (non-2xx != succe
       tabId: TAB_ID,
     });
     expect(ack).toEqual({ ok: true });
-    expect(await settle(mock)).toBe("ingest_failed");
+    // r5 (S1-A2): a 500 is not an acknowledgement, and the server (asked
+    // afterwards) holds no terminal, so the shown state is unconfirmed —
+    // neither the dishonest success nor a locally inferred failed.
+    expect(await settle(mock)).toBe("ingest_unconfirmed");
     // The dishonest success must NEVER have been broadcast, even momentarily.
     expect(statuses(mock)).not.toContain("ingest_succeeded");
+    expect(statuses(mock)).not.toContain("ingest_failed");
     expect(snapshots(mock).at(-1).lastError).toMatch(/complete 500/);
     // A failed finalisation raises no completion notification.
     expect(mock.notifications).toHaveLength(0);
@@ -295,7 +302,11 @@ describe("single-flight guard is SHARED across start_import and start_ingest", (
     const { mock } = await load({ session: seeded() });
     // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch.mockImplementation(() => new Promise(() => {}));
-    const a = await mock.dispatch({ kind: "start_ingest", url: TAB_URL });
+    const a = await mock.dispatch({
+      kind: "start_ingest",
+      url: TAB_URL,
+      tabId: TAB_ID,
+    });
     const b = await mock.dispatch({
       kind: "start_import",
       url: TAB_URL,
@@ -309,8 +320,16 @@ describe("single-flight guard is SHARED across start_import and start_ingest", (
     const { mock } = await load({ session: seeded() });
     // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch.mockImplementation(() => new Promise(() => {}));
-    const a = await mock.dispatch({ kind: "start_ingest", url: TAB_URL });
-    const b = await mock.dispatch({ kind: "start_ingest", url: TAB_URL });
+    const a = await mock.dispatch({
+      kind: "start_ingest",
+      url: TAB_URL,
+      tabId: TAB_ID,
+    });
+    const b = await mock.dispatch({
+      kind: "start_ingest",
+      url: TAB_URL,
+      tabId: TAB_ID,
+    });
     expect(a).toEqual({ ok: true });
     expect(b).toEqual({ ok: false, error: "import_in_progress" });
   });

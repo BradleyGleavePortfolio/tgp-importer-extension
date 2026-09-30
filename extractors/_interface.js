@@ -2,10 +2,11 @@
 // LOCKED EXTRACTOR INTERFACE — M-IMPORTER-EXTENSION v0
 // =============================================================================
 //
-// This file is the CONTRACT every per-platform extractor implements. It is
-// locked: Chef #2–#6 (CoachRx, MyPTHub, Trainerize, PT Distinction, FitSW)
-// build against this exact shape without ambiguity. Change it only via an
-// operator ruling, because changing it breaks every downstream extractor.
+// This file is the CONTRACT every source adapter implements. It is locked:
+// every adapter builds against this exact shape without ambiguity. Change it
+// only via an operator ruling, because changing it breaks every downstream
+// adapter. No vendor is named here: the only adapter today is the quarantined
+// oracle under legacy/, and the learned path replaces hand-written adapters.
 //
 // Design constraints honoured here:
 //   - Zero banned type-assertions anywhere (R75): no escape-hatch casts, no
@@ -30,10 +31,10 @@
  * Keeps `capturedAt` consistent and avoids per-extractor boilerplate.
  */
 export function makeEntity(platform, sourceId, payload) {
-    return {
-        sourceId: String(sourceId),
-        sourcePlatform: platform,
-        payload,
-        capturedAt: new Date().toISOString(),
-    };
+  return {
+    sourceId: String(sourceId),
+    sourcePlatform: platform,
+    payload,
+    capturedAt: new Date().toISOString(),
+  };
 }

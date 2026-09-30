@@ -23,10 +23,13 @@ import {
 vi.setConfig({ testTimeout: 60000 });
 
 const REFRESH_KEY = "tgp_refresh_token";
-const REFRESH_URL = "https://api.tgp.coach/api/auth/extension/refresh";
-const INGEST_URL = "https://api.tgp.coach/api/scout/ingest";
-const COMPLETE_URL = "https://api.tgp.coach/api/scout/ingest/complete";
-const PROGRESS_URL = "https://api.tgp.coach/api/scout/progress";
+const REFRESH_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/auth/extension/refresh";
+const INGEST_URL = "https://backend-spring-lake-3890.fly.dev/api/scout/ingest";
+const COMPLETE_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/scout/ingest/complete";
+const PROGRESS_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/scout/progress";
 const SRC_BASE = "https://app.truecoach.co/proxy/api";
 const TAB_URL = "https://app.truecoach.co/clients";
 const SRC_TOKEN = "src.legacy.TOKEN";
@@ -38,10 +41,15 @@ const COMPLETE_FIELDS = new Set([
   "error_summary",
 ]);
 
+const TAB_ID = 42;
+
 async function load() {
   vi.resetModules();
   const mock = makeBgMock({
     session: new Map([[REFRESH_KEY, "seed-refresh"]]),
+    // The source bearer comes from the coach's own tab on the authorized
+    // origin (collectSourceToken), never from the message.
+    tab: { url: TAB_URL, token: SRC_TOKEN },
   });
   installChrome(mock);
   global.fetch = vi.fn();
@@ -124,7 +132,7 @@ function runLegacy(mock) {
   return mock.dispatch({
     kind: "start_ingest",
     url: TAB_URL,
-    sourceToken: SRC_TOKEN,
+    tabId: TAB_ID,
   });
 }
 

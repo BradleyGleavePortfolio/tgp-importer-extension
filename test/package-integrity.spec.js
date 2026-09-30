@@ -24,18 +24,21 @@ afterAll(() => rmSync(scratch, { recursive: true, force: true }));
 
 // Frozen permission surface. Widening any of these is a Tier 4 change that must
 // be made here deliberately, never by editing manifest.json alone.
+// `activeTab` was removed in PR #35 r4 (R35-c7B-01): it granted temporary host
+// access to whatever tab was active on every popup open, outside the Start
+// grant lifecycle, and nothing used it.
 const REQUIRED_PERMISSIONS = [
-  "activeTab",
   "debugger",
   "notifications",
+  "scripting",
   "storage",
   "tabs",
 ];
-const REQUIRED_HOSTS = [
-  "https://*.truecoach.co/*",
-  "https://api.tgp.coach/*",
-  "https://app.truecoach.co/*",
-];
+// Install-time host access is TGP's own API only. Source origins are never
+// granted at install: the coach grants exactly one, on the Start gesture, from
+// the optional https-only pattern.
+const REQUIRED_HOSTS = ["https://backend-spring-lake-3890.fly.dev/*"];
+const OPTIONAL_HOSTS = ["https://*/*"];
 const BROAD = /^(?:<all_urls>|\*:\/\/\*\/\*|https?:\/\/\*\/\*)$/;
 
 /** Minimal synthetic extension tree for fail-closed cases. */
@@ -142,24 +145,19 @@ describe("package: bounded manifest surface", () => {
     }
   });
 
-  it("keeps any broad origin optional, so it needs a user gesture at runtime", () => {
-    const optional = manifest.optional_host_permissions ?? [];
-    expect(optional.length).toBeLessThanOrEqual(1);
+  it("keeps the only broad origin optional and https-only, so it needs a user gesture at runtime", () => {
+    expect(manifest.optional_host_permissions).toEqual(OPTIONAL_HOSTS);
     expect(manifest.host_permissions).not.toEqual(
-      expect.arrayContaining(optional),
+      expect.arrayContaining(OPTIONAL_HOSTS),
     );
   });
 
-  it("injects the classic content script only on declared source origins", () => {
-    expect(manifest.content_scripts).toHaveLength(1);
-    const [entry] = manifest.content_scripts;
-    for (const match of entry.matches) {
-      expect(manifest.host_permissions).toContain(match);
-      expect(match.startsWith("https://")).toBe(true);
-    }
-    expect(entry.all_frames).toBeUndefined();
-    expect(entry.match_about_blank).toBeUndefined();
-    expect(entry.js).toEqual(["content/main.js"]);
+  it("declares no static content script; the collector is reached only through dynamic registration", () => {
+    expect(manifest.content_scripts).toBeUndefined();
+    const { files } = collectShipping(root);
+    const collector = files.find((file) => file.path === "content/main.js");
+    expect(collector?.kind).toBe("classic");
+    expect(collector?.referrers).toEqual(["background.js"]);
   });
 
   it("exposes no external message or web-accessible surface", () => {

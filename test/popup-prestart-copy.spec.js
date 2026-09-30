@@ -37,10 +37,32 @@ describe("preStartIssue — no-run error family mapping", () => {
     ["auth_required", "prestart_pairing_needed"],
     ["login required to import", "prestart_pairing_needed"],
     ["session expired — please sign in again", "prestart_pairing_needed"],
-    ["unsupported site: https://example.com", "prestart_page_unsupported"],
+    ["site_not_learned: https://example.com", "prestart_site_not_learned"],
     ["unsafe import origin: https://example.com", "prestart_unsafe_origin"],
-    ["no extractor for truecoach", "prestart_no_reader"],
-    ["no blueprint for truecoach", "prestart_site_setup_unavailable"],
+    ["origin_not_https", "prestart_unsafe_origin"],
+    ["origin_is_tgp", "prestart_unsafe_origin"],
+    [
+      "origin_is_tgp: https://backend-spring-lake-3890.fly.dev",
+      "prestart_unsafe_origin",
+    ],
+    ["origin_not_authorized", "prestart_origin_not_authorized"],
+    [
+      "origin_not_granted: https://example.com",
+      "prestart_origin_not_authorized",
+    ],
+    [
+      "start_not_authorized: https://example.com",
+      "prestart_origin_not_authorized",
+    ],
+    ["origin_revoked: https://example.com", "prestart_origin_not_authorized"],
+    [
+      "source_tab_navigated: https://example.com",
+      "prestart_source_tab_changed",
+    ],
+    [
+      "source_token_not_accepted: https://example.com",
+      "prestart_source_tab_changed",
+    ],
     ["blueprint resolve failed", "prestart_site_setup_unavailable"],
   ])("maps %j to the approved key %s", (lastError, key) => {
     expect(preStartIssue(lastError, message)).toBe(message(key));
@@ -58,17 +80,26 @@ describe("preStartIssue — no-run error family mapping", () => {
     expect(preStartIssue(raw, message)).toBe(message("prestart_unknown"));
   });
 
-  it("never echoes a platform/vendor slug for the no-reader family", () => {
-    const result = preStartIssue("no extractor for truecoach", message);
-    expect(result).not.toContain("truecoach");
-    expect(result).not.toContain("no extractor for");
-  });
-
-  it("never echoes the tab origin for unsupported or unsafe origins", () => {
-    const unsupported = preStartIssue(
-      "unsupported site: https://app.truecoach.co/clients",
+  it("never echoes a platform/vendor slug for the not-learned family", () => {
+    const result = preStartIssue(
+      "site_not_learned: https://app.truecoach.co",
       message,
     );
+    expect(result).not.toContain("truecoach");
+    expect(result).not.toContain("site_not_learned");
+  });
+
+  it("never echoes the tab origin for not-learned, unauthorized or unsafe origins", () => {
+    const unsupported = preStartIssue(
+      "site_not_learned: https://app.truecoach.co/clients",
+      message,
+    );
+    const ungranted = preStartIssue(
+      "origin_not_granted: https://app.truecoach.co",
+      message,
+    );
+    expect(ungranted).not.toContain("truecoach");
+    expect(ungranted).not.toContain("https://");
     const unsafe = preStartIssue(
       "unsafe import origin: https://app.truecoach.co/clients",
       message,
@@ -83,10 +114,10 @@ describe("preStartIssue — no-run error family mapping", () => {
     const raws = [
       "import stopped — your TGP session changed during the import. Start the import again.",
       "auth_required",
-      "unsupported site: https://app.truecoach.co/clients",
+      "site_not_learned: https://app.truecoach.co/clients",
       "unsafe import origin: https://app.truecoach.co/clients",
-      "no extractor for truecoach",
-      "no blueprint for truecoach",
+      "origin_not_granted: https://app.truecoach.co",
+      "origin_not_authorized",
       "blueprint resolve failed",
     ];
     for (const raw of raws) {
@@ -164,15 +195,17 @@ describe("popup no-run error box renders only approved copy", () => {
     ],
     ["auth_required", "prestart_pairing_needed"],
     [
-      "unsupported site: https://app.truecoach.co/clients",
-      "prestart_page_unsupported",
+      "site_not_learned: https://app.truecoach.co/clients",
+      "prestart_site_not_learned",
     ],
     [
       "unsafe import origin: https://app.truecoach.co/clients",
       "prestart_unsafe_origin",
     ],
-    ["no extractor for truecoach", "prestart_no_reader"],
-    ["no blueprint for truecoach", "prestart_site_setup_unavailable"],
+    [
+      "origin_not_granted: https://app.truecoach.co",
+      "prestart_origin_not_authorized",
+    ],
     ["blueprint resolve failed", "prestart_site_setup_unavailable"],
   ])(
     "shows the approved line for %j, never the raw detail",

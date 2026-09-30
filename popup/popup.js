@@ -2,6 +2,7 @@
 // Requests a snapshot from the background worker and renders intent +
 // per-entity progress + the last error. Re-renders on every broadcast.
 import { outcomeView, preStartIssue, serverStatusView } from "./outcome.js";
+import { isTgpOrigin } from "../shared/protocol.js";
 
 let latestSnapshot = null;
 let snapshotVersion = 0;
@@ -134,18 +135,114 @@ function isOk(value) {
   return typeof value === "object" && value !== null && value.ok === true;
 }
 
-// Ask the worker to import the ACTIVE tab; its URL is the only input (the worker
-// detects platform, resolves blueprint, injects origin allowlist). Exported so a
-// test can drive the REAL send path.
-export function requestStartImport(runtime, tabs) {
+// Authorization = Start. The https origin of the ACTIVE tab is the only site
+// this run may touch; nothing else is authorized. Returns null for anything
+// that is not an https page (chrome://, file://, http://, no tab).
+function sourceOriginOf(url) {
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  return parsed.protocol === "https:" ? parsed.origin : null;
+}
+
+// Stable pre-start codes decided in the popup, before the worker is asked,
+// plus the one worker refusal that is a plain fact about THIS gesture and has
+// its own approved copy: an earlier request for the site is still unanswered.
+const START_ISSUE_CODES = new Set([
+  "origin_not_https",
+  "origin_is_tgp",
+  "origin_not_authorized",
+  "origin_request_failed",
+  "source_tab_required",
+  "start_prompt_outstanding",
+]);
+
+// On the Start gesture, in this order and for this reason:
+//   1. REGISTER the Start with the worker (tab id, tab origin, a nonce). This
+//      happens BEFORE Chrome is prompted, so there is no ordering dependency
+//      left: the worker begins the run as soon as both the pending Start and a
+//      fresh grant for that exact origin exist, in EITHER order.
+//   2. Ask Chrome for that one origin. Chrome's prompt takes focus and may
+//      close this popup; the run still proceeds, because the worker already
+//      holds the registration and will see the grant event.
+// Denial (or an unavailable prompt) is reported back so the worker can end its
+// pending Start at once instead of waiting out the window. The worker never
+// trusts the popup's claim: it re-checks the grant with Chrome, holds the
+// origin for the run, and collects the source bearer itself — the popup never
+// handles the token.
+export function requestStartImport(runtime, tabs, permissions) {
   return tabs.query({ active: true, currentWindow: true }).then((result) => {
     const tab = Array.isArray(result) && result.length > 0 ? result[0] : null;
     const url = tab && typeof tab.url === "string" ? tab.url : "";
-    // The tab id lets the worker ask this tab's content script for the source
-    // bearer; the popup never sees or handles the token.
     const tabId = tab && typeof tab.id === "number" ? tab.id : null;
-    return runtime.sendMessage({ kind: "start_import", url, tabId });
+    const origin = sourceOriginOf(url);
+    if (origin === null) {
+      return { ok: false, error: "origin_not_https" };
+    }
+    if (isTgpOrigin(origin)) {
+      return { ok: false, error: "origin_is_tgp" };
+    }
+    // R35-c7A-01: a Start binds the grant and the run to ONE live tab. A tab
+    // Chrome will not identify cannot be that tab, so nothing is registered
+    // and Chrome is never prompted.
+    if (tabId === null) {
+      return { ok: false, error: "source_tab_required" };
+    }
+    const nonce = startNonce();
+    return runtime
+      .sendMessage({ kind: "start_import", url, tabId, nonce })
+      .then((ack) => {
+        // A refused registration (busy, cleanup owed) starts nothing and must
+        // not lead to a prompt the coach cannot use.
+        if (!isOk(ack)) return ack;
+        // Chrome's prompt answers true (granted), false (declined) or rejects
+        // (no gesture, prompt unavailable). Each is its own honest no-run fact,
+        // and each tells the worker to drop the Start it registered.
+        return permissions.request({ origins: [`${origin}/*`] }).then(
+          (granted) =>
+            granted === true
+              ? confirmStart(runtime, nonce, ack)
+              : abandonStart(runtime, nonce, "origin_not_authorized"),
+          () => abandonStart(runtime, nonce, "origin_request_failed"),
+        );
+      });
   });
+}
+
+// Tell the worker its pending Start will never be granted, then report the
+// honest code. A lost cancellation is not fatal: the worker expires the
+// pending Start (and revokes any grant) on its own deadline.
+function abandonStart(runtime, nonce, error) {
+  const refused = { ok: false, error };
+  return Promise.resolve(
+    runtime.sendMessage({ kind: "start_unavailable", nonce }),
+  ).then(
+    () => refused,
+    // The worker was not reachable; its own deadline ends the Start.
+    () => refused,
+  );
+}
+
+// Chrome answered `true`. If the coach accepted a PROMPT, the worker's grant
+// event has already started the run and this is a no-op. If Chrome answered
+// true because it ALREADY held the origin, no prompt and no grant event
+// happened: the worker refuses that (possession is not a Start) and revokes
+// it, and the reply carries that fact so the popup shows the honest line.
+function confirmStart(runtime, nonce, ack) {
+  return Promise.resolve(runtime.sendMessage({ kind: "start_granted", nonce }))
+    .then((reply) => (isOk(reply) ? ack : reply))
+    .catch(() => ack);
+}
+
+// Opaque one-time id binding this gesture's registration to this gesture's
+// grant. Not a secret and never leaves the extension.
+function startNonce() {
+  return globalThis.crypto?.randomUUID
+    ? globalThis.crypto.randomUUID()
+    : `start-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 // Wire the Start Import CTA. Disables the button while the send is in flight so a
@@ -156,24 +253,37 @@ export function wireStartImport(
   tabs,
   doc,
   getMessage = (key) => chrome.i18n.getMessage(key),
+  permissions = undefined,
 ) {
   const btn = doc.getElementById("start-import");
   if (!btn) {
     return;
   }
-  function showUnconfirmedStart() {
+  function showStartIssue(text) {
     const errorBox = doc.getElementById("error");
     if (errorBox) {
       errorBox.hidden = false;
-      errorBox.textContent = getMessage("start_import_unconfirmed");
+      errorBox.textContent = text;
     }
+  }
+  function showUnconfirmedStart() {
+    showStartIssue(getMessage("start_import_unconfirmed"));
   }
   btn.addEventListener("click", () => {
     if (btn.disabled) return;
     btn.disabled = true;
-    requestStartImport(runtime, tabs)
+    requestStartImport(runtime, tabs, permissions)
       .then((response) => {
-        if (!isOk(response)) showUnconfirmedStart();
+        if (isOk(response)) return;
+        // A code the popup itself decided is an honest no-run fact: approved
+        // copy for it, never the raw code. Anything else stays "unconfirmed".
+        const code =
+          response && typeof response.error === "string" ? response.error : "";
+        if (START_ISSUE_CODES.has(code)) {
+          showStartIssue(preStartIssue(code, getMessage));
+        } else {
+          showUnconfirmedStart();
+        }
       })
       .catch(() => {
         // A lost reply is not proof that Start was rejected or that no records
@@ -274,7 +384,13 @@ if (
       render(message);
     }
   });
-  wireStartImport(chrome.runtime, chrome.tabs, document);
+  wireStartImport(
+    chrome.runtime,
+    chrome.tabs,
+    document,
+    (key) => chrome.i18n.getMessage(key),
+    chrome.permissions,
+  );
   wireOutcomeActions(
     chrome.runtime,
     document,

@@ -14,23 +14,38 @@ recorded with per-file hashes in the sibling `.inventory.json`.
 permission and host sets and the historical main-branch defect (an `export`
 in `content/main.js`) as a negative case.
 
-`npm run proof:browser` loads the built archive into an isolated local Chrome
-(throwaway profile, all DNS mapped to NOTFOUND except a synthetic
-`app.truecoach.co` served by a local TLS server pinned by SPKI for that process)
-and checks via the DevTools pipe that the worker it binds to IS the packaged
-extension (worker URL path, `chrome.runtime.id`, manifest name/version agree
-with the shipped manifest — Chrome also runs its own component-extension
-workers, which must never be mistaken for ours), that the popup loads, learns
-there is no paired session and redirects to the pairing view (the truthful
-fresh-profile state), that the classic content script runs on the synthetic
-origin, that `collect_source_token` returns the synthetic token or `{ ok: false }`,
-that the token never appears in storage or console output, and that every
-observed network request targeted the synthetic host or the extension origin.
-Evidence JSON carries the archive sha256 and the inventory's source head.
-`npm run proof:browser:control` re-runs with the historical defect re-applied
-and passes only when the failure has the specific no-receiver signature
-(`chrome.tabs.sendMessage` finds no listener in the tab) while every unrelated
-check still passes. Both need a Chrome binary (`TGP_CHROME`
-or a Playwright `chromium-*` cache); without one they exit 2 with an explicit
+`npm run proof:browser` loads the built archive into an isolated local
+Chromium (throwaway profile, every host mapped to NOTFOUND, so no source site,
+customer account or TGP API is contacted) and checks via the DevTools pipe,
+for the Start-grant flow (no static content script), that: Chrome's loader
+accepts the archive and the module worker evaluates with no exception; the
+worker it binds to IS the packaged extension (worker URL path,
+`chrome.runtime.id`, manifest name/version agree with the shipped manifest —
+Chrome also runs its own component-extension workers, which must never be
+mistaken for ours); the message router and the Start-grant lifecycle
+listeners (`permissions.onAdded/onRemoved`, `tabs.onRemoved/onUpdated`) are
+registered; Chrome installed exactly the frozen permission set (no
+`activeTab`), exactly the TGP backend host as the one required host, and
+https-only optional hosts; a fresh worker holds no optional host grant
+(startup sweep); the configured backend origin read from the shipped
+`shared/protocol.js` is exactly `https://backend-spring-lake-3890.fly.dev`
+and equals that required host; the popup with no session routes to the
+pairing view; the popup with a (synthetic, never presented) session renders
+as status with exactly one Start button and every other button a status
+action (owner D9); a real CDP click on Start from a non-https active page
+shows the approved no-run copy, starts nothing, prompts for nothing and makes
+no network request; the synthetic secret never reaches disk storage or
+console output; and every observed network request targeted the extension
+origin. Evidence JSON carries the archive sha256, the inventory's source head
+and `Browser.getVersion` verbatim (a Playwright `chromium-*` binary is
+labelled Playwright Chromium, not Google Chrome).
+`npm run proof:browser:control` re-runs with the packaged worker's module
+graph broken (a static import of a file the archive does not ship) and passes
+only when the failure has the specific signature of a worker Chrome refused
+to evaluate (router never registered) while the static manifest check still
+passes. Both need a Chromium binary (`TGP_CHROME`, `--chrome`, or a
+Playwright `chromium-*` cache); without one they exit 2 with an explicit
 gap. Passing is a loader and boundary proof, not evidence that a customer
-import completed.
+import completed; the host-permission prompt itself, the popup closing on
+it, worker idle termination during a long prompt and `executeScript` into a
+live https tab are not observed.

@@ -4,7 +4,7 @@
 // truecoach_samples/organizations_with_trainers.json:
 //   { organizations:[{ id, owner_id, name, ... }], images:[],
 //     trainers:[{ id, user_id, organization_id, is_organization_owner, ... }] }
-import { makeEntity } from "../_interface.js";
+import { makeEntity } from "../../extractors/_interface.js";
 import { PLATFORM, isRecord } from "./parse.js";
 function isWithId(value) {
     return isRecord(value) && typeof value.id === "number";

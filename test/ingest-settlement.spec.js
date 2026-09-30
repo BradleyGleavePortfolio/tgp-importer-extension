@@ -23,10 +23,13 @@ import { fakePageStore, realSourceTab } from "./helpers/source-tab.js";
 vi.setConfig({ testTimeout: 30000 });
 
 const REFRESH_KEY = "tgp_refresh_token";
-const REFRESH_URL = "https://api.tgp.coach/api/auth/extension/refresh";
-const INGEST_URL = "https://api.tgp.coach/api/scout/ingest";
-const COMPLETE_URL = "https://api.tgp.coach/api/scout/ingest/complete";
-const PROGRESS_URL = "https://api.tgp.coach/api/scout/progress";
+const REFRESH_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/auth/extension/refresh";
+const INGEST_URL = "https://backend-spring-lake-3890.fly.dev/api/scout/ingest";
+const COMPLETE_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/scout/ingest/complete";
+const PROGRESS_URL =
+  "https://backend-spring-lake-3890.fly.dev/api/scout/progress";
 const CLIENTS_PREFIX = "https://app.truecoach.co/proxy/api/clients?";
 const NOTES_PREFIX = "https://app.truecoach.co/proxy/api/clients/";
 const TAB_URL = "https://app.truecoach.co/clients";
@@ -78,7 +81,8 @@ async function settle(mock, ms = 10000) {
       status === "ingest_succeeded" ||
       status === "ingest_failed" ||
       status === "ingest_partial" ||
-      status === "ingest_empty"
+      status === "ingest_empty" ||
+      status === "ingest_unconfirmed"
     ) {
       return status;
     }
@@ -238,7 +242,11 @@ describe("source auth loss — the started intent is still settled", () => {
   it("does not let a failed settlement mask the source failure", async () => {
     const mock = await load(withSourceTab());
     routeRun(mock, { sourceStatus: 401, completeStatus: 503 });
-    expect(await runImport(mock)).toBe("ingest_failed");
+    // r5 (S1-A2): the server refused the terminal and holds none, so the
+    // state is unconfirmed rather than a locally inferred failed; the source
+    // reason still leads the shown error.
+    expect(await runImport(mock)).toBe("ingest_unconfirmed");
+    expect(sawFailed(mock)).toBe(false);
     expect(snapshots(mock).at(-1).lastError).toMatch(/source sign-in required/);
   });
 
@@ -250,7 +258,7 @@ describe("source auth loss — the started intent is still settled", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const mock = await load(withSourceTab());
     routeRun(mock, { sourceStatus: 401, completeStatus: 503 });
-    expect(await runImport(mock)).toBe("ingest_failed");
+    expect(await runImport(mock)).toBe("ingest_unconfirmed"); // r5 (S1-A2)
     const lines = warn.mock.calls.map((c) => c[0]);
     const parsed = lines.map((l) => {
       try {
@@ -287,7 +295,9 @@ describe("settlement is attempted at most once per intent", () => {
       notes: [{ id: "n1" }],
       completeStatus: 500,
     });
-    expect(await runImport(mock)).toBe("ingest_failed");
+    // r5 (S1-A2): not acknowledged, server holds no terminal → unconfirmed.
+    expect(await runImport(mock)).toBe("ingest_unconfirmed");
+    expect(sawFailed(mock)).toBe(false);
     expect(completeBodies).toHaveLength(1);
     expect(completeBodies[0].terminal_status).toBe("success");
   });
@@ -309,7 +319,7 @@ describe("settlement is attempted at most once per intent", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const mock = await load(withSourceTab());
     routeRun(mock, { sourceStatus: 503, completeStatus: 503 });
-    expect(await runImport(mock, 20000)).toBe("ingest_failed");
+    expect(await runImport(mock, 20000)).toBe("ingest_unconfirmed"); // r5 (S1-A2)
     const parsed = warn.mock.calls.map((c) => {
       try {
         return JSON.parse(c[0]);
@@ -415,12 +425,15 @@ describe("completeIngest — refreshes an expired token once, same as sendEntiti
       }
       return inner(url, init);
     });
-    expect(await runImport(mock)).toBe("ingest_failed");
+    // r5 (S1-A2): the server never acknowledged the terminal and could not
+    // be read either (same denied session), so the run resolves to
+    // unconfirmed — deterministic, never hanging, never a masked success.
+    expect(await runImport(mock)).toBe("ingest_unconfirmed");
+    expect(sawFailed(mock)).toBe(false);
     // Both the original complete attempt and its retry 401'd (no body was
     // ever accepted), and refresh itself was denied — so unlike the
     // successful-refresh case above, no complete body reaches the mock
-    // server here. The run still resolves deterministically to
-    // ingest_failed rather than hanging or masking the failure as success.
+    // server here.
     expect(completeBodies).toHaveLength(0);
   });
 });
