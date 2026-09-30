@@ -29,6 +29,10 @@ const KNOWN_EVENTS = new Set([
   "start_refusal_revoke_failed",
   "start_refused_busy",
   "start_refused_cleanup",
+  "start_refused_no_tab",
+  // S1-A5-01: a Start for an origin whose earlier request is still
+  // unanswered is not registered (its grant event could not be attributed).
+  "start_refused_outstanding",
 ]);
 
 // Emit a structured, secret-free warning. `event` MUST be one of KNOWN_EVENTS so

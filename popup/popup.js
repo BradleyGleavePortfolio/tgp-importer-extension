@@ -148,13 +148,16 @@ function sourceOriginOf(url) {
   return parsed.protocol === "https:" ? parsed.origin : null;
 }
 
-// Stable pre-start codes decided in the popup, before the worker is asked.
+// Stable pre-start codes decided in the popup, before the worker is asked,
+// plus the one worker refusal that is a plain fact about THIS gesture and has
+// its own approved copy: an earlier request for the site is still unanswered.
 const START_ISSUE_CODES = new Set([
   "origin_not_https",
   "origin_is_tgp",
   "origin_not_authorized",
   "origin_request_failed",
   "source_tab_required",
+  "start_prompt_outstanding",
 ]);
 
 // On the Start gesture, in this order and for this reason:

@@ -93,9 +93,13 @@ export function outcomeView(snapshot, message) {
     : error.includes("ingest_ack_invalid")
       ? "outcome_receipt_invalid"
       : error.startsWith("complete")
-        ? unconfirmed && snapshot.serverStatus === "running"
-          ? "outcome_unconfirmed_server_running"
-          : "outcome_settlement_failed"
+        ? typeof snapshot.serverTerminal === "string"
+          ? // TGP's own record settled this run; our unconfirmed /complete
+            // reply is not an issue with the result shown (reviewer B C1).
+            "outcome_server_settled"
+          : unconfirmed && snapshot.serverStatus === "running"
+            ? "outcome_unconfirmed_server_running"
+            : "outcome_settlement_failed"
         : error.includes("skipped")
           ? "outcome_source_incomplete"
           : error
@@ -158,18 +162,21 @@ export function preStartIssue(lastError, message) {
             error.startsWith("start_expired") ||
             error.startsWith("start_superseded") ||
             error.startsWith("start_not_registered") ||
-            error.startsWith("start_grant_mismatch")
+            error.startsWith("start_grant_mismatch") ||
+            error.startsWith("start_grant_ambiguous")
           ? "prestart_origin_not_authorized"
-          : error.startsWith("source_tab_navigated") ||
-              error.startsWith("source_tab_closed") ||
-              error.startsWith("source_tab_required") ||
-              error.startsWith("source_token_not_accepted")
-            ? "prestart_source_tab_changed"
-            : error.startsWith("site_not_learned")
-              ? "prestart_site_not_learned"
-              : error === "blueprint resolve failed"
-                ? "prestart_site_setup_unavailable"
-                : "prestart_unknown";
+          : error.startsWith("start_prompt_outstanding")
+            ? "prestart_prompt_outstanding"
+            : error.startsWith("source_tab_navigated") ||
+                error.startsWith("source_tab_closed") ||
+                error.startsWith("source_tab_required") ||
+                error.startsWith("source_token_not_accepted")
+              ? "prestart_source_tab_changed"
+              : error.startsWith("site_not_learned")
+                ? "prestart_site_not_learned"
+                : error === "blueprint resolve failed"
+                  ? "prestart_site_setup_unavailable"
+                  : "prestart_unknown";
   return message(key);
 }
 

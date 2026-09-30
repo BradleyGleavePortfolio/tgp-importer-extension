@@ -740,12 +740,16 @@ function clearPendingStart() {
 // Register the popup's half of a Start exchange. Bound to the initiating tab,
 // its origin and the caller's nonce, and valid for START_TTL_MS: the run that
 // later begins uses THESE values, never a tab id or url some other extension
-// page supplies afterwards. A second registration supersedes the first.
+// page supplies afterwards. A registration for ANOTHER origin supersedes a
+// pending one (the superseded request stays outstanding for its own origin —
+// its prompt may still be open); a registration for the SAME origin as a
+// pending or outstanding request never gets here (admitStart refuses it).
 function registerPendingStart(kind, message, origin) {
   if (pendingStart !== null) {
-    const superseded = pendingStart.origin;
+    const superseded = pendingStart;
     clearPendingStart();
-    void expireStart(superseded, "start_superseded");
+    markStartOutstanding(superseded, "start_superseded");
+    void expireStart(superseded.origin, "start_superseded");
   }
   const pending = {
     nonce: readString(message, "nonce"),
@@ -766,7 +770,7 @@ function registerPendingStart(kind, message, origin) {
       clearPendingStart();
       // A grant the coach accepts after this point belongs to an expired
       // Start: revoked on arrival with this reason (S1-A1).
-      markStartLost(pending, "start_expired");
+      markStartOutstanding(pending, "start_expired");
       void expireStart(origin, "start_expired");
     }
   }, START_TTL_MS);
@@ -775,7 +779,6 @@ function registerPendingStart(kind, message, origin) {
   }
   pending.timer = timer;
   pendingStart = pending;
-  lostStarts.delete(origin);
   keepWorkerAlive();
   return pending;
 }
@@ -791,7 +794,11 @@ async function screenHeldGrant(pending) {
   if (pendingStart !== pending || hasFreshGrant(pending.origin)) return;
   if (isActiveOrigin(pending.origin)) return;
   clearPendingStart();
-  await revokeGrant(pending.origin);
+  // The popup's request() usually answers true at once (held: no prompt) and
+  // its start_granted resolves this; if the revoke below landed first, Chrome
+  // DID prompt and the answer is unknown until it arrives (S1-A5-01).
+  markStartOutstanding(pending, "start_not_authorized");
+  await dropUnusedGrant(pending.origin, "start_refusal_revoke_failed");
   broadcastStatus({
     ...emptySnapshot(),
     lastError: `start_not_authorized: ${pending.origin}`,
@@ -816,34 +823,99 @@ function isActiveOrigin(origin) {
 let startingOrigin = null;
 
 // Drop a grant no run owns: forget the fresh mark and remove the host
-// permission if Chrome still holds it. Never throws.
+// permission if Chrome still holds it, VERIFIED. A removal that cannot be
+// verified gone (remove rejected, or contains() could not answer) is not
+// forgotten: the origin is recorded as grant debt, which closes the Start
+// gate until a retry verifies the grant is gone (S1-A5-02) — exactly as a
+// run's failed settlement does. Never throws.
 async function dropUnusedGrant(origin, event) {
   freshGrants.delete(origin);
   if (isActiveOrigin(origin)) return;
+  let gone = false;
   try {
     // An unreadable state is not "not held": attempt the revoke anyway.
-    if ((await holdsGrant(origin)) !== false) await revokeGrant(origin);
+    gone = (await holdsGrant(origin)) === false || (await revokeGrant(origin));
   } catch {
-    logNetworkEvent(event);
+    gone = false;
   }
+  if (gone) {
+    grantDebts.delete(origin);
+    return;
+  }
+  grantDebts.add(origin);
+  logNetworkEvent(event);
 }
 
-// Origins whose pending Start lost its tab (closed or navigated away) while
-// Chrome's prompt was open, with the stop reason. Chrome's prompt has no
-// deadline, so the grant such a Start asked for can arrive at ANY later time
-// (S1-A1: minutes after the tab closed, well past the Start's own window):
-// the mark therefore never expires on its own; only a NEW registration for
-// the origin replaces it. A grant that arrives for a marked origin has no
-// Start to serve and is revoked on arrival with that reason.
-/** @type {Map<string, string>} */
-const lostStarts = new Map();
+// Start requests whose Chrome prompt may still be open and whose answer this
+// worker has not learned, keyed by origin: the Start's tab closed or left the
+// origin, the Start expired, was superseded by another origin's Start, or
+// was refused while its popup may already have prompted. Chrome's prompt
+// has no deadline and its onAdded event names only the ORIGIN, so the grant
+// such a request asked for can arrive at ANY later time and is
+// indistinguishable from a grant a newer Start on the same origin asked for
+// (S1-A5-01). Therefore, while a request for an origin is outstanding:
+//   - no new Start for that origin is registered (admitStart refuses it with
+//     `start_prompt_outstanding`, so the popup does not open a second prompt
+//     and there is never more than ONE request per origin whose answer can
+//     still arrive on this worker);
+//   - a grant that arrives for the origin is that request's answer: it is
+//     revoked on arrival with the request's stop reason, and the request is
+//     resolved.
+// A request is also resolved by the popup's own report of Chrome's answer
+// (start_granted / start_unavailable carrying the request's nonce). Nothing
+// else resolves it: a declined or dismissed prompt whose popup is gone is
+// never announced, so such a mark lives as long as this worker does.
+/** @type {Map<string, { nonce: string | null, code: string }>} */
+const outstandingStarts = new Map();
 
-function markStartLost(pending, code) {
-  lostStarts.set(pending.origin, code);
+function markStartOutstanding(pending, code) {
+  outstandingStarts.set(pending.origin, { nonce: pending.nonce, code });
 }
 
-function lostStartCode(origin) {
-  return lostStarts.get(origin) ?? null;
+// Resolve (and report) the outstanding request for an origin, if any.
+function takeOutstandingStart(origin) {
+  const entry = outstandingStarts.get(origin) ?? null;
+  outstandingStarts.delete(origin);
+  return entry;
+}
+
+// The popup reported Chrome's answer for a request that is no longer pending:
+// its nonce identifies the request, so its outstanding mark is resolved.
+function resolveOutstandingStart(nonce) {
+  if (typeof nonce !== "string" || nonce === "") return false;
+  for (const [origin, entry] of outstandingStarts) {
+    if (entry.nonce === nonce) {
+      outstandingStarts.delete(origin);
+      return true;
+    }
+  }
+  return false;
+}
+
+// An earlier request for this origin may still be answered: a new Start for
+// it cannot be told apart from that answer, so it is not registered.
+function hasOutstandingStart(origin) {
+  return (
+    outstandingStarts.has(origin) ||
+    (pendingStart !== null && pendingStart.origin === origin)
+  );
+}
+
+// Unbound host grants whose removal could not be VERIFIED (S1-A5-02). While
+// any is owed, no Start is admitted; each refused Start retries the removal.
+/** @type {Set<string>} */
+const grantDebts = new Set();
+
+function cleanupOwed() {
+  return pendingCleanup !== null || grantDebts.size > 0;
+}
+
+// Retry every unverified unbound-grant removal. Never throws.
+async function retryGrantDebts() {
+  for (const origin of [...grantDebts]) {
+    if (isActiveOrigin(origin)) continue;
+    if (await revokeGrant(origin)) grantDebts.delete(origin);
+  }
 }
 
 // Drop an expired or abandoned Start half and revoke whatever grant it may
@@ -883,16 +955,32 @@ chrome.permissions.onAdded.addListener((permissions) => {
     }
     freshGrants.set(origin, Date.now());
     const pending = pendingStart;
-    if (pending === null && (importInFlight || pendingCleanup !== null)) {
+    // Provenance (S1-A5-01): Chrome names only the origin, so this event is
+    // attributable to a request only when exactly ONE request for the origin
+    // can still be answered on this worker. An earlier request for the origin
+    // whose answer never came (outstanding) is the ONLY such request —
+    // admitStart registers no Start for an origin while one is outstanding —
+    // so the event is its answer: revoked on arrival with its reason, never
+    // claimed by whatever Start happens to be pending now.
+    const earlier = takeOutstandingStart(origin);
+    if (earlier !== null && pending !== null && pending.origin === origin) {
+      // Unreachable through admitStart (it refuses this registration); if it
+      // ever happens, the grant belongs to nobody provably: revoked, the
+      // pending Start is refused, and the origin stays outstanding.
+      clearPendingStart();
+      markStartOutstanding(pending, "start_grant_ambiguous");
+      void expireStart(origin, "start_grant_ambiguous");
+      continue;
+    }
+    if (pending === null && (importInFlight || cleanupOwed())) {
       // No Start could be admitted right now, so no Start can claim this
       // grant: it is revoked at once rather than held for the window. The
       // running import's own origin is never touched.
       if (!isActiveOrigin(origin)) {
         void expireStart(
           origin,
-          pendingCleanup !== null
-            ? "start_refused_cleanup"
-            : "start_refused_busy",
+          earlier?.code ??
+            (cleanupOwed() ? "start_refused_cleanup" : "start_refused_busy"),
         );
       }
       continue;
@@ -901,25 +989,23 @@ chrome.permissions.onAdded.addListener((permissions) => {
       // No pending Start on THIS worker is waiting for this grant, so nothing
       // can bind it to a nonce, a tab and a window (S1-A1). It is revoked on
       // arrival, never held: the Start that asked for it lost its tab
-      // (R35-c7A-01; the mark below carries that reason), or expired, or
-      // lived in a worker that has since died, or the grant came from
+      // (R35-c7A-01; the outstanding mark carries that reason), or expired,
+      // or lived in a worker that has since died, or the grant came from
       // Chrome's own UI. The popup registers BEFORE it prompts and waits for
       // the worker's reply, so a grant for a live Start always finds its
       // registration here; a grant that does not is not a Start.
-      const lost = lostStartCode(origin);
-      lostStarts.delete(origin);
-      void expireStart(origin, lost ?? "start_not_registered");
-      continue;
-    }
-    if (Date.now() > pending.expiresAt) {
-      clearPendingStart();
-      void expireStart(origin, "start_expired");
+      void expireStart(origin, earlier?.code ?? "start_not_registered");
       continue;
     }
     if (pending.origin !== origin) {
       // The grant names an origin this Start did not ask for: it is revoked
       // and nothing starts. The registration stays pending for its own origin.
-      void expireStart(origin, "start_grant_mismatch");
+      void expireStart(origin, earlier?.code ?? "start_grant_mismatch");
+      continue;
+    }
+    if (Date.now() > pending.expiresAt) {
+      clearPendingStart();
+      void expireStart(origin, "start_expired");
       continue;
     }
     claimStart(pending);
@@ -932,12 +1018,12 @@ chrome.permissions.onAdded.addListener((permissions) => {
 // consumed by authorizeSourceOrigin inside the handler.
 function beginAuthorizedRun(pending) {
   clearPendingStart();
-  if (pendingCleanup !== null || importInFlight) {
+  if (cleanupOwed() || importInFlight) {
     // A run slipped in between registration and grant: this Start is refused,
     // and its grant must not outlive the refusal.
     void expireStart(
       pending.origin,
-      pendingCleanup !== null ? "start_refused_cleanup" : "start_refused_busy",
+      cleanupOwed() ? "start_refused_cleanup" : "start_refused_busy",
     );
     return;
   }
@@ -969,7 +1055,7 @@ function admitStart(kind, message) {
     if (origin !== null) void refuseStart(origin, "cleanup_pending");
     return { ok: false, error: "cleanup_pending" };
   }
-  if (pendingCleanup !== null) {
+  if (cleanupOwed()) {
     void retryPendingCleanup();
     if (origin !== null) void refuseStart(origin, "cleanup_pending");
     return { ok: false, error: "cleanup_pending" };
@@ -988,6 +1074,16 @@ function admitStart(kind, message) {
       kind === "start_ingest" ? handleStartIngest : handleStartImport;
     void handler(message).finally(settleRun);
     return { ok: true };
+  }
+  // S1-A5-01: an earlier request for THIS origin may still be answered (its
+  // Chrome prompt is open, or was, and this worker never learned the answer).
+  // Chrome's grant event names only the origin, so a second request for it
+  // could never be told apart from that answer: nothing is registered, the
+  // popup does not prompt, and the earlier request is left exactly as it is
+  // (its grant, if it comes, is revoked as its own late answer).
+  if (hasOutstandingStart(origin)) {
+    logNetworkEvent("start_refused_outstanding");
+    return { ok: false, error: "start_prompt_outstanding" };
   }
   // R35-c7A-01: a Start is bound to ONE verified tab. Without a tab id there
   // is nothing to bind the grant, the collector or the run's lifetime to, so
@@ -1041,6 +1137,10 @@ function cancelPendingStart(message) {
   const pending = pendingStart;
   const nonce = readString(message, "nonce");
   if (pending === null || pending.nonce !== nonce) {
+    // The popup of a request that is no longer pending (its tab closed, it
+    // expired, ...) reports Chrome's answer: that request is resolved, so a
+    // new Start for its origin may register again (S1-A5-01).
+    if (resolveOutstandingStart(nonce)) return { ok: true };
     return { ok: false, error: "no_pending_start" };
   }
   // R35-c7B-02: a claimed Start (its grant already matched; the run is about
@@ -1063,6 +1163,9 @@ function confirmGrantedStart(message) {
   const pending = pendingStart;
   const nonce = readString(message, "nonce");
   if (pending === null || pending.nonce !== nonce || pending.claimed) {
+    // Chrome's answer for a request no longer pending: resolved (S1-A5-01).
+    // Its grant, if one was announced, was already revoked on arrival.
+    resolveOutstandingStart(nonce);
     return { ok: true }; // the run already began (or is beginning) on the grant event
   }
   clearPendingStart();
@@ -1079,6 +1182,8 @@ async function refuseStart(origin, code) {
     // A claimed Start's grant belongs to the run that is beginning.
     if (pending.claimed) return;
     clearPendingStart();
+    // Its popup may have prompted already; the answer is still to come.
+    markStartOutstanding(pending, code);
   }
   if (!isActiveOrigin(origin)) {
     await dropUnusedGrant(origin, "start_refusal_revoke_failed");
@@ -1333,7 +1438,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   const pending = pendingStart;
   if (pending !== null && pending.tabId === tabId) {
     clearPendingStart();
-    markStartLost(pending, "source_tab_closed");
+    markStartOutstanding(pending, "source_tab_closed");
     void expireStart(pending.origin, "source_tab_closed");
   }
   const run = activeRun;
@@ -1357,7 +1462,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     origin !== pending.origin
   ) {
     clearPendingStart();
-    markStartLost(pending, "source_tab_navigated");
+    markStartOutstanding(pending, "source_tab_navigated");
     void expireStart(pending.origin, "source_tab_navigated");
   }
   const run = activeRun;
@@ -1639,8 +1744,10 @@ async function handleStartIngest(message) {
 // entrypoints (start_import + legacy start_ingest). Cleared when the run settles.
 let importInFlight = false;
 
-// Cleanup the last run still owes. While set, no run is admitted: the next
-// Start retries the cleanup and is refused until every step is verified.
+// Cleanup the last run still owes. While set (or while any unbound grant's
+// removal is unverified — grantDebts, see cleanupOwed), no run is admitted:
+// the next Start retries the cleanup and is refused until every step is
+// verified.
 /** @type {{ origin: string | null } | null} */
 let pendingCleanup = null;
 
@@ -1756,6 +1863,7 @@ async function settleRun() {
   if (origin !== null) freshGrants.delete(origin);
   const clean = await cleanUp(origin);
   pendingCleanup = clean ? null : { origin };
+  if (clean && origin !== null) grantDebts.delete(origin);
   if (!clean) {
     logNetworkEvent("run_cleanup_pending");
   }
@@ -1768,8 +1876,11 @@ async function cleanUp(origin) {
   return collectorGone && grantGone;
 }
 
-// Retry the cleanup a previous run left pending; admits new runs once verified.
+// Retry the cleanup a previous run left pending, and every unbound-grant
+// removal that could not be verified (S1-A5-02); admits new runs once ALL of
+// it is verified. Never throws.
 async function retryPendingCleanup() {
+  await retryGrantDebts();
   if (pendingCleanup === null) return;
   const { origin } = pendingCleanup;
   if (await cleanUp(origin)) {
