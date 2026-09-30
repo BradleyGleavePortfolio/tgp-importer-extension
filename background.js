@@ -440,18 +440,32 @@ async function completeIngest(intent, outcome, generation) {
   }
 }
 
-// Best-effort settlement for a run that THREW, so the intent doesn't sit
-// "running" forever. `finalCounts` (only what's already known to have landed,
-// e.g. makeSender's tally) is omitted, not guessed, when absent. Never throws
-// — a failed settlement POST is logged (PII-free), not silently swallowed.
+// One terminal POST attempt. Resolves `true` when the backend ACKNOWLEDGED
+// the terminal, else the Error the attempt ended with (lost reply, timeout,
+// refused, session replaced) — logged by category, never thrown. The caller
+// must not read a non-ack as "the run failed": the backend may have committed
+// the terminal and only the reply was lost (S1-A2), so the caller asks the
+// server (showAuthoritativeTerminal) instead of inferring anything.
+async function attemptComplete(intent, outcome, generation) {
+  try {
+    await completeIngest(intent, outcome, generation);
+    return true;
+  } catch (err) {
+    logSettlementFailure(err);
+    return err instanceof Error ? err : new Error("complete_failed");
+  }
+}
+
+// Settlement POST for a run that THREW or was ended from outside, so the intent
+// doesn't sit "running" forever. `finalCounts` (only what's already known to
+// have landed, e.g. makeSender's tally) is omitted, not guessed, when absent.
+// Resolves like attemptComplete; never throws.
 function settleFailed(intent, errorSummary, finalCounts, generation) {
   const outcome = { terminalStatus: OUTCOME.failed.terminal, errorSummary };
   if (finalCounts !== undefined && Object.keys(finalCounts).length > 0) {
     outcome.finalCounts = finalCounts;
   }
-  return completeIngest(intent, outcome, generation).catch(
-    logSettlementFailure,
-  );
+  return attemptComplete(intent, outcome, generation);
 }
 
 // A settlement that could not be sent is logged by category only. A run whose
@@ -632,17 +646,20 @@ function notifyOutcome(platform, engineStatus) {
 // A Start authorization is a FRESH grant: Chrome only fires permissions.onAdded
 // when the coach accepts its prompt, which chrome.permissions.request may show
 // only from a user gesture. The worker records each freshly granted origin in
-// memory WITH the time it arrived, and a run CONSUMES it (single use) within
-// START_TTL_MS. A grant that merely exists — left over from a run whose revoke
-// failed, from a Start whose message was lost, or older than the window — is
-// not a Start: it is revoked so the next Start prompts again.
+// memory WITH the time it arrived, and the run its pending Start begins
+// CONSUMES it (single use) within START_TTL_MS. A grant that merely exists —
+// left over from a run whose revoke failed, from a Start whose registration
+// this worker never saw, or older than the window — is not a Start: it is
+// revoked so the next Start prompts again.
 /** @type {Map<string, number>} */
 const freshGrants = new Map();
 
 // One Start exchange lives at most this long: a pending registration with no
-// grant, or a fresh grant with no registration, is revoked and reported after
-// this window. Chrome's permission prompt has no deadline, so the popup
-// registers BEFORE prompting and the worker starts when both halves exist.
+// grant is revoked and reported after this window, and a grant that arrives
+// for it later finds no registration and is revoked on arrival (S1-A1).
+// Chrome's permission prompt has no deadline, so the popup registers BEFORE
+// prompting and the worker starts only when both halves exist for one
+// registration that is still live.
 const START_TTL_MS = 60_000;
 
 function hasFreshGrant(origin) {
@@ -747,6 +764,9 @@ function registerPendingStart(kind, message, origin) {
   const timer = setTimeout(() => {
     if (pendingStart === pending) {
       clearPendingStart();
+      // A grant the coach accepts after this point belongs to an expired
+      // Start: revoked on arrival with this reason (S1-A1).
+      markStartLost(pending, "start_expired");
       void expireStart(origin, "start_expired");
     }
   }, START_TTL_MS);
@@ -809,22 +829,21 @@ async function dropUnusedGrant(origin, event) {
 }
 
 // Origins whose pending Start lost its tab (closed or navigated away) while
-// Chrome's prompt was open, with the deadline of the window that Start had. A
-// grant that arrives for one of these has no Start to serve and is revoked on
-// arrival instead of being held for the window.
-/** @type {Map<string, number>} */
+// Chrome's prompt was open, with the stop reason. Chrome's prompt has no
+// deadline, so the grant such a Start asked for can arrive at ANY later time
+// (S1-A1: minutes after the tab closed, well past the Start's own window):
+// the mark therefore never expires on its own; only a NEW registration for
+// the origin replaces it. A grant that arrives for a marked origin has no
+// Start to serve and is revoked on arrival with that reason.
+/** @type {Map<string, string>} */
 const lostStarts = new Map();
 
-function markStartLost(pending) {
-  lostStarts.set(pending.origin, pending.expiresAt);
+function markStartLost(pending, code) {
+  lostStarts.set(pending.origin, code);
 }
 
-function lostStartOrigin(origin) {
-  const until = lostStarts.get(origin);
-  if (until === undefined) return false;
-  if (Date.now() <= until) return true;
-  lostStarts.delete(origin);
-  return false;
+function lostStartCode(origin) {
+  return lostStarts.get(origin) ?? null;
 }
 
 // Drop an expired or abandoned Start half and revoke whatever grant it may
@@ -878,22 +897,18 @@ chrome.permissions.onAdded.addListener((permissions) => {
       }
       continue;
     }
-    if (pending === null && lostStartOrigin(origin)) {
-      // The Start that asked for this grant lost its tab while the prompt was
-      // open (R35-c7A-01): no registration can follow, so the grant is
-      // revoked at once, not held for the window.
-      void expireStart(origin, "source_tab_closed");
-      continue;
-    }
     if (pending === null) {
-      // No Start registered (yet): hold the grant for the window only, then
-      // revoke it. A grant never outlives the exchange that asked for it.
-      const timer = setTimeout(() => {
-        if (hasFreshGrant(origin)) void expireStart(origin, "start_expired");
-      }, START_TTL_MS);
-      if (typeof timer === "object" && timer !== null && "unref" in timer) {
-        timer.unref();
-      }
+      // No pending Start on THIS worker is waiting for this grant, so nothing
+      // can bind it to a nonce, a tab and a window (S1-A1). It is revoked on
+      // arrival, never held: the Start that asked for it lost its tab
+      // (R35-c7A-01; the mark below carries that reason), or expired, or
+      // lived in a worker that has since died, or the grant came from
+      // Chrome's own UI. The popup registers BEFORE it prompts and waits for
+      // the worker's reply, so a grant for a live Start always finds its
+      // registration here; a grant that does not is not a Start.
+      const lost = lostStartCode(origin);
+      lostStarts.delete(origin);
+      void expireStart(origin, lost ?? "start_not_registered");
       continue;
     }
     if (Date.now() > pending.expiresAt) {
@@ -982,17 +997,13 @@ function admitStart(kind, message) {
     return { ok: false, error: "source_tab_required" };
   }
   const pending = registerPendingStart(kind, message, origin);
-  if (hasFreshGrant(origin)) {
-    // The coach's accepted prompt reached the worker first (a cold worker
-    // queues the event ahead of the message): both halves exist now.
-    claimStart(pending);
-    return { ok: true };
-  }
-  // Otherwise the worker waits: the coach's prompt is open. Either the grant
-  // arrives (onAdded -> claimStart) or the popup reports that it will not
-  // (start_granted / start_unavailable), and the window bounds both. A grant
-  // Chrome ALREADY holds is screened off the admission path so it cannot race
-  // it — possession of a durable permission is never a Start.
+  // The worker now waits: the coach's prompt is about to open. Either the
+  // grant arrives (onAdded -> claimStart) or the popup reports that it will
+  // not (start_granted / start_unavailable), and the window bounds both. A
+  // grant that reached the worker BEFORE this registration was revoked on
+  // arrival (no Start could bind it — S1-A1), and a grant Chrome ALREADY
+  // holds is screened off the admission path so it cannot race it —
+  // possession of a durable permission is never a Start.
   void screenHeldGrant(pending);
   return { ok: true };
 }
@@ -1152,18 +1163,20 @@ async function settleEnded(run, detail, intent, tally, generation, reporter) {
     // Best-effort: a progress flush failing must not hide the stop.
     await reporter.flush(null, detail).catch(logSettlementFailure);
   }
-  await settleFailed(intent, detail, Object.fromEntries(tally), generation);
-  broadcastStatus({
-    ...currentSnapshot,
-    intent: { ...intent, status: "ingest_failed" },
-    lastError: detail,
-  });
+  const acked = await settleFailed(
+    intent,
+    detail,
+    Object.fromEntries(tally),
+    generation,
+  );
+  await reportTerminal(run, intent, generation, OUTCOME.failed, detail, acked);
 }
 
 // The server's status word -> the popup state that shows it. The backend owns
 // lifecycle truth: once a terminal POST has been ATTEMPTED, whatever the
-// extension observes locally (grant revoked, tab closed) can no longer decide
-// the outcome, because the backend may already have committed it.
+// extension observes locally (grant revoked, tab closed, a reply that never
+// came) can no longer decide the outcome, because the backend may already
+// have committed it.
 const SERVER_TERMINAL_STATE = {
   success: "ingest_succeeded",
   complete: "ingest_succeeded",
@@ -1174,16 +1187,100 @@ const SERVER_TERMINAL_STATE = {
   timed_out: "ingest_failed",
 };
 
-// R35-c7A-02: the run's capability ended while its terminal POST was in
-// flight (or right after it). The extension never asserts a local terminal
-// that can contradict the backend: it reads the server's authoritative run
-// status and shows THAT. If the server has a settled terminal, that is the
-// result. If it does not (or cannot be read) but the backend ACKNOWLEDGED our
-// terminal, the acknowledged outcome is the server's own answer and is shown.
-// Otherwise nothing is known: the terminal is reported as unconfirmed, and no
-// second terminal (settleFailed) is ever sent over a possibly committed one.
-async function showAuthoritativeTerminal(run, intent, generation, acked) {
-  const detail = runEnded(run) ?? revokedDetail(run.origin);
+// The popup state for "a terminal was attempted and the server has not
+// confirmed how the run ended": not a failure, not a success — the coach is
+// told to check TGP's record. Never inferred into anything else locally.
+const UNCONFIRMED_STATE = "ingest_unconfirmed";
+
+// The one place a run's terminal reaches the popup once a /complete has been
+// ATTEMPTED (S1-A2 generalises R35-c7A-02). `outcome` is the OUTCOME entry
+// the extension POSTed, `detail` its local reason line (null when clean) and
+// `acked` is `true` when the backend acknowledged that POST, else the Error
+// the attempt ended with.
+//   - acknowledged, capability intact: the acknowledged outcome IS the
+//     server's answer and is shown (with the completion notification when
+//     `notify`).
+//   - anything else (reply lost or refused, or the run's capability ended
+//     meanwhile): the server's status is read and shown; nothing is inferred.
+//   - a session replaced during the POST is a SESSION change: the current
+//     session is intact, the old intent is left unsettled and no status is
+//     read under a session this run does not own.
+async function reportTerminal(
+  run,
+  intent,
+  generation,
+  outcome,
+  detail,
+  acked,
+  notify = false,
+) {
+  if (isTgpSessionReplaced(acked)) {
+    broadcastStatus({
+      ...currentSnapshot,
+      intent: { ...intent, status: "ingest_failed" },
+      lastError: SESSION_REPLACED_DETAIL,
+    });
+    return;
+  }
+  if (acked === true && runEnded(run) === null) {
+    broadcastStatus({
+      ...currentSnapshot,
+      intent: { ...intent, status: outcome.state },
+      lastError: detail,
+    });
+    if (notify) notifyOutcome(intent.platform, outcomeWord(outcome));
+    return;
+  }
+  await showAuthoritativeTerminal(
+    run,
+    intent,
+    generation,
+    acked === true
+      ? { state: outcome.state, detail, terminal: outcome.terminal }
+      : null,
+    detail,
+    acked,
+  );
+}
+
+// The engine word an OUTCOME entry stands for (its notification copy).
+function outcomeWord(outcome) {
+  for (const [word, entry] of Object.entries(OUTCOME)) {
+    if (entry === outcome) return word;
+  }
+  return "failed";
+}
+
+// The PII-free category of a /complete attempt that was not acknowledged:
+// `complete_timeout`, `complete <http status>` or `complete_network_error`.
+// Never a transport message (it could carry a URL).
+function completeFailureCategory(failure) {
+  const message = failure instanceof Error ? failure.message : "";
+  return message === "complete_timeout" || /^complete \d{3}$/.test(message)
+    ? message
+    : "complete_network_error";
+}
+
+// R35-c7A-02 / S1-A2: a terminal POST has been attempted, and either the
+// run's capability ended meanwhile or the backend's reply never came. The
+// extension never asserts a local terminal that can contradict the backend:
+// it reads the server's authoritative run status and shows THAT. If the
+// server has a settled terminal, that is the result. If it does not (or
+// cannot be read) but the backend ACKNOWLEDGED our terminal, the acknowledged
+// outcome is the server's own answer and is shown. Otherwise nothing is
+// known: the run is shown as UNCONFIRMED (never `failed`), with what the
+// server did say (`serverStatus`: running / not_yet_known / unavailable), and
+// no second terminal is ever sent over a possibly committed one.
+async function showAuthoritativeTerminal(
+  run,
+  intent,
+  generation,
+  acked,
+  detail,
+  failure,
+) {
+  const ended = runEnded(run);
+  const reason = ended ?? detail ?? completeFailureCategory(failure);
   const server = await readServerRunStatus(intent.intentId, generation);
   if (server.state === "known" && server.settled === true) {
     const status = String(server.status);
@@ -1191,7 +1288,7 @@ async function showAuthoritativeTerminal(run, intent, generation, acked) {
     broadcastStatus({
       ...currentSnapshot,
       intent: { ...intent, status: state },
-      lastError: state === "ingest_failed" ? detail : null,
+      lastError: state === "ingest_failed" ? reason : null,
       serverTerminal: status,
     });
     return;
@@ -1207,8 +1304,11 @@ async function showAuthoritativeTerminal(run, intent, generation, acked) {
   }
   broadcastStatus({
     ...currentSnapshot,
-    intent: { ...intent, status: "ingest_failed" },
-    lastError: `complete_unconfirmed: ${detail}`,
+    intent: { ...intent, status: UNCONFIRMED_STATE },
+    lastError: `complete_unconfirmed: ${reason}`,
+    serverStatus:
+      server.state === "known" ? String(server.status) : server.state,
+    completeAttempt: completeFailureCategory(failure),
   });
 }
 
@@ -1233,7 +1333,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   const pending = pendingStart;
   if (pending !== null && pending.tabId === tabId) {
     clearPendingStart();
-    markStartLost(pending);
+    markStartLost(pending, "source_tab_closed");
     void expireStart(pending.origin, "source_tab_closed");
   }
   const run = activeRun;
@@ -1257,7 +1357,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
     origin !== pending.origin
   ) {
     clearPendingStart();
-    markStartLost(pending);
+    markStartLost(pending, "source_tab_navigated");
     void expireStart(pending.origin, "source_tab_navigated");
   }
   const run = activeRun;
@@ -1303,10 +1403,14 @@ async function revokeGrant(origin) {
 }
 
 // The tab's https origin becomes the run's single authorized origin ONLY if it
-// is not a TGP origin, Chrome holds the host permission, and that permission
-// is a fresh Start grant (see freshGrants). The worker never trusts the
-// popup's claim; it asks Chrome, and it consumes the grant.
-async function authorizeSourceOrigin(url) {
+// is not a TGP origin, Chrome holds the host permission, that permission is a
+// fresh Start grant (see freshGrants), AND the Start's own tab is still live
+// on that origin. The worker never trusts the popup's claim; it asks Chrome,
+// and it consumes the grant. A grant whose tab is gone or has left the origin
+// is revoked here and never becomes the authorized origin (S1-A1) — the tab
+// events (tabs.onRemoved / onUpdated) usually end such a Start first, but the
+// binding is verified against Chrome at the moment of authorization too.
+async function authorizeSourceOrigin(url, tabId) {
   const origin = tabOriginAllowlist(url)?.[0] ?? null;
   if (origin === null) {
     return { error: `unsafe import origin: ${describedOrigin(url)}` };
@@ -1324,6 +1428,19 @@ async function authorizeSourceOrigin(url) {
     // is prompted afresh next time.
     await revokeGrant(origin);
     return { error: `start_not_authorized: ${origin}` };
+  }
+  if (typeof tabId !== "number") {
+    // admitStart refuses such a Start before anything is registered; a run
+    // reaching this point without a tab still authorizes nothing.
+    await revokeGrant(origin);
+    return { error: `source_tab_required: ${origin}` };
+  }
+  const tab = await liveTab(tabId);
+  if (tab.gone || tab.origin !== origin) {
+    await revokeGrant(origin);
+    return {
+      error: tab.gone ? tabClosedDetail(origin) : tabNavigatedDetail(origin),
+    };
   }
   setAuthorizedOrigin(origin);
   return { origin };
@@ -1352,7 +1469,7 @@ async function handleStartIngest(message) {
   // sessionLossError); the run never adopts a session that appears later.
   const generation = getSessionGeneration();
   const url = typeof message.url === "string" ? message.url : "";
-  const authorized = await authorizeSourceOrigin(url);
+  const authorized = await authorizeSourceOrigin(url, readTabId(message));
   if (authorized.error !== undefined) {
     broadcastStatus({ ...emptySnapshot(), lastError: authorized.error });
     return;
@@ -1452,7 +1569,7 @@ async function handleStartIngest(message) {
     const outcome = OUTCOME[result.status];
     const detail = terminalDetail(result);
     settlementSent = true;
-    const acked = await completeIngest(
+    const acked = await attemptComplete(
       intent,
       {
         terminalStatus: outcome.terminal,
@@ -1460,32 +1577,12 @@ async function handleStartIngest(message) {
         errorSummary: detail ?? undefined,
       },
       generation,
-    ).then(
-      () => true,
-      (err) => err,
     );
-    if (isTgpAuthLost(acked) || isTgpSessionReplaced(acked)) throw acked;
-    // FENCE (R35-c7A-02): the terminal POST has been attempted, so the
-    // backend may own the outcome already. A capability that ended meanwhile
-    // never overrides that: the server's status is read and shown.
-    if (runEnded(run) !== null) {
-      await showAuthoritativeTerminal(
-        run,
-        intent,
-        generation,
-        acked === true
-          ? { state: outcome.state, detail, terminal: outcome.terminal }
-          : null,
-      );
-      return;
-    }
-    if (acked !== true) throw acked;
-    broadcastStatus({
-      ...currentSnapshot,
-      intent: { ...intent, status: outcome.state },
-      lastError: detail,
-    });
-    notifyOutcome(platform, result.status);
+    // FENCE (R35-c7A-02 / S1-A2): the terminal POST has been attempted, so
+    // the backend may own the outcome already. Neither a capability that
+    // ended meanwhile nor a reply that never came decides anything locally:
+    // the acknowledged outcome, or else the server's status, is shown.
+    await reportTerminal(run, intent, generation, outcome, detail, acked, true);
   } catch (err) {
     // TGP-side auth loss already broadcast the friendly re-pair state; keep it.
     if (isTgpAuthLost(err)) {
@@ -1506,14 +1603,33 @@ async function handleStartIngest(message) {
       run.ended ?? (err instanceof Error ? err.message : "import failed");
     // Same unsettled-intent defect as the replay path; no progress-channel
     // fallback here, so carry the already-ACKed tally into the settlement.
-    if (!settlementSent) {
-      await settleFailed(intent, detail, Object.fromEntries(tally), generation);
+    // A settlement already attempted above is never repeated: the server is
+    // asked instead, and nothing is inferred.
+    if (settlementSent) {
+      await showAuthoritativeTerminal(
+        run,
+        intent,
+        generation,
+        null,
+        detail,
+        err,
+      );
+      return;
     }
-    broadcastStatus({
-      ...currentSnapshot,
-      intent: { ...intent, status: "ingest_failed" },
-      lastError: detail,
-    });
+    const acked = await settleFailed(
+      intent,
+      detail,
+      Object.fromEntries(tally),
+      generation,
+    );
+    await reportTerminal(
+      run,
+      intent,
+      generation,
+      OUTCOME.failed,
+      detail,
+      acked,
+    );
   }
 }
 
@@ -1781,14 +1897,24 @@ async function unregisterSourceCollector() {
   }
 }
 
-// The tab's live document origin, or null when the tab is gone / not https.
-async function liveTabOrigin(tabId) {
+// The tab's live state as Chrome reports it: `gone` when Chrome no longer
+// knows the tab (closed, or the read failed — neither is a live tab), else
+// its https document origin (null when the document is not https).
+async function liveTab(tabId) {
   try {
     const tab = await chrome.tabs.get(tabId);
-    return tabOriginAllowlist(readString(tab, "url"))?.[0] ?? null;
+    return {
+      gone: false,
+      origin: tabOriginAllowlist(readString(tab, "url"))?.[0] ?? null,
+    };
   } catch {
-    return null;
+    return { gone: true, origin: null };
   }
+}
+
+// The tab's live document origin, or null when the tab is gone / not https.
+async function liveTabOrigin(tabId) {
+  return (await liveTab(tabId)).origin;
 }
 
 // Obtain the SOURCE bearer from the coach's own tab WITHOUT exposing it to
@@ -1849,7 +1975,7 @@ async function handleStartImport(message) {
   // sessionLossError); the run never adopts a session that appears later.
   const generation = getSessionGeneration();
   const url = typeof message.url === "string" ? message.url : "";
-  const authorized = await authorizeSourceOrigin(url);
+  const authorized = await authorizeSourceOrigin(url, readTabId(message));
   if (authorized.error !== undefined) {
     broadcastStatus({ ...emptySnapshot(), lastError: authorized.error });
     return;
@@ -1978,46 +2104,22 @@ async function handleStartImport(message) {
     // newest row reads as mid-crawl.
     await reporter.flush(null, detail ?? undefined);
     settlementSent = true;
-    if (result.status === "failed") {
-      // Best-effort, so this POST failing stays observable, not silent.
-      await completeIngest(intent, settlement, generation).catch(
-        logSettlementFailure,
-      );
-      broadcastStatus({
-        ...currentSnapshot,
-        intent: { ...intent, status: outcome.state },
-        lastError: detail,
-      });
-      return;
-    }
-    // Still requires a backend ack: a throw here is ingest_failed, not success.
-    const acked = await completeIngest(intent, settlement, generation).then(
-      () => true,
-      (err) => err,
+    // Every terminal requires the backend's acknowledgement — an engine
+    // `failed` as much as a success. FENCE (R35-c7A-02 / S1-A2): once the
+    // POST has been attempted the backend may own the outcome already, so
+    // neither a capability that ended meanwhile (grant revoked, tab closed)
+    // nor a reply that never came is turned into a local terminal: the
+    // acknowledged outcome, or else the server's status, is shown.
+    const acked = await attemptComplete(intent, settlement, generation);
+    await reportTerminal(
+      run,
+      intent,
+      generation,
+      outcome,
+      detail,
+      acked,
+      result.status !== "failed",
     );
-    if (isTgpAuthLost(acked) || isTgpSessionReplaced(acked)) throw acked;
-    // FENCE (R35-c7A-02): the terminal POST has been attempted, so the
-    // backend may own the outcome already. A capability that ended meanwhile
-    // (grant revoked, tab closed) never overrides that with a local
-    // "failed": the server's authoritative status is read and shown.
-    if (runEnded(run) !== null) {
-      await showAuthoritativeTerminal(
-        run,
-        intent,
-        generation,
-        acked === true
-          ? { state: outcome.state, detail, terminal: outcome.terminal }
-          : null,
-      );
-      return;
-    }
-    if (acked !== true) throw acked;
-    broadcastStatus({
-      ...currentSnapshot,
-      intent: { ...intent, status: outcome.state },
-      lastError: detail,
-    });
-    notifyOutcome(platform, result.status);
   } catch (err) {
     // TGP auth loss already broadcast "session expired"; a complete now would
     // only 401, so it stays unsettled until a re-pair.
@@ -2046,16 +2148,35 @@ async function handleStartImport(message) {
         : err instanceof Error
           ? err.message
           : "import failed");
-    // TGP session is still good, so the intent must be settled first.
-    if (!settlementSent) {
-      await reporter.flush(null, detail);
-      await settleFailed(intent, detail, Object.fromEntries(tally), generation);
+    // TGP session is still good, so the intent must be settled first. A
+    // settlement already attempted above is never repeated: the server is
+    // asked instead, and nothing is inferred.
+    if (settlementSent) {
+      await showAuthoritativeTerminal(
+        run,
+        intent,
+        generation,
+        null,
+        detail,
+        err,
+      );
+      return;
     }
-    broadcastStatus({
-      ...currentSnapshot,
-      intent: { ...intent, status: "ingest_failed" },
-      lastError: detail,
-    });
+    await reporter.flush(null, detail);
+    const acked = await settleFailed(
+      intent,
+      detail,
+      Object.fromEntries(tally),
+      generation,
+    );
+    await reportTerminal(
+      run,
+      intent,
+      generation,
+      OUTCOME.failed,
+      detail,
+      acked,
+    );
   }
 }
 

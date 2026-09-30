@@ -66,7 +66,8 @@ async function settle(mock, ms = 12000) {
     const terminal =
       status === "ingest_succeeded" ||
       status === "ingest_failed" ||
-      status === "ingest_partial";
+      status === "ingest_partial" ||
+      status === "ingest_unconfirmed";
     if (terminal || authRequired(mock).length > 0 || Date.now() - start > ms) {
       return status;
     }
@@ -168,9 +169,13 @@ describe("start_import — completeIngest must be acknowledged (non-2xx != succe
       tabId: TAB_ID,
     });
     expect(ack).toEqual({ ok: true });
-    expect(await settle(mock)).toBe("ingest_failed");
+    // r5 (S1-A2): a 500 is not an acknowledgement, and the server (asked
+    // afterwards) holds no terminal, so the shown state is unconfirmed —
+    // neither the dishonest success nor a locally inferred failed.
+    expect(await settle(mock)).toBe("ingest_unconfirmed");
     // The dishonest success must NEVER have been broadcast, even momentarily.
     expect(statuses(mock)).not.toContain("ingest_succeeded");
+    expect(statuses(mock)).not.toContain("ingest_failed");
     expect(snapshots(mock).at(-1).lastError).toMatch(/complete 500/);
     // A failed finalisation raises no completion notification.
     expect(mock.notifications).toHaveLength(0);

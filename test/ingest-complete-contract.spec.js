@@ -71,7 +71,8 @@ async function settle(mock, ms = 10000) {
       status === "ingest_succeeded" ||
       status === "ingest_failed" ||
       status === "ingest_partial" ||
-      status === "ingest_empty"
+      status === "ingest_empty" ||
+      status === "ingest_unconfirmed"
     ) {
       return status;
     }
@@ -188,7 +189,9 @@ describe("ingest/complete — required terminal_status", () => {
       return inner(url, init);
     });
     await mock.dispatch({ kind: "start_import", url: TAB_URL, tabId: TAB_ID });
-    expect(await settle(mock)).toBe("ingest_failed");
+    // r5 (S1-A2): the refused settlement leaves the state unconfirmed (the
+    // server holds no terminal), never a locally inferred failed.
+    expect(await settle(mock)).toBe("ingest_unconfirmed");
     // The 503 from complete must NOT mask the source status the coach needs.
     expect(snapshots(mock).at(-1).lastError).toMatch(/500/);
   });

@@ -12,6 +12,15 @@
   "outcome_settlement_failed": {
     "message": "The final status could not be confirmed. Earlier transfer receipts are retained below."
   },
+  "outcome_unconfirmed_title": {
+    "message": "Final status not confirmed by TGP yet"
+  },
+  "outcome_unconfirmed_guidance": {
+    "message": "TGP has not confirmed how this transfer ended, so this is neither a failure nor a success. Use Check status to read TGP's own record before doing anything else. A new transfer is blocked here to protect this result."
+  },
+  "outcome_unconfirmed_server_running": {
+    "message": "TGP still records this transfer as running; its final state is not decided yet. Check status again shortly."
+  },
   "outcome_source_incomplete": {
     "message": "Some source pages could not be read. Their record counts are unknown."
   },
@@ -188,7 +197,12 @@
   "server_status_final": {
     "message": "Final state (TGP server): $STATE$",
     "description": "The server's settled terminal is the final state of this run.",
-    "placeholders": { "state": { "content": "$1", "example": "partial; some records may be missing" } }
+    "placeholders": {
+      "state": {
+        "content": "$1",
+        "example": "partial; some records may be missing"
+      }
+    }
   },
   "server_state_success": {
     "message": "transfer settled; records staged, migration not verified",

@@ -11,9 +11,14 @@ import { makeBgMock, installChrome } from "./helpers/background-mock.js";
 const REFRESH_KEY = "tgp_refresh_token";
 
 // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
-async function load({ session } = {}) {
+async function load({ session, tabUrl } = {}) {
   vi.resetModules();
-  const mock = makeBgMock({ session });
+  // r5 (S1-A1): the Start tab must be live on the message's origin at
+  // authorization, so every Start here has a tab that really shows that URL.
+  const mock = makeBgMock({
+    session,
+    tab: typeof tabUrl === "string" ? { url: tabUrl } : undefined,
+  });
   installChrome(mock);
   global.fetch = vi.fn();
   const bg = await import("../background.js");
@@ -35,7 +40,7 @@ function authRequired(mock) {
 
 describe("start_ingest — site not learned", () => {
   it("rejects an origin no reader is registered for without touching auth", async () => {
-    const { mock } = await load();
+    const { mock } = await load({ tabUrl: "https://example.com/x" });
     const ack = await mock.dispatch({
       kind: "start_ingest",
       url: "https://example.com/x",
@@ -52,7 +57,9 @@ describe("start_ingest — site not learned", () => {
 
 describe("start_ingest — no session fails closed", () => {
   it("broadcasts auth_required and starts no crawl when there is no token", async () => {
-    const { mock } = await load();
+    const { mock } = await load({
+      tabUrl: "https://app.truecoach.co/clients",
+    });
     const ack = await mock.dispatch({
       kind: "start_ingest",
       url: "https://app.truecoach.co/clients",
@@ -72,6 +79,7 @@ describe("start_ingest — refresh failure fails closed", () => {
   it("broadcasts auth_required when the only refresh token is rejected", async () => {
     const { mock } = await load({
       session: new Map([[REFRESH_KEY, "stale-refresh"]]),
+      tabUrl: "https://app.truecoach.co/clients",
     });
     // @ts-expect-error -- legacy test intentionally exercises a partial runtime mock shape.
     global.fetch.mockResolvedValue({ ok: false, status: 401 });
@@ -93,7 +101,9 @@ describe("start_ingest — refresh failure fails closed", () => {
     // The oracle answers for exactly the origin it fetches. A brand subdomain
     // used to resolve to it and then fetch the flagship host — an origin the
     // coach had not authorized — so it now fails closed before the auth gate.
-    const { mock } = await load();
+    const { mock } = await load({
+      tabUrl: "https://brand.truecoach.co/clients",
+    });
     const ack = await mock.dispatch({
       kind: "start_ingest",
       url: "https://brand.truecoach.co/clients",

@@ -63,6 +63,11 @@ function flush(n = 6) {
 function snapshots(mock) {
   return mock.sent.filter((m) => m && m.kind === "status_snapshot");
 }
+function statuses(mock) {
+  return snapshots(mock)
+    .map((s) => s.intent?.status)
+    .filter((s) => typeof s === "string");
+}
 function authRequired(mock) {
   return mock.sent.filter((m) => m && m.kind === "auth_required");
 }
@@ -77,7 +82,8 @@ async function settle(mock, ms = 10000) {
     if (
       status === "ingest_succeeded" ||
       status === "ingest_failed" ||
-      status === "ingest_partial"
+      status === "ingest_partial" ||
+      status === "ingest_unconfirmed"
     ) {
       return status;
     }
@@ -166,7 +172,12 @@ describe("start_import — single-flight guard", () => {
 
 describe("start_import — pre-run guards", () => {
   it("rejects a site that is not learned without touching the network", async () => {
-    const { mock } = await load({ session: new Map([[REFRESH_KEY, "seed"]]) });
+    // r5 (S1-A1): the Start tab must be live on the message's origin at
+    // authorization, so the tab here really shows the unlearned site.
+    const { mock } = await load({
+      session: new Map([[REFRESH_KEY, "seed"]]),
+      tab: { url: "https://example.com/x" },
+    });
     const ack = await mock.dispatch({
       kind: "start_import",
       url: "https://example.com/x",
@@ -193,7 +204,7 @@ describe("start_import — pre-run guards", () => {
   });
 
   it("broadcasts auth_required and starts no crawl with no TGP session", async () => {
-    const { mock } = await load(); // no refresh token seeded
+    const { mock } = await load({ tab: { url: TAB_URL } }); // no refresh token seeded
     const ack = await mock.dispatch({
       kind: "start_import",
       url: TAB_URL,
@@ -346,7 +357,11 @@ describe("start_import — source auth loss fails closed without a TGP logout", 
     });
     expect(ack).toEqual({ ok: true });
     const terminal = await settle(mock);
-    expect(terminal).toBe("ingest_failed");
+    // r5 (S1-A2): /complete is unrouted here (a lost reply) and so is the
+    // status read, so the run is unconfirmed — never a locally inferred
+    // failed — while the source reason still leads the shown error.
+    expect(terminal).toBe("ingest_unconfirmed");
+    expect(statuses(mock)).not.toContain("ingest_failed");
     expect(snapshots(mock).at(-1).lastError).toMatch(/source sign-in required/);
     // Source auth loss must NOT clear the TGP tokens: clearTokens() would have
     // removed the refresh token from chrome.storage.session — it is still here.
@@ -381,7 +396,11 @@ describe("start_import — source auth loss fails closed without a TGP logout", 
     });
     expect(ack).toEqual({ ok: true });
     const terminal = await settle(mock);
-    expect(terminal).toBe("ingest_failed");
+    // r5 (S1-A2): /complete is unrouted here (a lost reply) and so is the
+    // status read, so the run is unconfirmed — never a locally inferred
+    // failed — while the source reason still leads the shown error.
+    expect(terminal).toBe("ingest_unconfirmed");
+    expect(statuses(mock)).not.toContain("ingest_failed");
     expect(snapshots(mock).at(-1).lastError).toMatch(/source sign-in required/);
     // A 403 is an authorization failure, not a TGP logout: tokens survive and
     // no re-pair prompt is raised.
@@ -417,7 +436,10 @@ describe("start_import — a non-auth source error fails the run without a re-pa
     });
     expect(ack).toEqual({ ok: true });
     const terminal = await settle(mock);
-    expect(terminal).toBe("ingest_failed");
+    // r5 (S1-A2): /complete is unrouted here (a lost reply), so the run is
+    // unconfirmed rather than a locally inferred failed.
+    expect(terminal).toBe("ingest_unconfirmed");
+    expect(statuses(mock)).not.toContain("ingest_failed");
     // A 5xx is a server fault, not an auth loss: it must NOT be reported as a
     // sign-in requirement, and it must not raise a re-pair. The 5xx status is
     // preserved in the message (category/status only, never a response body).

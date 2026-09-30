@@ -105,7 +105,8 @@ async function settle(mock, ms = 10000) {
     if (
       status === "ingest_succeeded" ||
       status === "ingest_failed" ||
-      status === "ingest_partial"
+      status === "ingest_partial" ||
+      status === "ingest_unconfirmed"
     ) {
       await flush();
       return status;
@@ -409,12 +410,18 @@ describe("R35-c7A-02 — once /complete is attempted, the server's status is the
       serverStatus: () => ({ status: "running" }),
     });
     await start(mock);
-    expect(await settle(mock)).toBe("ingest_failed");
+    // r5 (S1-A2): an unconfirmed terminal is its own state, no longer shown
+    // as `ingest_failed` — the server has not said failed.
+    expect(await settle(mock)).toBe("ingest_unconfirmed");
     const last = snapshots(mock).at(-1);
     expect(last.lastError).toBe(
       `complete_unconfirmed: origin_revoked: ${ORIGIN}`,
     );
+    expect(last.serverStatus).toBe("running");
     expect(last.serverTerminal).toBeUndefined();
+    expect(
+      snapshots(mock).some((s) => s.intent?.status === "ingest_failed"),
+    ).toBe(false);
     // Our one attempted terminal only; the revocation did not POST `failed`.
     expect(completes.map((c) => c.terminal_status)).toEqual(["success"]);
     expect(statusReads).toHaveLength(1);
@@ -706,6 +713,10 @@ describe("R35-c7B-09 — every Start-exchange code has approved popup copy", () 
   it.each([
     ["start_superseded: https://x.example", "prestart_origin_not_authorized"],
     ["start_expired: https://x.example", "prestart_origin_not_authorized"],
+    [
+      "start_not_registered: https://x.example",
+      "prestart_origin_not_authorized",
+    ],
     [
       "start_grant_mismatch: https://x.example",
       "prestart_origin_not_authorized",

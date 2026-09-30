@@ -7,15 +7,22 @@ function count(value) {
 export function outcomeView(snapshot, message) {
   const state = snapshot.intent?.status;
   const active = state === "ingest_started" && snapshot.workerActive === true;
+  // `ingest_unconfirmed`: a final status was sent but TGP never confirmed it
+  // and TGP's own record shows no final state (or could not be read). It is
+  // neither a failure nor a success here (S1-A2): the coach is told to check
+  // TGP's record, and nothing local is presented as the result.
+  const unconfirmed = state === "ingest_unconfirmed";
   const titleKey = active
     ? "outcome_running"
     : state === "ingest_started"
       ? "outcome_interrupted"
-      : state === "ingest_succeeded"
-        ? "replay_status_staged"
-        : state === "ingest_empty"
-          ? "outcome_empty"
-          : "outcome_attention";
+      : unconfirmed
+        ? "outcome_unconfirmed_title"
+        : state === "ingest_succeeded"
+          ? "replay_status_staged"
+          : state === "ingest_empty"
+            ? "outcome_empty"
+            : "outcome_attention";
   const rows = new Map();
   const staging = snapshot.staging;
   if (staging && typeof staging === "object") {
@@ -73,7 +80,11 @@ export function outcomeView(snapshot, message) {
     };
   });
   const guidance = message(
-    active ? "outcome_running_guidance" : "outcome_guidance",
+    active
+      ? "outcome_running_guidance"
+      : unconfirmed
+        ? "outcome_unconfirmed_guidance"
+        : "outcome_guidance",
   );
   const error =
     typeof snapshot.lastError === "string" ? snapshot.lastError : "";
@@ -82,7 +93,9 @@ export function outcomeView(snapshot, message) {
     : error.includes("ingest_ack_invalid")
       ? "outcome_receipt_invalid"
       : error.startsWith("complete")
-        ? "outcome_settlement_failed"
+        ? unconfirmed && snapshot.serverStatus === "running"
+          ? "outcome_unconfirmed_server_running"
+          : "outcome_settlement_failed"
         : error.includes("skipped")
           ? "outcome_source_incomplete"
           : error
@@ -144,6 +157,7 @@ export function preStartIssue(lastError, message) {
             error.startsWith("origin_revoked") ||
             error.startsWith("start_expired") ||
             error.startsWith("start_superseded") ||
+            error.startsWith("start_not_registered") ||
             error.startsWith("start_grant_mismatch")
           ? "prestart_origin_not_authorized"
           : error.startsWith("source_tab_navigated") ||

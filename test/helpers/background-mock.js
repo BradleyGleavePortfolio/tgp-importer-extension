@@ -92,6 +92,10 @@ export function makeBgMock({
   const platformInfoCalls = [];
   const onTabRemoved = eventHub();
   const onTabUpdated = eventHub();
+  // Tabs `closeTab` has closed: as in Chrome, tabs.get rejects for them, so a
+  // worker that never saw the onRemoved event (it was not running) still
+  // learns the tab is gone when it asks.
+  const closedTabs = new Set();
   // Each executeScript injection lands in a fresh document id (Chrome's
   // InjectionResult.documentId); tabs.sendMessage records the options it was
   // addressed with so a test can prove the reply was bound to that document.
@@ -168,6 +172,7 @@ export function makeBgMock({
       onUpdated: onTabUpdated.api,
       get: async (id) => {
         if (tab && typeof tab.get === "function") return tab.get(id);
+        if (closedTabs.has(id)) throw new Error(`No tab with id: ${id}.`);
         return tab ? { id, url: tab.url } : { id };
       },
       sendMessage: async (id, message, options) => {
@@ -335,9 +340,13 @@ export function makeBgMock({
     onPermissionAdded.emit({ origins: [pattern] });
   }
 
-  // Chrome tab lifecycle events, as the worker sees them.
-  function closeTab(tabId) {
-    onTabRemoved.emit(tabId, { windowId: 1, isWindowClosing: false });
+  // Chrome tab lifecycle events, as the worker sees them. `closeTab` with
+  // `notify: false` models a tab that closed while NO worker was running: the
+  // tab is gone (tabs.get rejects) but no onRemoved event is ever delivered.
+  function closeTab(tabId, { notify = true } = {}) {
+    closedTabs.add(tabId);
+    if (notify)
+      onTabRemoved.emit(tabId, { windowId: 1, isWindowClosing: false });
   }
   function navigateTab(tabId, url) {
     if (tab && typeof tab.url === "string") tab.url = url;

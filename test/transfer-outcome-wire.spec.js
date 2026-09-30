@@ -141,10 +141,13 @@ describe("outstanding batch evidence through the actual worker", () => {
 
   it("does not relabel acknowledged data as unconfirmed when final settlement fails", async () => {
     const result = await transfer("settlement");
-    expect(result.snapshot.intent.status).toBe("ingest_failed");
+    // r5 (S1-A2): the refused settlement is unconfirmed, not a local failed.
+    expect(result.snapshot.intent.status).toBe("ingest_unconfirmed");
     expect(result.snapshot.pendingTransfer).toBeNull();
     expect(result.snapshot.staging.clients.received).toBe(23);
-    expect(result.snapshot.lastError).toBe("complete 500");
+    expect(result.snapshot.lastError).toBe(
+      "complete_unconfirmed: complete 500",
+    );
     const view = outcomeView(
       result.snapshot,
       result.mock.chrome.i18n.getMessage,

@@ -159,7 +159,13 @@ function routeSuccess(
 }
 
 describe("R35-A-02 / R35B-B3 — a Start is one nonce, one tab, one origin, either order", () => {
-  it("the grant arriving BEFORE the popup's message still starts the run", async () => {
+  // r5 (S1-A1): a grant that reaches the worker before any registration is
+  // no longer held for the popup's message. The popup always registers first
+  // (it awaits the start_import reply before prompting), so grant-first only
+  // happens on a worker that restarted between the two; that worker cannot
+  // bind the grant to a nonce/tab, so it revokes it and the registration that
+  // follows waits for a grant of its own. Nothing starts.
+  it("the grant arriving BEFORE the popup's message is revoked, and the message starts nothing without its own grant", async () => {
     const { mock } = await load({ tab: withSourceTab() });
     routeSuccess(mock);
     const ack = await mock.dispatchGrantFirst({
@@ -169,9 +175,13 @@ describe("R35-A-02 / R35B-B3 — a Start is one nonce, one tab, one origin, eith
       nonce: "n1",
     });
     expect(ack).toEqual({ ok: true });
-    expect(await settle(mock)).toBe("ingest_succeeded");
-    await flush();
+    await flush(20);
+    expect(sourceFetches()).toHaveLength(0);
+    expect(snapshots(mock).some((s) => s.intent !== null)).toBe(false);
     expect(mock.grants.has(`${ORIGIN}/*`)).toBe(false);
+    expect(mock.permissionRemovals).toContainEqual({
+      origins: [`${ORIGIN}/*`],
+    });
   });
 
   it("the popup's message arriving BEFORE the grant starts the run (popup may be gone)", async () => {
