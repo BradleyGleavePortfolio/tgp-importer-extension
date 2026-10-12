@@ -148,6 +148,16 @@ What remains is the layer that removes the last human/engineer input from
 
 ---
 
+## TGP v1.1 importer work (owner, 2026-10-12)
+
+The importer ships in TGP v1.1, not v1 (owner: "IMPORTER IS V1.1 - WE NEED TO BUILD V1 SAFELY").
+
+- Old imported records trim. Records imported before the backend started keeping only the fields TGP uses still hold the whole
+  outside record. The trim script is backend PR
+  [#936](https://github.com/BradleyGleavePortfolio/growth-project-backend/pull/936). Plan: merge the script, run a count-only pass
+  first, then the real run only after a fresh encrypted backup and the owner's word.
+- Extension pairing code: format `XXXXX-XXXXX` (owner, 2026-10-11).
+
 ## Platform matrix
 
 Rows are the target top-10 coaching platforms. TrueCoach is the flagship and
